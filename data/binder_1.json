@@ -1,0 +1,51 @@
+{
+  "name": "Binder 1",
+  "description": "My primary trade binder",
+  "cards": [
+    {
+      "id": "c1",
+      "name": "Blue-Eyes White Dragon",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/89631139.jpg",
+      "metadata": {
+        "set_code": "LOB-001",
+        "rarity": "Ultra Rare",
+        "condition": "Near Mint",
+        "first_edition": true,
+        "storage_location": "Binder 1, Page 1",
+        "purchase_price": 50.0,
+        "market_value": 120.0
+      }
+    },
+    {
+      "id": "c2",
+      "name": "Dark Magician",
+      "quantity": 3,
+      "image_url": "https://images.ygoprodeck.com/images/cards/46986414.jpg",
+      "metadata": {
+        "set_code": "SDY-006",
+        "rarity": "Super Rare",
+        "condition": "Played",
+        "first_edition": false,
+        "storage_location": "Binder 1, Page 1",
+        "purchase_price": 5.0,
+        "market_value": 15.0
+      }
+    },
+     {
+      "id": "c3",
+      "name": "Ash Blossom & Joyous Spring",
+      "quantity": 2,
+      "image_url": "https://images.ygoprodeck.com/images/cards/14558127.jpg",
+      "metadata": {
+        "set_code": "MACR-EN036",
+        "rarity": "Secret Rare",
+        "condition": "Mint",
+        "first_edition": true,
+        "storage_location": "Deck Box Red",
+        "purchase_price": 20.0,
+        "market_value": 25.0
+      }
+    }
+  ]
+}

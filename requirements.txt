@@ -1,0 +1,3 @@
+nicegui
+pydantic
+pyyaml
