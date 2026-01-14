@@ -15,7 +15,7 @@ def create_layout(content_function):
             ui.label('Navigation').classes('text-grey-4 q-px-md text-sm uppercase font-bold')
 
             def nav_button(text, icon, target):
-                ui.button(text, icon=icon, on_click=lambda: ui.open(target)).props('flat align=left').classes('w-full text-grey-3 hover:bg-white/10')
+                ui.button(text, icon=icon, on_click=lambda: ui.navigate.to(target)).props('flat align=left').classes('w-full text-grey-3 hover:bg-white/10')
 
             nav_button('Dashboard', 'dashboard', '/')
             nav_button('Collection', 'style', '/collection')
