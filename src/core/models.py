@@ -8,6 +8,7 @@ import uuid
 class CardMetadata(BaseModel):
     set_code: str = Field(..., description="e.g., LOB-EN001")
     rarity: str = Field(..., description="e.g., Ultra Rare, Common")
+    language: str = Field("EN", description="Language code, e.g. EN, DE, FR")
     condition: Literal["Mint", "Near Mint", "Played", "Damaged"] = "Near Mint"
     first_edition: bool = False
     storage_location: Optional[str] = Field(None, description="e.g., Box A, Row 2")
@@ -50,6 +51,13 @@ class ApiCardSet(BaseModel):
     set_rarity_code: Optional[str] = None
     set_price: Optional[str] = None
 
+class ApiCardPrice(BaseModel):
+    cardmarket_price: Optional[str] = None
+    tcgplayer_price: Optional[str] = None
+    ebay_price: Optional[str] = None
+    amazon_price: Optional[str] = None
+    coolstuffinc_price: Optional[str] = None
+
 class ApiCard(BaseModel):
     id: int
     name: str
@@ -64,3 +72,4 @@ class ApiCard(BaseModel):
     archetype: Optional[str] = None
     card_images: List[ApiCardImage] = []
     card_sets: List[ApiCardSet] = []
+    card_prices: List[ApiCardPrice] = []
