@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
 
+# --- Collection Models ---
+
 class CardMetadata(BaseModel):
     set_code: str = Field(..., description="e.g., LOB-EN001")
     rarity: str = Field(..., description="e.g., Ultra Rare, Common")
@@ -32,3 +34,33 @@ class Collection(BaseModel):
     @property
     def total_cards(self) -> int:
         return sum(card.quantity for card in self.cards)
+
+# --- API/Database Models ---
+
+class ApiCardImage(BaseModel):
+    id: int
+    image_url: str
+    image_url_small: str
+    image_url_cropped: Optional[str] = None
+
+class ApiCardSet(BaseModel):
+    set_name: str
+    set_code: str
+    set_rarity: str
+    set_rarity_code: Optional[str] = None
+    set_price: Optional[str] = None
+
+class ApiCard(BaseModel):
+    id: int
+    name: str
+    type: str
+    frameType: str
+    desc: str
+    race: Optional[str] = None
+    atk: Optional[int] = None
+    def_: Optional[int] = Field(None, alias="def")
+    level: Optional[int] = None
+    attribute: Optional[str] = None
+    archetype: Optional[str] = None
+    card_images: List[ApiCardImage] = []
+    card_sets: List[ApiCardSet] = []

@@ -1,6 +1,6 @@
 import sys
 import os
-from nicegui import ui
+from nicegui import ui, app
 
 # Ensure src is in the python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +26,9 @@ def decks():
 @ui.page('/import')
 def import_tools():
     create_layout(import_tools_page)
+
+# Serve images
+app.add_static_files('/images', 'data/images')
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(title='OpenYuGi', favicon='🃏')
