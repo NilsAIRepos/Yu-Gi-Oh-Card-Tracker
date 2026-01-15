@@ -2,6 +2,7 @@ from nicegui import ui
 from src.ui.theme import apply_theme
 from src.core.config import config_manager
 from src.services.ygo_api import ygo_service
+from src.core.migrations import fix_legacy_set_codes
 
 def create_layout(content_function):
     """
@@ -122,6 +123,25 @@ def create_layout(content_function):
             ui.button('Update Artwork Mappings', on_click=update_artworks, icon='image').classes('w-full q-mt-sm').props('color=accent')
             with ui.row().classes('w-full justify-center'):
                 ui.label('Note: Artwork matching is an approximation and may not be 100% accurate.').classes('text-xs text-grey italic q-mt-xs text-center')
+
+            async def fix_legacy_codes():
+                # Dialog for progress
+                prog_dialog = ui.dialog().props('persistent')
+                with prog_dialog, ui.card().classes('w-96'):
+                    ui.label('Fixing Legacy Set Codes').classes('text-h6')
+                    ui.label('Scanning collections...').classes('text-sm text-grey')
+                    ui.spinner().classes('self-center q-my-md')
+                prog_dialog.open()
+
+                try:
+                    count = await fix_legacy_set_codes()
+                    prog_dialog.close()
+                    ui.notify(f'Fixed {count} cards.', type='positive')
+                except Exception as e:
+                    prog_dialog.close()
+                    ui.notify(f"Error: {e}", type='negative')
+
+            ui.button('Fix Legacy Set Codes', on_click=fix_legacy_codes, icon='build').classes('w-full q-mt-sm').props('color=warning')
 
             with ui.row().classes('w-full justify-end q-mt-md'):
                 ui.button('Close', on_click=d.close).props('flat')
