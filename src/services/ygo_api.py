@@ -9,6 +9,7 @@ from nicegui import run
 
 API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
 DATA_DIR = os.path.join(os.getcwd(), "data")
+DB_DIR = os.path.join(DATA_DIR, "db")
 
 def parse_cards_data(data: List[dict]) -> List[ApiCard]:
     return [ApiCard(**c) for c in data]
@@ -16,10 +17,28 @@ def parse_cards_data(data: List[dict]) -> List[ApiCard]:
 class YugiohService:
     def __init__(self):
         self._cards_cache: Dict[str, List[ApiCard]] = {}
+        self._migrate_old_db_files()
+
+    def _migrate_old_db_files(self):
+        """Moves existing database files from data/ to data/db/."""
+        if not os.path.exists(DB_DIR):
+            os.makedirs(DB_DIR)
+
+        # List of potential language files (or just scan)
+        for filename in os.listdir(DATA_DIR):
+            if filename.startswith("card_db") and filename.endswith(".json"):
+                old_path = os.path.join(DATA_DIR, filename)
+                new_path = os.path.join(DB_DIR, filename)
+                if not os.path.exists(new_path):
+                    try:
+                        os.rename(old_path, new_path)
+                        print(f"Migrated {filename} to {DB_DIR}")
+                    except OSError as e:
+                        print(f"Error migrating {filename}: {e}")
 
     def _get_db_file(self, language: str = "en") -> str:
         filename = "card_db.json" if language == "en" else f"card_db_{language}.json"
-        return os.path.join(DATA_DIR, filename)
+        return os.path.join(DB_DIR, filename)
 
     async def fetch_card_database(self, language: str = "en") -> int:
         """Downloads the full database from the API. Returns count of cards."""
@@ -57,8 +76,8 @@ class YugiohService:
             raise Exception(f"API Error: {response.status_code}")
 
     def _save_db_file(self, data, language: str = "en"):
-        if not os.path.exists(DATA_DIR):
-            os.makedirs(DATA_DIR)
+        if not os.path.exists(DB_DIR):
+            os.makedirs(DB_DIR)
 
         filepath = self._get_db_file(language)
         with open(filepath, 'w', encoding='utf-8') as f:

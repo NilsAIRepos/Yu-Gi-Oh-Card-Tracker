@@ -1,6 +1,7 @@
 from nicegui import ui
 from src.ui.theme import apply_theme
 from src.core.config import config_manager
+from src.services.ygo_api import ygo_service
 
 def create_layout(content_function):
     """
@@ -25,6 +26,21 @@ def create_layout(content_function):
                       label='Language',
                       value=config_manager.get_language(),
                       on_change=change_lang).classes('w-full')
+
+            ui.separator().classes('q-my-md')
+            ui.label('Data Management').classes('text-subtitle2 text-grey')
+
+            async def update_db():
+                n = ui.notification('Updating Card Database...', type='info', spinner=True, timeout=None)
+                try:
+                    count = await ygo_service.fetch_card_database(config_manager.get_language())
+                    n.dismiss()
+                    ui.notify(f'Database updated. {count} cards loaded.', type='positive')
+                except Exception as e:
+                    n.dismiss()
+                    ui.notify(f'Update failed: {e}', type='negative')
+
+            ui.button('Update Card Database', on_click=update_db, icon='cloud_download').classes('w-full').props('color=secondary')
 
             with ui.row().classes('w-full justify-end q-mt-md'):
                 ui.button('Close', on_click=d.close).props('flat')
