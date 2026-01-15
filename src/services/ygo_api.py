@@ -10,6 +10,9 @@ from nicegui import run
 API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
 DATA_DIR = os.path.join(os.getcwd(), "data")
 
+def parse_cards_data(data: List[dict]) -> List[ApiCard]:
+    return [ApiCard(**c) for c in data]
+
 class YugiohService:
     def __init__(self):
         self._cards_cache: Dict[str, List[ApiCard]] = {}
@@ -43,10 +46,10 @@ class YugiohService:
 
             # Update cache (parse in thread)
             try:
-                parsed_cards = await run.cpu_bound(self._parse_cards, cards_data)
+                parsed_cards = await run.io_bound(parse_cards_data, cards_data)
             except RuntimeError:
-                # If run.cpu_bound fails (no process pool), run directly (slow but works for test)
-                parsed_cards = self._parse_cards(cards_data)
+                # If run.io_bound fails, run directly
+                parsed_cards = parse_cards_data(cards_data)
 
             self._cards_cache[language] = parsed_cards
             return len(self._cards_cache[language])
@@ -75,10 +78,10 @@ class YugiohService:
              # Read file
              try:
                  data = await run.io_bound(self._read_db_file, language)
-                 parsed_cards = await run.cpu_bound(self._parse_cards, data)
+                 parsed_cards = await run.io_bound(parse_cards_data, data)
              except RuntimeError:
                  data = await asyncio.to_thread(self._read_db_file, language)
-                 parsed_cards = self._parse_cards(data)
+                 parsed_cards = parse_cards_data(data)
 
              self._cards_cache[language] = parsed_cards
 
@@ -88,9 +91,6 @@ class YugiohService:
         db_file = self._get_db_file(language)
         with open(db_file, 'r', encoding='utf-8') as f:
             return json.load(f)
-
-    def _parse_cards(self, data: List[dict]) -> List[ApiCard]:
-        return [ApiCard(**c) for c in data]
 
     def get_card(self, card_id: int, language: str = "en") -> Optional[ApiCard]:
         cards = self._cards_cache.get(language, [])
