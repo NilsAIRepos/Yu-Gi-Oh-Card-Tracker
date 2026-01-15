@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set
 import asyncio
 import traceback
+import re
 
 @dataclass
 class CardViewModel:
@@ -59,6 +60,13 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
     rows = []
     lang_upper = language.upper()
 
+    def parse_set_code(code):
+        # Parses LOB-EN001 into (LOB, 001). Returns (None, None) if format doesn't match.
+        match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)?(\d+)$', code)
+        if match:
+            return match.group(1).upper(), match.group(3)
+        return None, None
+
     for card in api_cards:
         owned_list = owned_details.get(card.name.lower(), [])
 
@@ -66,39 +74,89 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
         default_image_id = card.card_images[0].id if card.card_images else None
 
         matched_card_ids = set()
+
         if card.card_sets:
             for cset in card.card_sets:
-                qty = 0
+                # API Set Data
+                api_prefix, api_number = parse_set_code(cset.set_code)
+
+                # Find matching owned cards (match Set Code Prefix + Number, ignoring language)
+                # Group by (Language, Set Code)
+                matched_groups = {} # (lang, code) -> list[Card]
+
+                # Also we need to include the "Base" row (the API set itself), usually EN.
+                # We initialize matched_groups with the API set's language if it's not present later?
+                # Actually, we should iterate all owned cards, check if they map to this set.
+
                 for c in owned_list:
-                    # Match Set Code
-                    if c.metadata.set_code != cset.set_code: continue
-                    # Match Language
-                    if c.metadata.language.upper() != lang_upper: continue
-                    # Match Rarity
+                    if c.id in matched_card_ids: continue # Already matched to another set
+
+                    c_prefix, c_number = parse_set_code(c.metadata.set_code)
+
+                    is_set_match = False
+                    if api_prefix and c_prefix:
+                        # Match parsed parts
+                        if api_prefix == c_prefix and api_number == c_number:
+                            is_set_match = True
+                    else:
+                        # Fallback exact match (e.g. promo codes without numbers?)
+                        if c.metadata.set_code == cset.set_code:
+                            is_set_match = True
+
+                    if not is_set_match: continue
+
+                    # Match Rarity (strict? user might have different rarity mapping? let's strict for now)
                     if c.metadata.rarity != cset.set_rarity: continue
 
-                    # Match Image ID
-                    # If cset has a specific image_id, we expect strict match
-                    is_match = False
+                    # Match Image ID (if specified in set)
                     if cset.image_id:
-                        if c.metadata.image_id == cset.image_id:
-                            is_match = True
+                        if c.metadata.image_id != cset.image_id:
+                            continue
                     else:
-                        # If cset has no image_id, it implies the default image
-                        # We count it if it's explicitly the default ID OR None
-                        if c.metadata.image_id is None or c.metadata.image_id == default_image_id:
-                            is_match = True
+                        # If API set has no image ID, match default or None
+                        if c.metadata.image_id is not None and c.metadata.image_id != default_image_id:
+                            continue
 
-                    if is_match:
-                        qty += c.quantity
-                        matched_card_ids.add(c.id)
+                    # Determine Group Key
+                    g_key = (c.metadata.language.upper(), c.metadata.set_code)
+                    if g_key not in matched_groups: matched_groups[g_key] = []
+                    matched_groups[g_key].append(c)
 
+                    matched_card_ids.add(c.id)
+
+                # Now generate rows.
+                # Always generate the Base row (API Set).
+                # If we have owned cards for this Base Set (e.g. EN), use them.
+                # If we have owned cards for OTHER languages, generate extra rows.
+
+                # Base Key
+                # Usually API set code contains language (LOB-EN001). We assume EN?
+                # Or we parse it from set_code?
+                # If set_code is LOB-EN001, lang is EN.
+                # But we don't know for sure. Let's assume the API set defines the "Standard" row.
+                # We just need to check if any matched group corresponds to this exact code/lang (implied).
+
+                # The API doesn't strictly give us the language of the set_code, but usually it's EN.
+                # Let's extract language from set_code if possible, or default to language arg.
+                base_lang = "EN"
+                if "-" in cset.set_code:
+                    parts = cset.set_code.split('-')
+                    if len(parts) > 1:
+                        # Region is usually parts[1] excluding numbers.
+                        reg_match = re.match(r'^([A-Za-z]+)', parts[1])
+                        if reg_match:
+                            r = reg_match.group(1).upper()
+                            if r in ['EN', 'DE', 'FR', 'IT', 'PT', 'ES', 'JP']:
+                                base_lang = r
+
+                base_key = (base_lang, cset.set_code)
+
+                # Prepare Base Row
                 price = 0.0
                 if cset.set_price:
                     try: price = float(cset.set_price)
                     except: pass
 
-                # Determine specific image
                 row_img_url = img_url
                 if cset.image_id:
                      for img in card.card_images:
@@ -106,26 +164,74 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
                              row_img_url = img.image_url_small
                              break
 
-                rows.append(CollectorRow(
-                    api_card=card,
-                    set_code=cset.set_code,
-                    set_name=cset.set_name,
-                    rarity=cset.set_rarity,
-                    price=price,
-                    image_url=row_img_url,
-                    owned_count=qty,
-                    is_owned=qty > 0,
-                    language=lang_upper,
-                    image_id=cset.image_id
-                ))
+                # Yield Base Row
+                # Check if we have owned cards for this exact base set
+                base_owned = matched_groups.get(base_key, [])
+                if not base_owned and base_lang == "EN":
+                     # Try to see if we have exact match on set code but maybe we missed lang parsing?
+                     # Just look for set_code match in groups
+                     for (gl, gcode), gcards in matched_groups.items():
+                         if gcode == cset.set_code:
+                             base_owned = gcards
+                             # Remove from matched_groups so we don't duplicate
+                             del matched_groups[(gl, gcode)]
+                             break
+
+                qty = sum(c.quantity for c in base_owned)
+
+                # Filter by View Language?
+                # The user wants to see owned cards of ANY language.
+                # But for unowned cards, maybe only show if it matches view language?
+                # Current behavior: "In collectors view... there are only english cards beeing shown."
+                # If I switch to German, I expect German API cards?
+                # If the view language is EN, we show EN rows.
+                # If we have a DE owned card, we show it as an extra row.
+
+                show_base = True
+                if qty == 0:
+                    # If unowned, only show if it matches the requested view language (e.g. don't show EN row if viewing DE, unless API returns EN sets for DE?)
+                    # The API usually returns the set list for the card. If card is EN, sets are EN.
+                    # So we show the base row if unowned.
+                    pass
+
+                if show_base:
+                    rows.append(CollectorRow(
+                        api_card=card,
+                        set_code=cset.set_code,
+                        set_name=cset.set_name,
+                        rarity=cset.set_rarity,
+                        price=price,
+                        image_url=row_img_url,
+                        owned_count=qty,
+                        is_owned=qty > 0,
+                        language=base_lang, # Derived or defaulted
+                        image_id=cset.image_id
+                    ))
+
+                # Yield Variant Rows (Owned non-base)
+                for (gl, gcode), gcards in matched_groups.items():
+                    if gcode == cset.set_code: continue # Already handled in base row (if logic above didn't catch it)
+
+                    g_qty = sum(c.quantity for c in gcards)
+                    rows.append(CollectorRow(
+                        api_card=card,
+                        set_code=gcode,
+                        set_name=cset.set_name, # Inherit Name
+                        rarity=cset.set_rarity, # Inherit Rarity
+                        price=price,            # Inherit Price (User asked for set price)
+                        image_url=row_img_url,  # Inherit Image (or local?)
+                        owned_count=g_qty,
+                        is_owned=True,
+                        language=gl,
+                        image_id=cset.image_id
+                    ))
 
             # Handle cards that didn't match any set (Custom sets, mismatches, etc.)
             for c in owned_list:
                 if c.id not in matched_card_ids:
-                    # Filter by language for this view
-                    if c.metadata.language.upper() != lang_upper: continue
+                    # Always show unmatched owned cards regardless of language setting,
+                    # as per "missing owned cards" requirement.
 
-                    # Create a row for this unmatched card
                     rows.append(CollectorRow(
                         api_card=card,
                         set_code=c.metadata.set_code,
@@ -135,15 +241,20 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
                         image_url=c.image_url or img_url,
                         owned_count=c.quantity,
                         is_owned=True,
-                        language=lang_upper,
+                        language=c.metadata.language.upper(),
                         image_id=c.metadata.image_id
                     ))
         else:
-            qty = 0
+            # No sets in API (e.g. minimal card data)
+            # Group owned by language
+            groups = {}
             for c in owned_list:
-                if c.metadata.language.upper() == lang_upper:
-                     qty += c.quantity
+                l = c.metadata.language.upper()
+                groups[l] = groups.get(l, 0) + c.quantity
 
+            # Base Row (Default Lang)
+            # If default lang is owned, use it.
+            default_qty = groups.get(lang_upper, 0)
             rows.append(CollectorRow(
                 api_card=card,
                 set_code="N/A",
@@ -151,11 +262,28 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
                 rarity="Common",
                 price=0.0,
                 image_url=img_url,
-                owned_count=qty,
-                is_owned=qty > 0,
+                owned_count=default_qty,
+                is_owned=default_qty > 0,
                 language=lang_upper,
                 image_id=default_image_id
             ))
+
+            # Other languages
+            for l, q in groups.items():
+                if l == lang_upper: continue
+                rows.append(CollectorRow(
+                    api_card=card,
+                    set_code="N/A",
+                    set_name="No Set Info",
+                    rarity="Common",
+                    price=0.0,
+                    image_url=img_url,
+                    owned_count=q,
+                    is_owned=True,
+                    language=l,
+                    image_id=default_image_id
+                ))
+
     return rows
 
 class CollectionPage:
@@ -629,7 +757,7 @@ class CollectionPage:
         except Exception as e:
             ui.notify(f"Error saving: {e}", type='negative')
 
-    def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, image_url: str = None, image_id: int = None):
+    def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, image_url: str = None, image_id: int = None, set_price: float = 0.0):
         if self.state['view_scope'] == 'consolidated':
             # Derive ownership data from current collection
             owned_breakdown = {}
@@ -645,7 +773,7 @@ class CollectionPage:
             return
 
         if self.state['view_scope'] == 'collectors':
-             self.render_collectors_single_view(card, quantity, initial_set, rarity, set_name, language, image_url, image_id)
+             self.render_collectors_single_view(card, quantity, initial_set, rarity, set_name, language, image_url, image_id, set_price)
              return
 
         self.open_single_view_legacy(card, is_owned, quantity, initial_set, owned_languages)
@@ -708,7 +836,8 @@ class CollectionPage:
                                 stat('ATK', card.atk)
 
                                 if 'Link' not in card.type:
-                                    val = getattr(card, 'def_', None)
+                                    # Use direct access to aliased field
+                                    val = card.def_
                                     stat('DEF', val if val is not None else '-')
                             else:
                                 stat('Property', card.race)
@@ -735,7 +864,7 @@ class CollectionPage:
             print(f"ERROR in render_consolidated_single_view: {e}")
             traceback.print_exc()
 
-    def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str, image_url: str = None, image_id: int = None):
+    def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str, image_url: str = None, image_id: int = None, set_price: float = 0.0):
         try:
             # Set default image_id if not provided
             if image_id is None:
@@ -808,6 +937,7 @@ class CollectionPage:
                         prices = card.card_prices[0] if card.card_prices else None
 
                         with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
+                            stat('Set Price', f"${set_price:.2f}" if set_price else "-", 'purple-400')
                             if prices:
                                 if prices.tcgplayer_price: stat('TCGPlayer', f"${prices.tcgplayer_price}", 'green-400')
                                 if prices.cardmarket_price: stat('CardMarket', f"€{prices.cardmarket_price}", 'blue-400')
@@ -1051,7 +1181,7 @@ class CollectionPage:
                     img_src = f"/images/{img_id}.jpg"
 
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
-                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url, image_id=c.image_id)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url, image_id=c.image_id, set_price=c.price)):
                     ui.image(img_src).classes('h-12 w-8 object-cover')
                     ui.label(item.api_card.name).classes('truncate text-sm font-bold')
                     with ui.column().classes('gap-0'):
@@ -1077,7 +1207,7 @@ class CollectionPage:
                     img_src = f"/images/{img_id}.jpg"
 
                 with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
-                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url, image_id=c.image_id)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url, image_id=c.image_id, set_price=c.price)):
 
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if img_src: ui.image(img_src).classes('w-full h-full object-cover')
