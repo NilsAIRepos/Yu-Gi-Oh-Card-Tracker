@@ -66,6 +66,7 @@ class ApiCard(BaseModel):
     type: str
     frameType: str
     desc: str
+    typeline: Optional[List[str]] = None
     race: Optional[str] = None
     atk: Optional[int] = None
     def_: Optional[int] = Field(None, alias="def")
@@ -78,3 +79,38 @@ class ApiCard(BaseModel):
     card_images: List[ApiCardImage] = []
     card_sets: List[ApiCardSet] = []
     card_prices: List[ApiCardPrice] = []
+
+    def matches_category(self, category: str) -> bool:
+        """
+        Checks if the card belongs to the specified monster category (e.g., 'Normal', 'Effect', 'Synchro').
+        Handles special logic for 'Normal' vs 'Effect' distinction for Extra Deck monsters.
+        """
+        # Use typeline if available
+        if self.typeline is not None:
+            if category == "Effect":
+                return "Effect" in self.typeline
+            elif category == "Normal":
+                if "Normal" in self.typeline:
+                    return True
+                # Check for Non-Effect Extra Deck / Ritual
+                # Synchro/Fusion/XYZ/Link/Ritual without "Effect" in typeline are "Normal" (Non-Effect).
+                is_extra_or_ritual = any(t in self.type for t in ["Synchro", "Fusion", "XYZ", "Link", "Ritual"])
+                if is_extra_or_ritual and "Effect" not in self.typeline:
+                    return True
+                return False
+            else:
+                return category in self.type or category in self.typeline
+
+        # Fallback Legacy Logic
+        card_type = self.type
+        if category == "Effect":
+            # Special logic for Effect:
+            # 1. Explicitly in type string
+            if "Effect" in card_type: return True
+            # 2. Implied by Extra Deck / Ritual / Pendulum types (unless Normal is present)
+            implied_types = ["Synchro", "Fusion", "XYZ", "Link", "Ritual", "Pendulum"]
+            if any(t in card_type for t in implied_types) and "Normal" not in card_type:
+                return True
+            return False
+        else:
+            return category in card_type

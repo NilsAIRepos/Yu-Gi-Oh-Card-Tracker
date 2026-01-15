@@ -601,21 +601,8 @@ class CollectionPage:
         if self.state['filter_monster_category']:
              categories = self.state['filter_monster_category']
              if isinstance(categories, list) and categories:
-                 def check_category(card_type: str, category: str) -> bool:
-                     if category == "Effect":
-                         # Special logic for Effect:
-                         # 1. Explicitly in type string
-                         if "Effect" in card_type: return True
-                         # 2. Implied by Extra Deck / Ritual / Pendulum types (unless Normal is present)
-                         implied_types = ["Synchro", "Fusion", "XYZ", "Link", "Ritual", "Pendulum"]
-                         if any(t in card_type for t in implied_types) and "Normal" not in card_type:
-                             return True
-                         return False
-                     else:
-                         return category in card_type
-
                  # Check if ALL selected categories match
-                 res = [c for c in res if all(check_category(c.api_card.type, cat) for cat in categories)]
+                 res = [c for c in res if all(c.api_card.matches_category(cat) for cat in categories)]
 
         if self.state['filter_level']:
              res = [c for c in res if c.api_card.level == int(self.state['filter_level'])]
