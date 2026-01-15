@@ -8,6 +8,7 @@ import uuid
 class CardMetadata(BaseModel):
     set_code: str = Field(..., description="e.g., LOB-EN001")
     rarity: str = Field(..., description="e.g., Ultra Rare, Common")
+    image_id: Optional[int] = Field(None, description="Specific image ID for art variation")
     language: str = Field("EN", description="Language code, e.g. EN, DE, FR")
     condition: Literal["Mint", "Near Mint", "Played", "Damaged"] = "Near Mint"
     first_edition: bool = False

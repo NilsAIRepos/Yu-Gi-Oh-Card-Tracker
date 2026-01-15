@@ -10,11 +10,14 @@
       "metadata": {
         "set_code": "LOB-001",
         "rarity": "Ultra Rare",
+        "image_id": null,
+        "language": "EN",
         "condition": "Near Mint",
         "first_edition": true,
         "storage_location": "Binder 1, Page 1",
         "purchase_price": 50.0,
-        "market_value": 120.0
+        "market_value": 120.0,
+        "purchase_date": null
       }
     },
     {
@@ -25,14 +28,17 @@
       "metadata": {
         "set_code": "SDY-006",
         "rarity": "Super Rare",
+        "image_id": null,
+        "language": "EN",
         "condition": "Played",
         "first_edition": false,
         "storage_location": "Binder 1, Page 1",
         "purchase_price": 5.0,
-        "market_value": 15.0
+        "market_value": 15.0,
+        "purchase_date": null
       }
     },
-     {
+    {
       "id": "c3",
       "name": "Ash Blossom & Joyous Spring",
       "quantity": 2,
@@ -40,11 +46,14 @@
       "metadata": {
         "set_code": "MACR-EN036",
         "rarity": "Secret Rare",
+        "image_id": null,
+        "language": "EN",
         "condition": "Mint",
         "first_edition": true,
         "storage_location": "Deck Box Red",
         "purchase_price": 20.0,
-        "market_value": 25.0
+        "market_value": 25.0,
+        "purchase_date": null
       }
     },
     {
@@ -55,12 +64,32 @@
       "metadata": {
         "set_code": "SDY-DE006",
         "rarity": "Super Rare",
+        "image_id": null,
         "language": "DE",
         "condition": "Near Mint",
         "first_edition": true,
         "storage_location": "Binder 1, Page 2",
         "purchase_price": 10.0,
-        "market_value": 20.0
+        "market_value": 20.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "749ad04c-b3f4-4487-ad4e-79d26594fca7",
+      "name": "\"A Case for K9\"",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards_small/80181649.jpg",
+      "metadata": {
+        "set_code": "JUSH-EN040",
+        "rarity": "Starlight Rare",
+        "image_id": 80181649,
+        "language": "EN",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
       }
     }
   ]
