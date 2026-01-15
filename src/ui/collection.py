@@ -4,6 +4,7 @@ from src.core.models import Collection, Card, CardMetadata
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
+from src.core.utils import transform_set_code
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set
 import asyncio
@@ -105,8 +106,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
 
                     if not is_set_match: continue
 
-                    # Match Rarity (strict? user might have different rarity mapping? let's strict for now)
-                    if c.metadata.rarity != cset.set_rarity: continue
+                    # Match Rarity (Relaxed: We prioritize Set Code match. Rarity mismatch shouldn't hide the set info)
+                    # if c.metadata.rarity != cset.set_rarity: continue
 
                     # Match Image ID (if specified in set)
                     if cset.image_id:
@@ -981,9 +982,11 @@ class CollectionPage:
                                     ui.space()
 
                                     async def on_update():
+                                        # Ensure set code matches language logic (even for existing rows, to correct them if saved again)
+                                        final_set_code = transform_set_code(set_code, language)
                                         await self.save_card_change(
                                             card,
-                                            set_code,
+                                            final_set_code,
                                             rarity,
                                             language,
                                             int(current_qty['value']),
@@ -1046,9 +1049,10 @@ class CollectionPage:
                         ui.number('Quantity', min=0).bind_value(edit_state, 'quantity').classes('w-full')
 
                     async def on_legacy_update():
+                        final_set_code = transform_set_code(edit_state['set'], edit_state['language'])
                         await self.save_card_change(
                             card,
-                            edit_state['set'],
+                            final_set_code,
                             edit_state['rarity'],
                             edit_state['language'],
                             int(edit_state['quantity'])

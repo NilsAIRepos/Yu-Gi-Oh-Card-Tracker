@@ -91,6 +91,150 @@
         "market_value": 0.0,
         "purchase_date": null
       }
+    },
+    {
+      "id": "7786916e-51e8-4027-a3a7-45a78242ee22",
+      "name": "Dark Magician",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/46986414.jpg",
+      "metadata": {
+        "set_code": "SDY-006",
+        "rarity": "Super Rare",
+        "image_id": 46986414,
+        "language": "DE",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "34dff455-b127-4fde-a214-a89c11cc0380",
+      "name": "Dark Magician",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/46986414.jpg",
+      "metadata": {
+        "set_code": "SDY-006",
+        "rarity": "Super Rare",
+        "image_id": 46986414,
+        "language": "IT",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "e7ac76a5-069d-40cb-8f07-4872073bfcae",
+      "name": "Dark Magician",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/46986414.jpg",
+      "metadata": {
+        "set_code": "SDY-006",
+        "rarity": "Super Rare",
+        "image_id": 46986414,
+        "language": "ES",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "d693404c-ad95-4203-9d7f-0120934d5eb4",
+      "name": "Dark Magician",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/46986414.jpg",
+      "metadata": {
+        "set_code": "SDY-006",
+        "rarity": "Super Rare",
+        "image_id": 46986414,
+        "language": "FR",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "e6a6b6c7-c286-487b-8521-d6e51ddd13c2",
+      "name": "Ash Blossom & Joyous Spring",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/14558127.jpg",
+      "metadata": {
+        "set_code": "MACR-DE036",
+        "rarity": "Secret Rare",
+        "image_id": 14558127,
+        "language": "DE",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "62afecf6-866f-41e5-8426-be922b759254",
+      "name": "Ash Blossom & Joyous Spring",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/14558127.jpg",
+      "metadata": {
+        "set_code": "MACR-IT036",
+        "rarity": "Secret Rare",
+        "image_id": 14558127,
+        "language": "IT",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "b1693ef2-0a56-4943-8162-7b99cffc5dc0",
+      "name": "Ash Blossom & Joyous Spring",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/14558127.jpg",
+      "metadata": {
+        "set_code": "MACR-ES036",
+        "rarity": "Secret Rare",
+        "image_id": 14558127,
+        "language": "ES",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
+    },
+    {
+      "id": "3f9557bd-68c9-40eb-ba1d-be1c2f87cdce",
+      "name": "Ash Blossom & Joyous Spring",
+      "quantity": 1,
+      "image_url": "https://images.ygoprodeck.com/images/cards/14558127.jpg",
+      "metadata": {
+        "set_code": "MACR-FR036",
+        "rarity": "Secret Rare",
+        "image_id": 14558127,
+        "language": "FR",
+        "condition": "Near Mint",
+        "first_edition": false,
+        "storage_location": null,
+        "purchase_price": 0.0,
+        "market_value": 0.0,
+        "purchase_date": null
+      }
     }
   ]
 }
