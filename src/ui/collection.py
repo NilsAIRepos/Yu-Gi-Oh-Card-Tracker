@@ -7,6 +7,7 @@ from src.core.config import config_manager
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set
 import asyncio
+import traceback
 
 @dataclass
 class CardViewModel:
@@ -40,7 +41,7 @@ def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[str, Li
         prices = []
         if card.card_prices:
             p = card.card_prices[0]
-            for val in [p.cardmarket_price, p.tcgplayer_price, p.ebay_price, p.amazon_price]:
+            for val in [p.cardmarket_price, p.tcgplayer_price, p.ebay_price, p.amazon_price, p.coolstuffinc_price]:
                  if val:
                      try:
                          prices.append(float(val))
@@ -537,149 +538,174 @@ class CollectionPage:
         self.open_single_view_legacy(card, is_owned, quantity, initial_set, owned_languages)
 
     def render_consolidated_single_view(self, card: ApiCard, total_owned: int, owned_breakdown: Dict[str, int]):
-        with ui.dialog().props('maximized') as d, ui.card().classes('w-full h-full p-0 flex flex-row overflow-hidden'):
-            ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
+        try:
+            with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
+                d.open()
+                ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
 
-            # Left: Image
-            with ui.column().classes('w-1/3 h-full bg-black items-center justify-center p-8'):
-                img_url = card.card_images[0].image_url if card.card_images else None
-                if image_manager.image_exists(card.id):
-                     img_url = f"/images/{card.id}.jpg"
+                with ui.row().classes('w-full h-full no-wrap gap-0'):
+                    # Left: Image
+                    with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
+                        img_url = card.card_images[0].image_url if card.card_images else None
+                        if image_manager.image_exists(card.id):
+                            img_url = f"/images/{card.id}.jpg"
 
-                if img_url:
-                    ui.image(img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
+                        if img_url:
+                            ui.image(img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
 
-            # Right: Info
-            with ui.column().classes('w-2/3 h-full bg-gray-900 text-white p-8 scroll-y-auto'):
-                # Header
-                with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(card.name).classes('text-4xl font-bold text-white')
-                    if total_owned > 0:
-                        ui.badge(f"Total Owned: {total_owned}", color='accent').classes('text-lg')
+                    # Right: Info
+                    with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
+                        # Header
+                        with ui.row().classes('w-full items-center justify-between'):
+                            # Ensure title is selectable
+                            ui.label(card.name).classes('text-4xl font-bold text-white select-text')
+                        if total_owned > 0:
+                            ui.badge(f"Total Owned: {total_owned}", color='accent').classes('text-lg')
 
-                ui.separator().classes('q-my-md bg-gray-700')
+                        ui.separator().classes('q-my-md bg-gray-700')
 
-                # Card Stats Grid
-                with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
-                     def stat(label, value):
-                         with ui.column():
-                             ui.label(label).classes('text-grey text-sm uppercase')
-                             ui.label(str(value)).classes('font-bold')
+                        # Card Stats Grid
+                        with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
+                            def stat(label, value):
+                                with ui.column():
+                                    ui.label(label).classes('text-grey text-sm uppercase select-none')
+                                    # Ensure values are selectable
+                                    ui.label(str(value) if value is not None else '-').classes('font-bold select-text')
 
-                     stat('Type', card.type)
+                            stat('Card Type', card.type)
 
-                     if 'Monster' in card.type:
-                         stat('Attribute', card.attribute)
-                         stat('Race', card.race)
-                         stat('Archetype', card.archetype or '-')
-                         stat('Level/Rank', card.level)
-                         stat('ATK', card.atk)
-                         if getattr(card, 'def_', None) is not None:
-                             stat('DEF', getattr(card, 'def_', '-'))
-                     else:
-                         stat('Property', card.race)
-                         stat('Archetype', card.archetype or '-')
+                            if 'Monster' in card.type:
+                                stat('Attribute', card.attribute)
+                                stat('Race', card.race)
+                                stat('Archetype', card.archetype or '-')
 
-                ui.separator().classes('q-my-md')
+                                if 'Link' in card.type:
+                                    stat('Link Rating', card.linkval)
+                                    if card.linkmarkers:
+                                        stat('Link Markers', ', '.join(card.linkmarkers))
+                                else:
+                                    stat('Level/Rank', card.level)
 
-                # Effect
-                ui.label('Effect').classes('text-h6 q-mb-sm')
-                ui.markdown(card.desc).classes('text-grey-3 leading-relaxed text-lg')
+                                if 'Pendulum' in card.type:
+                                    stat('Scale', card.scale)
 
-                ui.separator().classes('q-my-md')
+                                stat('ATK', card.atk)
 
-                # Owned Breakdown
-                if owned_breakdown:
-                    ui.label('Collection Status').classes('text-h6 q-mb-sm')
-                    with ui.row().classes('gap-2'):
-                        for lang, count in owned_breakdown.items():
-                             ui.chip(f"{lang}: {count}", icon='layers').props('color=secondary text-color=white')
-                else:
-                    ui.label('Not in collection').classes('text-grey italic')
+                                if 'Link' not in card.type:
+                                    val = getattr(card, 'def_', None)
+                                    stat('DEF', val if val is not None else '-')
+                            else:
+                                stat('Property', card.race)
+                                stat('Archetype', card.archetype or '-')
 
-            d.open()
+                        ui.separator().classes('q-my-md')
+
+                        # Effect
+                        ui.label('Effect').classes('text-h6 q-mb-sm select-none')
+                        # Markdown is usually selectable, adding class to be sure
+                        ui.markdown(card.desc).classes('text-grey-3 leading-relaxed text-lg select-text')
+
+                        ui.separator().classes('q-my-md')
+
+                        # Owned Breakdown
+                        if owned_breakdown:
+                            ui.label('Collection Status').classes('text-h6 q-mb-sm select-none')
+                            with ui.row().classes('gap-2'):
+                                for lang, count in owned_breakdown.items():
+                                    ui.chip(f"{lang}: {count}", icon='layers').props('color=secondary text-color=white')
+                        else:
+                            ui.label('Not in collection').classes('text-grey italic')
+        except Exception as e:
+            print(f"ERROR in render_consolidated_single_view: {e}")
+            traceback.print_exc()
 
     def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str, image_url: str = None):
-         with ui.dialog().props('maximized') as d, ui.card().classes('w-full h-full p-0 flex flex-row overflow-hidden'):
-            ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
+        try:
+            with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
+                d.open()
+                ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
 
-            # Left: Image
-            with ui.column().classes('w-1/3 h-full bg-black items-center justify-center p-8'):
-                final_img_url = image_url
-                if not final_img_url:
-                    final_img_url = card.card_images[0].image_url if card.card_images else None
-                    if image_manager.image_exists(card.id):
-                         final_img_url = f"/images/{card.id}.jpg"
+                with ui.row().classes('w-full h-full no-wrap gap-0'):
+                    # Left: Image
+                    with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
+                        final_img_url = image_url
+                        if not final_img_url:
+                            final_img_url = card.card_images[0].image_url if card.card_images else None
+                            if image_manager.image_exists(card.id):
+                                final_img_url = f"/images/{card.id}.jpg"
 
-                if final_img_url:
-                    ui.image(final_img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
+                        if final_img_url:
+                            ui.image(final_img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
 
-            # Right: Info
-            with ui.column().classes('w-2/3 h-full bg-gray-900 text-white p-8 scroll-y-auto'):
-                # Header
-                with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(card.name).classes('text-h3 font-bold text-white')
-                    if owned_count > 0:
-                        ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
+                    # Right: Info
+                    with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
+                        # Helper for stats
+                        def stat(label, value, color=None):
+                            with ui.column():
+                                ui.label(label).classes('text-grey text-sm uppercase select-none')
+                                classes = 'font-bold select-text'
+                                if color: classes += f' text-{color}'
+                                ui.label(str(value) if value is not None else '-').classes(classes)
 
-                ui.separator().classes('q-my-md bg-gray-700')
+                        # Header
+                        with ui.row().classes('w-full items-center justify-between'):
+                            ui.label(card.name).classes('text-h3 font-bold text-white select-text')
+                        if owned_count > 0:
+                            ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
 
-                # Set Info
-                ui.label('Set Information').classes('text-h6 q-mb-sm')
-                with ui.grid(columns=4).classes('w-full gap-4 text-lg items-end'):
-                     def stat(label, value, color=None):
-                         with ui.column():
-                             ui.label(label).classes('text-grey text-sm uppercase')
-                             classes = 'font-bold'
-                             if color: classes += f' text-{color}'
-                             ui.label(str(value)).classes(classes)
+                        ui.separator().classes('q-my-md bg-gray-700')
 
-                     stat('Set Name', set_name or 'N/A')
-                     stat('Set Code', set_code or 'N/A', 'yellow-500')
-                     stat('Rarity', rarity or 'Common')
-                     stat('Archetype', card.archetype or '-')
+                        # Set Info
+                        ui.label('Set Information').classes('text-h6 q-mb-sm select-none')
+                        with ui.grid(columns=4).classes('w-full gap-4 text-lg items-end'):
+                            stat('Set Name', set_name or 'N/A')
+                            stat('Set Code', set_code or 'N/A', 'yellow-500')
+                            stat('Rarity', rarity or 'Common')
+                            stat('Archetype', card.archetype or '-')
 
-                ui.separator().classes('q-my-md')
+                        ui.separator().classes('q-my-md')
 
-                # Prices
-                ui.label('Market Prices').classes('text-h6 q-mb-sm')
-                prices = card.card_prices[0] if card.card_prices else None
+                        # Prices
+                        ui.label('Market Prices').classes('text-h6 q-mb-sm select-none')
+                        prices = card.card_prices[0] if card.card_prices else None
 
-                with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
-                     if prices:
-                         if prices.tcgplayer_price: stat('TCGPlayer', f"${prices.tcgplayer_price}", 'green-400')
-                         if prices.cardmarket_price: stat('CardMarket', f"€{prices.cardmarket_price}", 'blue-400')
-                     else:
-                         ui.label('No price data available').classes('text-grey italic')
+                        with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
+                            if prices:
+                                if prices.tcgplayer_price: stat('TCGPlayer', f"${prices.tcgplayer_price}", 'green-400')
+                                if prices.cardmarket_price: stat('CardMarket', f"€{prices.cardmarket_price}", 'blue-400')
+                                if prices.coolstuffinc_price: stat('CoolStuffInc', f"${prices.coolstuffinc_price}", 'orange-400')
+                            else:
+                                ui.label('No price data available').classes('text-grey italic select-none')
 
-                ui.separator().classes('q-my-md')
+                        ui.separator().classes('q-my-md')
 
-                # Chart (Placeholder)
-                ui.label('Price History (Last 6 Months)').classes('text-h6 q-mb-sm')
-                ui.echart({
-                    'tooltip': {'trigger': 'axis'},
-                    'xAxis': {'type': 'category', 'data': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']},
-                    'yAxis': {'type': 'value', 'axisLabel': {'formatter': '${value}'}},
-                    'series': [{
-                        'data': [1.20, 1.35, 1.10, 1.45, 1.60, 1.55],
-                        'type': 'line',
-                        'smooth': True,
-                        'areaStyle': {'opacity': 0.5},
-                        'itemStyle': {'color': '#4ade80'}
-                    }]
-                }).classes('w-full h-64')
+                        # Chart (Placeholder)
+                        ui.label('Price History (Last 6 Months)').classes('text-h6 q-mb-sm select-none')
+                        ui.echart({
+                            'tooltip': {'trigger': 'axis'},
+                            'xAxis': {'type': 'category', 'data': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']},
+                            'yAxis': {'type': 'value', 'axisLabel': {'formatter': '${value}'}},
+                            'series': [{
+                                'data': [1.20, 1.35, 1.10, 1.45, 1.60, 1.55],
+                                'type': 'line',
+                                'smooth': True,
+                                'areaStyle': {'opacity': 0.5},
+                                'itemStyle': {'color': '#4ade80'}
+                            }]
+                        }).classes('w-full h-64')
 
-                # Manage (Edit) Section
-                ui.separator().classes('q-my-md')
-                with ui.expansion().classes('w-full bg-gray-800 rounded').props('icon=edit label="Manage Inventory"'):
-                    with ui.card().classes('w-full bg-transparent p-4'):
-                        with ui.row().classes('items-center gap-4'):
-                            qty_input = ui.number('Quantity', min=0, value=owned_count).classes('w-32')
-                            ui.button('Update', on_click=lambda: [self.save_card_change(card, set_code, rarity, language, int(qty_input.value)), d.close()]).props('color=secondary')
+                        # Manage (Edit) Section
+                        ui.separator().classes('q-my-md')
+                        with ui.expansion().classes('w-full bg-gray-800 rounded').props('icon=edit label="Manage Inventory"'):
+                            with ui.card().classes('w-full bg-transparent p-4'):
+                                with ui.row().classes('items-center gap-4'):
+                                    qty_input = ui.number('Quantity', min=0, value=owned_count).classes('w-32')
+                                    ui.button('Update', on_click=lambda: [self.save_card_change(card, set_code, rarity, language, int(qty_input.value)), d.close()]).props('color=secondary')
 
-                        ui.label('Note: Edit quantity here updates this specific card variant.').classes('text-xs text-grey')
-
-            d.open()
+                                ui.label('Note: Edit quantity here updates this specific card variant.').classes('text-xs text-grey select-none')
+        except Exception as e:
+            print(f"ERROR in render_collectors_single_view: {e}")
+            traceback.print_exc()
 
     def open_single_view_legacy(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None):
         set_opts = [s.set_code for s in card.card_sets] if card.card_sets else ["N/A"]

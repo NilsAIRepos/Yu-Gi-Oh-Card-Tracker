@@ -69,6 +69,9 @@ class ApiCard(BaseModel):
     atk: Optional[int] = None
     def_: Optional[int] = Field(None, alias="def")
     level: Optional[int] = None
+    scale: Optional[int] = None
+    linkval: Optional[int] = None
+    linkmarkers: Optional[List[str]] = None
     attribute: Optional[str] = None
     archetype: Optional[str] = None
     card_images: List[ApiCardImage] = []
