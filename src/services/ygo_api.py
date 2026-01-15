@@ -206,56 +206,73 @@ class YugiohService:
 
     async def fetch_artwork_mappings(self, progress_callback: Optional[Callable[[float], None]] = None, language: str = "en"):
         """
-        Iterates over cards with multiple images and fetches specific image IDs for their sets.
+        Iterates over cards with multiple images and fetches specific image IDs by querying the card ID endpoint.
         This allows mapping specific set codes to specific artworks.
         """
         cards = await self.load_card_database(language)
 
-        # Identify candidates: Cards with >1 images and sets that don't have image_id mapped
-        candidates = []
-        for card in cards:
-            if len(card.card_images) > 1 and card.card_sets:
-                # Check if any set is missing image_id
-                if any(s.image_id is None for s in card.card_sets):
-                    candidates.append(card)
-
+        # Identify candidates: Cards with >1 images
+        candidates = [c for c in cards if c.card_images and len(c.card_images) > 1 and c.card_sets]
         total = len(candidates)
         if total == 0:
             return 0
 
-        processed = 0
-        SET_INFO_URL = "https://db.ygoprodeck.com/api/v7/cardsetsinfo.php"
-
         print(f"Found {total} cards with multiple artworks needing mapping.")
 
-        for card in candidates:
-            # For each set in the card
-            for cset in card.card_sets:
-                if cset.image_id is not None:
-                    continue
+        # Limit concurrency (20 req/1s max, so 10 concurrent with small delays is safe)
+        sem = asyncio.Semaphore(10)
+        processed_count = 0
 
-                # Fetch info for this set
-                try:
-                    # Rate limit (0.1s delay)
-                    await asyncio.sleep(0.1)
+        async def process_card(card):
+            nonlocal processed_count
 
-                    response = await run.io_bound(requests.get, SET_INFO_URL, params={"setcode": cset.set_code})
-                    if response.status_code == 200:
-                        data = response.json()
-                        # data is dict like {"id": 1234, ...}
-                        if "id" in data:
-                            cset.image_id = int(data["id"])
-                except Exception as e:
-                    print(f"Error fetching set info for {cset.set_code}: {e}")
+            # For cards with multiple images, we want to find which set uses which image.
+            # We query the API for each specific image ID (which is treated as a card ID by the API).
+            for img in card.card_images:
+                async with sem:
+                    try:
+                        # Rate limit: Wait a bit to ensure we don't burst too hard
+                        await asyncio.sleep(0.05)
 
-            processed += 1
+                        url = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
+                        # Querying by ID returns the specific view of the card for that artwork/ID
+                        response = await run.io_bound(requests.get, url, params={"id": img.id})
+
+                        if response.status_code == 200:
+                            data = response.json()
+                            if "data" in data and data["data"]:
+                                card_data = data["data"][0]
+                                returned_sets = card_data.get("card_sets", [])
+                                returned_codes = set(s["set_code"] for s in returned_sets)
+
+                                # Update matching sets in our local object
+                                for cset in card.card_sets:
+                                    if cset.set_code in returned_codes:
+                                        cset.image_id = img.id
+
+                    except Exception as e:
+                        print(f"Error mapping artwork for {card.name} ({img.id}): {e}")
+
+            processed_count += 1
             if progress_callback:
-                progress_callback(processed / total)
+                progress_callback(processed_count / total)
+
+        # Process in chunks to avoid creating too many tasks at once
+        chunk_size = 20
+        for i in range(0, total, chunk_size):
+            chunk = candidates[i:i + chunk_size]
+            await asyncio.gather(*[process_card(c) for c in chunk])
 
         # Save back to disk
         try:
-             # Convert Pydantic models to dicts
-             raw_data = [c.dict() for c in cards]
+             # Use model_dump if available (Pydantic v2), else dict
+             # And ensure aliases (like 'def') are used
+             if hasattr(cards[0], 'model_dump'):
+                 raw_data = [c.model_dump(mode='json', by_alias=True) for c in cards]
+             else:
+                 # Fallback for older Pydantic
+                 raw_data = [c.dict(by_alias=True) for c in cards]
+
              await run.io_bound(self._save_db_file, raw_data, language)
         except Exception as e:
             print(f"Error saving updated database: {e}")
