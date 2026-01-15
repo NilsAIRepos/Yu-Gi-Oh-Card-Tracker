@@ -28,6 +28,7 @@ class CollectorRow:
     owned_count: int
     is_owned: bool
     language: str
+    image_id: Optional[int] = None
 
 def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[str, List[Card]]) -> List[CardViewModel]:
     vms = []
@@ -62,13 +63,29 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
         owned_list = owned_details.get(card.name.lower(), [])
 
         img_url = card.card_images[0].image_url_small if card.card_images else None
+        default_image_id = card.card_images[0].id if card.card_images else None
 
         if card.card_sets:
             for cset in card.card_sets:
                 qty = 0
                 for c in owned_list:
-                    if c.metadata.set_code == cset.set_code and c.metadata.language.upper() == lang_upper:
-                        qty += c.quantity
+                    # Match Set Code
+                    if c.metadata.set_code != cset.set_code: continue
+                    # Match Language
+                    if c.metadata.language.upper() != lang_upper: continue
+                    # Match Rarity
+                    if c.metadata.rarity != cset.set_rarity: continue
+
+                    # Match Image ID
+                    # If cset has a specific image_id, we expect strict match
+                    if cset.image_id:
+                        if c.metadata.image_id == cset.image_id:
+                            qty += c.quantity
+                    else:
+                        # If cset has no image_id, it implies the default image
+                        # We count it if it's explicitly the default ID OR None
+                        if c.metadata.image_id is None or c.metadata.image_id == default_image_id:
+                            qty += c.quantity
 
                 price = 0.0
                 if cset.set_price:
@@ -92,7 +109,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
                     image_url=row_img_url,
                     owned_count=qty,
                     is_owned=qty > 0,
-                    language=lang_upper
+                    language=lang_upper,
+                    image_id=cset.image_id
                 ))
         else:
             qty = 0
@@ -109,7 +127,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
                 image_url=img_url,
                 owned_count=qty,
                 is_owned=qty > 0,
-                language=lang_upper
+                language=lang_upper,
+                image_id=default_image_id
             ))
     return rows
 
@@ -478,31 +497,58 @@ class CollectionPage:
         else:
             self.apply_filters()
 
-    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity):
+    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, image_id: Optional[int] = None):
         if not self.state['current_collection']:
             ui.notify('No collection selected.', type='negative')
             return
 
         col = self.state['current_collection']
         target = None
+
+        # If image_id is not provided, default to the first image id
+        if image_id is None and api_card.card_images:
+            image_id = api_card.card_images[0].id
+
         for c in col.cards:
-            if c.name == api_card.name and c.metadata.set_code == set_code and c.metadata.language == language and c.metadata.rarity == rarity:
+            # Match on Name, Set, Rarity, Language, AND Image ID
+            c_img_id = c.metadata.image_id
+            if c_img_id is None and api_card.card_images:
+                c_img_id = api_card.card_images[0].id
+
+            if (c.name == api_card.name and
+                c.metadata.set_code == set_code and
+                c.metadata.language == language and
+                c.metadata.rarity == rarity and
+                c_img_id == image_id):
                 target = c
                 break
 
         if quantity > 0:
             if target:
                 target.quantity = quantity
+                # Update image_id in case it was None and we matched it
+                target.metadata.image_id = image_id
             else:
+                # Find image URL for this ID
+                img_url = None
+                if api_card.card_images:
+                    for img in api_card.card_images:
+                        if img.id == image_id:
+                            img_url = img.image_url_small
+                            break
+                    if not img_url:
+                        img_url = api_card.card_images[0].image_url_small
+
                 new_card = Card(
                     name=api_card.name,
                     quantity=quantity,
-                    image_url=api_card.card_images[0].image_url_small if api_card.card_images else None,
+                    image_url=img_url,
                     metadata=CardMetadata(
                         set_code=set_code,
                         rarity=rarity,
                         language=language,
-                        market_value=0.0
+                        market_value=0.0,
+                        image_id=image_id
                     )
                 )
                 col.cards.append(new_card)
@@ -511,13 +557,13 @@ class CollectionPage:
                 col.cards.remove(target)
 
         try:
-            await run.io_bound(persistence.save_collection, self.state['selected_file'], col)
+            await run.io_bound(persistence.save_collection, col, self.state['selected_file'])
             ui.notify('Collection saved.', type='positive')
             await self.load_data()
         except Exception as e:
             ui.notify(f"Error saving: {e}", type='negative')
 
-    def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, image_url: str = None):
+    def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, image_url: str = None, image_id: int = None):
         if self.state['view_scope'] == 'consolidated':
             # Derive ownership data from current collection
             owned_breakdown = {}
@@ -533,7 +579,7 @@ class CollectionPage:
             return
 
         if self.state['view_scope'] == 'collectors':
-             self.render_collectors_single_view(card, quantity, initial_set, rarity, set_name, language, image_url)
+             self.render_collectors_single_view(card, quantity, initial_set, rarity, set_name, language, image_url, image_id)
              return
 
         self.open_single_view_legacy(card, is_owned, quantity, initial_set, owned_languages)
@@ -620,8 +666,16 @@ class CollectionPage:
             print(f"ERROR in render_consolidated_single_view: {e}")
             traceback.print_exc()
 
-    def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str, image_url: str = None):
+    def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str, image_url: str = None, image_id: int = None):
         try:
+            # Set default image_id if not provided
+            if image_id is None:
+                image_id = card.card_images[0].id if card.card_images else None
+
+            # State
+            current_image_id = {'value': image_id}
+            current_qty = {'value': owned_count}
+
             with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
                 d.open()
                 ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
@@ -629,14 +683,25 @@ class CollectionPage:
                 with ui.row().classes('w-full h-full no-wrap gap-0'):
                     # Left: Image
                     with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
-                        final_img_url = image_url
-                        if not final_img_url:
-                            final_img_url = card.card_images[0].image_url if card.card_images else None
-                            if image_manager.image_exists(card.id):
-                                final_img_url = f"/images/{card.id}.jpg"
 
-                        if final_img_url:
-                            ui.image(final_img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
+                        image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
+
+                        def update_image():
+                            # Find url for current_image_id
+                            url = None
+                            if card.card_images:
+                                for img in card.card_images:
+                                    if img.id == current_image_id['value']:
+                                        url = img.image_url
+                                        if image_manager.image_exists(img.id):
+                                            url = f"/images/{img.id}.jpg"
+                                        break
+                            if not url and image_url: url = image_url # Fallback to passed URL
+                            if not url and card.card_images: url = card.card_images[0].image_url
+
+                            image_element.source = url
+
+                        update_image()
 
                     # Right: Info
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
@@ -697,13 +762,49 @@ class CollectionPage:
 
                         # Manage (Edit) Section
                         ui.separator().classes('q-my-md')
-                        with ui.expansion().classes('w-full bg-gray-800 rounded').props('icon=edit label="Manage Inventory"'):
+                        inventory_expansion = ui.expansion().classes('w-full bg-gray-800 rounded').props('icon=edit label="Manage Inventory"')
+                        inventory_expansion.value = True
+                        with inventory_expansion:
                             with ui.card().classes('w-full bg-transparent p-4'):
-                                with ui.row().classes('items-center gap-4'):
-                                    qty_input = ui.number('Quantity', min=0, value=owned_count).classes('w-32')
-                                    ui.button('Update', on_click=lambda: [self.save_card_change(card, set_code, rarity, language, int(qty_input.value)), d.close()]).props('color=secondary')
 
-                                ui.label('Note: Edit quantity here updates this specific card variant.').classes('text-xs text-grey select-none')
+                                # Artwork Selection
+                                if card.card_images and len(card.card_images) > 1:
+                                    ui.label('Artwork Version').classes('text-sm text-gray-400')
+                                    art_options = {img.id: f"Artwork {i+1} (ID: {img.id})" for i, img in enumerate(card.card_images)}
+
+                                    def on_art_change(e):
+                                        current_image_id['value'] = e.value
+                                        update_image()
+
+                                    ui.select(art_options, value=current_image_id['value'], on_change=on_art_change).classes('w-full q-mb-md')
+
+                                ui.label('Quantity').classes('text-sm text-gray-400')
+                                with ui.row().classes('items-center gap-4'):
+
+                                    def update_qty_display(val):
+                                        qty_input.value = val
+                                        current_qty['value'] = val
+
+                                    ui.button('-', on_click=lambda: update_qty_display(max(0, current_qty['value'] - 1))).props('round dense color=red')
+                                    qty_input = ui.number(min=0, value=owned_count, on_change=lambda e: update_qty_display(int(e.value or 0))).classes('w-32')
+                                    ui.button('+', on_click=lambda: update_qty_display(current_qty['value'] + 1)).props('round dense color=green')
+
+                                    ui.space()
+
+                                    async def on_update():
+                                        await self.save_card_change(
+                                            card,
+                                            set_code,
+                                            rarity,
+                                            language,
+                                            int(current_qty['value']),
+                                            image_id=current_image_id['value']
+                                        )
+                                        d.close()
+
+                                    ui.button('Update', on_click=on_update).props('color=secondary size=lg icon=save')
+
+                                ui.label('Note: Updates specific variant (Set+Rarity+Lang+Art).').classes('text-xs text-grey select-none q-mt-sm')
         except Exception as e:
             print(f"ERROR in render_collectors_single_view: {e}")
             traceback.print_exc()
@@ -755,7 +856,17 @@ class CollectionPage:
                         ui.select(['EN', 'DE', 'FR', 'IT', 'PT'], label='Language').bind_value(edit_state, 'language').classes('w-full')
                         ui.number('Quantity', min=0).bind_value(edit_state, 'quantity').classes('w-full')
 
-                    ui.button('Update Collection', on_click=lambda: [self.save_card_change(card, edit_state['set'], edit_state['rarity'], edit_state['language'], int(edit_state['quantity'])), d.close()]) \
+                    async def on_legacy_update():
+                        await self.save_card_change(
+                            card,
+                            edit_state['set'],
+                            edit_state['rarity'],
+                            edit_state['language'],
+                            int(edit_state['quantity'])
+                        )
+                        d.close()
+
+                    ui.button('Update Collection', on_click=on_legacy_update) \
                         .classes('w-full q-mt-md').props('color=secondary')
 
                 ui.separator().classes('q-my-md')
@@ -855,7 +966,7 @@ class CollectionPage:
             for item in items:
                 bg = 'bg-gray-900' if not item.is_owned else 'bg-gray-800 border border-accent'
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
-                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url, image_id=c.image_id)):
                     ui.image(item.image_url).classes('h-12 w-8 object-cover')
                     ui.label(item.api_card.name).classes('truncate text-sm font-bold')
                     with ui.column().classes('gap-0'):
@@ -876,7 +987,7 @@ class CollectionPage:
                 border = "border-accent" if item.is_owned else "border-gray-700"
 
                 with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
-                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, image_url=c.image_url, image_id=c.image_id)):
 
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if item.image_url: ui.image(item.image_url).classes('w-full h-full object-cover')
