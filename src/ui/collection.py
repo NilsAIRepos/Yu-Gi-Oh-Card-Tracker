@@ -114,6 +114,7 @@ class CollectionPage:
             'available_sets': [],
             'available_monster_races': [],
             'available_st_races': [],
+            'available_archetypes': [],
             'available_card_types': ['Monster', 'Spell', 'Trap'],
             'max_owned_quantity': 100, # dynamic
 
@@ -125,6 +126,7 @@ class CollectionPage:
             'filter_card_type': '',
             'filter_monster_race': '',
             'filter_st_race': '',
+            'filter_archetype': '',
             'filter_monster_category': [], # List for multi-select
             'filter_level': None,
             'filter_atk_min': 0,
@@ -173,6 +175,7 @@ class CollectionPage:
         sets = set()
         m_races = set()
         st_races = set()
+        archetypes = set()
 
         # We don't overwrite available_card_types anymore, hardcoded
 
@@ -186,6 +189,9 @@ class CollectionPage:
                     prefix = parts[0] if len(parts) > 0 else s.set_code
                     sets.add(f"{s.set_name} | {prefix}")
 
+            if c.archetype:
+                archetypes.add(c.archetype)
+
             if "Monster" in c.type:
                 m_races.add(c.race)
             elif "Spell" in c.type or "Trap" in c.type:
@@ -194,6 +200,7 @@ class CollectionPage:
         self.state['available_sets'] = sorted(list(sets))
         self.state['available_monster_races'] = sorted(list(m_races))
         self.state['available_st_races'] = sorted(list(st_races))
+        self.state['available_archetypes'] = sorted(list(archetypes))
 
         # Load Collection
         collection = None
@@ -242,6 +249,9 @@ class CollectionPage:
         if hasattr(self, 'st_race_selector'):
             self.st_race_selector.options = self.state['available_st_races']
             self.st_race_selector.update()
+        if hasattr(self, 'archetype_selector'):
+            self.archetype_selector.options = self.state['available_archetypes']
+            self.archetype_selector.update()
 
         # Update sliders max
         if 'ownership' in self.filter_inputs:
@@ -260,6 +270,7 @@ class CollectionPage:
             'filter_card_type': '',
             'filter_monster_race': '',
             'filter_st_race': '',
+            'filter_archetype': '',
             'filter_monster_category': [],
             'filter_level': None,
             'filter_atk_min': 0,
@@ -362,12 +373,28 @@ class CollectionPage:
              # Only Spells/Traps
              res = [c for c in res if ("Spell" in c.api_card.type or "Trap" in c.api_card.type) and c.api_card.race == self.state['filter_st_race']]
 
+        if self.state['filter_archetype']:
+             res = [c for c in res if c.api_card.archetype == self.state['filter_archetype']]
+
         # Monster Category Filter (Multi-select, AND logic)
         if self.state['filter_monster_category']:
              categories = self.state['filter_monster_category']
              if isinstance(categories, list) and categories:
-                 # Check if ALL selected categories are present in the type
-                 res = [c for c in res if all(cat in c.api_card.type for cat in categories)]
+                 def check_category(card_type: str, category: str) -> bool:
+                     if category == "Effect":
+                         # Special logic for Effect:
+                         # 1. Explicitly in type string
+                         if "Effect" in card_type: return True
+                         # 2. Implied by Extra Deck / Ritual / Pendulum types (unless Normal is present)
+                         implied_types = ["Synchro", "Fusion", "XYZ", "Link", "Ritual", "Pendulum"]
+                         if any(t in card_type for t in implied_types) and "Normal" not in card_type:
+                             return True
+                         return False
+                     else:
+                         return category in card_type
+
+                 # Check if ALL selected categories match
+                 res = [c for c in res if all(check_category(c.api_card.type, cat) for cat in categories)]
 
         if self.state['filter_level']:
              res = [c for c in res if c.api_card.level == int(self.state['filter_level'])]
@@ -480,7 +507,7 @@ class CollectionPage:
         except Exception as e:
             ui.notify(f"Error saving: {e}", type='negative')
 
-    def open_details(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None):
+    def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None):
         if self.state['view_scope'] == 'consolidated':
             # Derive ownership data from current collection
             owned_breakdown = {}
@@ -492,16 +519,16 @@ class CollectionPage:
                          owned_breakdown[lang] = owned_breakdown.get(lang, 0) + c.quantity
                          total_owned += c.quantity
 
-            self.render_consolidated_details(card, total_owned, owned_breakdown)
+            self.render_consolidated_single_view(card, total_owned, owned_breakdown)
             return
 
         if self.state['view_scope'] == 'collectors':
-             self.render_collectors_details(card, quantity, initial_set, rarity, set_name, language)
+             self.render_collectors_single_view(card, quantity, initial_set, rarity, set_name, language)
              return
 
-        self.open_details_legacy(card, is_owned, quantity, initial_set, owned_languages)
+        self.open_single_view_legacy(card, is_owned, quantity, initial_set, owned_languages)
 
-    def render_consolidated_details(self, card: ApiCard, total_owned: int, owned_breakdown: Dict[str, int]):
+    def render_consolidated_single_view(self, card: ApiCard, total_owned: int, owned_breakdown: Dict[str, int]):
         with ui.dialog().props('maximized') as d, ui.card().classes('w-full h-full p-0 flex flex-row overflow-hidden'):
             ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
 
@@ -515,14 +542,14 @@ class CollectionPage:
                     ui.image(img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
 
             # Right: Info
-            with ui.column().classes('w-2/3 h-full p-8 scroll'):
+            with ui.column().classes('w-2/3 h-full bg-gray-900 text-white p-8 scroll-y-auto'):
                 # Header
                 with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(card.name).classes('text-h3 font-bold')
+                    ui.label(card.name).classes('text-4xl font-bold text-white')
                     if total_owned > 0:
                         ui.badge(f"Total Owned: {total_owned}", color='accent').classes('text-lg')
 
-                ui.separator().classes('q-my-md')
+                ui.separator().classes('q-my-md bg-gray-700')
 
                 # Card Stats Grid
                 with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
@@ -536,12 +563,14 @@ class CollectionPage:
                      if 'Monster' in card.type:
                          stat('Attribute', card.attribute)
                          stat('Race', card.race)
+                         stat('Archetype', card.archetype or '-')
                          stat('Level/Rank', card.level)
                          stat('ATK', card.atk)
                          if getattr(card, 'def_', None) is not None:
                              stat('DEF', getattr(card, 'def_', '-'))
                      else:
                          stat('Property', card.race)
+                         stat('Archetype', card.archetype or '-')
 
                 ui.separator().classes('q-my-md')
 
@@ -562,7 +591,7 @@ class CollectionPage:
 
             d.open()
 
-    def render_collectors_details(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str):
+    def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str):
          with ui.dialog().props('maximized') as d, ui.card().classes('w-full h-full p-0 flex flex-row overflow-hidden'):
             ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
 
@@ -576,18 +605,18 @@ class CollectionPage:
                     ui.image(img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
 
             # Right: Info
-            with ui.column().classes('w-2/3 h-full p-8 scroll'):
+            with ui.column().classes('w-2/3 h-full bg-gray-900 text-white p-8 scroll-y-auto'):
                 # Header
                 with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(card.name).classes('text-h3 font-bold')
+                    ui.label(card.name).classes('text-h3 font-bold text-white')
                     if owned_count > 0:
                         ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
 
-                ui.separator().classes('q-my-md')
+                ui.separator().classes('q-my-md bg-gray-700')
 
                 # Set Info
                 ui.label('Set Information').classes('text-h6 q-mb-sm')
-                with ui.grid(columns=3).classes('w-full gap-4 text-lg items-end'):
+                with ui.grid(columns=4).classes('w-full gap-4 text-lg items-end'):
                      def stat(label, value, color=None):
                          with ui.column():
                              ui.label(label).classes('text-grey text-sm uppercase')
@@ -598,6 +627,7 @@ class CollectionPage:
                      stat('Set Name', set_name or 'N/A')
                      stat('Set Code', set_code or 'N/A', 'yellow-500')
                      stat('Rarity', rarity or 'Common')
+                     stat('Archetype', card.archetype or '-')
 
                 ui.separator().classes('q-my-md')
 
@@ -641,7 +671,7 @@ class CollectionPage:
 
             d.open()
 
-    def open_details_legacy(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None):
+    def open_single_view_legacy(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None):
         set_opts = [s.set_code for s in card.card_sets] if card.card_sets else ["N/A"]
 
         edit_state = {
@@ -733,7 +763,7 @@ class CollectionPage:
                 border = "border-accent" if vm.is_owned else "border-gray-700"
 
                 with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
-                        .on('click', lambda c=vm: self.open_details(c.api_card, c.is_owned, c.owned_quantity, owned_languages=c.owned_languages)):
+                        .on('click', lambda c=vm: self.open_single_view(c.api_card, c.is_owned, c.owned_quantity, owned_languages=c.owned_languages)):
 
                     img_src = card.card_images[0].image_url_small if card.card_images else None
                     if image_manager.image_exists(card.id):
@@ -764,7 +794,7 @@ class CollectionPage:
                 img_src = card.card_images[0].image_url_small if card.card_images else None
 
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
-                        .on('click', lambda c=vm: self.open_details(c.api_card, c.is_owned, c.owned_quantity, owned_languages=c.owned_languages)):
+                        .on('click', lambda c=vm: self.open_single_view(c.api_card, c.is_owned, c.owned_quantity, owned_languages=c.owned_languages)):
                     ui.image(img_src).classes('h-10 w-8 object-cover')
                     with ui.column().classes('gap-0'):
                         ui.label(card.name).classes('truncate text-sm font-bold')
@@ -788,7 +818,7 @@ class CollectionPage:
             for item in items:
                 bg = 'bg-gray-900' if not item.is_owned else 'bg-gray-800 border border-accent'
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
-                        .on('click', lambda c=item: self.open_details(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language)):
                     ui.image(item.image_url).classes('h-12 w-8 object-cover')
                     ui.label(item.api_card.name).classes('truncate text-sm font-bold')
                     with ui.column().classes('gap-0'):
@@ -809,7 +839,7 @@ class CollectionPage:
                 border = "border-accent" if item.is_owned else "border-gray-700"
 
                 with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
-                        .on('click', lambda c=item: self.open_details(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language)):
 
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if item.image_url: ui.image(item.image_url).classes('w-full h-full object-cover')
@@ -896,6 +926,10 @@ class CollectionPage:
                     # Spell/Trap Type (Race)
                     self.st_race_selector = ui.select(self.state['available_st_races'], label='Spell/Trap Type', with_input=True, clearable=True,
                                                     on_change=self.apply_filters).bind_value(self.state, 'filter_st_race').classes('w-full')
+
+                    # Archetype
+                    self.archetype_selector = ui.select(self.state['available_archetypes'], label='Archetype', with_input=True, clearable=True,
+                                                    on_change=self.apply_filters).bind_value(self.state, 'filter_archetype').classes('w-full')
 
                     # Monster Category
                     categories = ['Effect', 'Normal', 'Synchro', 'Xyz', 'Ritual', 'Fusion', 'Link', 'Pendulum', 'Toon', 'Spirit', 'Union', 'Gemini', 'Flip']
