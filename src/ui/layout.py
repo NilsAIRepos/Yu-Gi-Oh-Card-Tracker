@@ -72,6 +72,8 @@ def create_layout(content_function):
                     ui.notify(f"Error: {e}", type='negative')
 
             ui.button('Update Artwork Mappings', on_click=update_artworks, icon='image').classes('w-full q-mt-sm').props('color=accent')
+            with ui.row().classes('w-full justify-center'):
+                ui.label('Note: Artwork matching is an approximation and may not be 100% accurate.').classes('text-xs text-grey italic q-mt-xs text-center')
 
             with ui.row().classes('w-full justify-end q-mt-md'):
                 ui.button('Close', on_click=d.close).props('flat')

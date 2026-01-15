@@ -41,7 +41,8 @@ def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[str, Li
         prices = []
         if card.card_prices:
             p = card.card_prices[0]
-            for val in [p.cardmarket_price, p.tcgplayer_price, p.ebay_price, p.amazon_price, p.coolstuffinc_price]:
+            # Exclude eBay and Amazon as requested
+            for val in [p.cardmarket_price, p.tcgplayer_price, p.coolstuffinc_price]:
                  if val:
                      try:
                          prices.append(float(val))
