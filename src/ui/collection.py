@@ -6,7 +6,7 @@ from src.services.image_manager import image_manager
 from src.core.config import config_manager
 from src.core.utils import transform_set_code
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Callable
 import asyncio
 import traceback
 import re
@@ -679,6 +679,36 @@ class CollectionPage:
         else:
             await self.apply_filters()
 
+    def setup_high_res_image_logic(self, img_id: int, high_res_url: Optional[str], low_res_url: Optional[str], image_element: ui.image, current_id_check: Optional[Callable[[], bool]] = None):
+        """
+        Determines the initial image source (preferring local high-res) and schedules a download if needed.
+        Updates the image_element.source when download completes.
+        """
+        # Determine initial source
+        if image_manager.image_exists(img_id, high_res=True):
+            display_url = f"/images/{img_id}_high.jpg"
+            needs_download = False
+        elif image_manager.image_exists(img_id, high_res=False):
+            display_url = f"/images/{img_id}.jpg"
+            needs_download = True
+        else:
+            # Fallback: Prefer low res url for display while loading high res
+            display_url = low_res_url or high_res_url
+            needs_download = True
+
+        image_element.source = display_url
+
+        async def download_task():
+            if high_res_url:
+                await image_manager.ensure_image(img_id, high_res_url, high_res=True)
+                # Check consistency
+                if current_id_check and not current_id_check():
+                    return
+                image_element.source = f"/images/{img_id}_high.jpg"
+
+        if needs_download and high_res_url and not image_manager.image_exists(img_id, high_res=True):
+             ui.timer(0.1, download_task, once=True)
+
     async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, image_id: Optional[int] = None):
         if not self.state['current_collection']:
             ui.notify('No collection selected.', type='negative')
@@ -775,15 +805,12 @@ class CollectionPage:
                 with ui.row().classes('w-full h-full no-wrap gap-0'):
                     # Left: Image
                     with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
-                        img_url = card.card_images[0].image_url if card.card_images else None
-
-                        # Use local image if available
                         img_id = card.card_images[0].id if card.card_images else card.id
-                        if image_manager.image_exists(img_id):
-                            img_url = f"/images/{img_id}.jpg"
+                        high_res_url = card.card_images[0].image_url if card.card_images else None
+                        low_res_url = card.card_images[0].image_url_small if card.card_images else None
 
-                        if img_url:
-                            ui.image(img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
+                        image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
+                        self.setup_high_res_image_logic(img_id, high_res_url, low_res_url, image_element)
 
                     # Right: Info
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
@@ -873,22 +900,29 @@ class CollectionPage:
                         image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
 
                         def update_image():
-                            # Find url for current_image_id
-                            url = None
                             img_id = current_image_id['value']
+                            high_res_remote_url = None
+                            low_res_url = None # Try to find one matching this ID
+
+                            # Find Remote URL
                             if card.card_images:
                                 for img in card.card_images:
                                     if img.id == img_id:
-                                        url = img.image_url
+                                        high_res_remote_url = img.image_url
+                                        low_res_url = img.image_url_small
                                         break
 
-                            if image_manager.image_exists(img_id):
-                                url = f"/images/{img_id}.jpg"
+                            # Fallback if specific image ID not found (unlikely)
+                            if not low_res_url:
+                                low_res_url = image_url or (card.card_images[0].image_url_small if card.card_images else None)
 
-                            if not url and image_url: url = image_url # Fallback to passed URL
-                            if not url and card.card_images: url = card.card_images[0].image_url
-
-                            image_element.source = url
+                            self.setup_high_res_image_logic(
+                                img_id,
+                                high_res_remote_url,
+                                low_res_url,
+                                image_element,
+                                current_id_check=lambda: current_image_id['value'] == img_id
+                            )
 
                         update_image()
 
@@ -1021,11 +1055,12 @@ class CollectionPage:
             ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
 
             with ui.column().classes('w-1/3 h-full bg-black items-center justify-center p-8'):
-                img_url = card.card_images[0].image_url if card.card_images else None
-                if image_manager.image_exists(card.id):
-                    img_url = f"/images/{card.id}.jpg"
-                if img_url:
-                    ui.image(img_url).classes('max-h-full max-w-full object-contain shadow-2xl')
+                img_id = card.card_images[0].id if card.card_images else card.id
+                high_res_url = card.card_images[0].image_url if card.card_images else None
+                low_res_url = card.card_images[0].image_url_small if card.card_images else None
+
+                image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
+                self.setup_high_res_image_logic(img_id, high_res_url, low_res_url, image_element)
 
             with ui.column().classes('w-2/3 h-full p-8 scroll'):
                 with ui.row().classes('w-full items-center justify-between'):

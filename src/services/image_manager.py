@@ -14,19 +14,20 @@ class ImageManager:
         os.makedirs(self.images_dir, exist_ok=True)
         self.logger = logging.getLogger(__name__)
 
-    def get_local_path(self, card_id: int) -> str:
+    def get_local_path(self, card_id: int, high_res: bool = False) -> str:
         """Returns the local file path for a card image."""
-        return os.path.join(self.images_dir, f"{card_id}.jpg")
+        suffix = "_high" if high_res else ""
+        return os.path.join(self.images_dir, f"{card_id}{suffix}.jpg")
 
-    def image_exists(self, card_id: int) -> bool:
-        return os.path.exists(self.get_local_path(card_id))
+    def image_exists(self, card_id: int, high_res: bool = False) -> bool:
+        return os.path.exists(self.get_local_path(card_id, high_res))
 
-    async def ensure_image(self, card_id: int, url: str) -> str:
+    async def ensure_image(self, card_id: int, url: str, high_res: bool = False) -> str:
         """
         Ensures the image exists locally. Downloads if missing.
         Returns the local path.
         """
-        local_path = self.get_local_path(card_id)
+        local_path = self.get_local_path(card_id, high_res)
         if os.path.exists(local_path):
             return local_path
 
@@ -57,13 +58,13 @@ class ImageManager:
         with open(path, 'wb') as f:
             f.write(data)
 
-    async def download_batch(self, url_map: Dict[int, str], concurrency: int = 20, progress_callback: Optional[Callable[[float], None]] = None):
+    async def download_batch(self, url_map: Dict[int, str], concurrency: int = 20, progress_callback: Optional[Callable[[float], None]] = None, high_res: bool = False):
         """
         Downloads images for the given map of {card_id: url}.
         Skips existing images.
         """
         # Filter out existing
-        to_download = {id: url for id, url in url_map.items() if not self.image_exists(id)}
+        to_download = {id: url for id, url in url_map.items() if not self.image_exists(id, high_res)}
         total = len(to_download)
         if total == 0:
             if progress_callback: progress_callback(1.0)
@@ -75,7 +76,7 @@ class ImageManager:
         async def _task(card_id, url):
             nonlocal completed
             async with semaphore:
-                local_path = self.get_local_path(card_id)
+                local_path = self.get_local_path(card_id, high_res)
                 await self._download_with_session(session, card_id, url, local_path)
                 completed += 1
                 if progress_callback:

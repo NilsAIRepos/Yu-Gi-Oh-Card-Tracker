@@ -46,7 +46,7 @@ def create_layout(content_function):
                 # Dialog for progress
                 prog_dialog = ui.dialog().props('persistent')
                 with prog_dialog, ui.card().classes('w-96'):
-                    ui.label('Downloading All Images').classes('text-h6')
+                    ui.label('Downloading All Low Res Images').classes('text-h6')
                     ui.label('This may take a while...').classes('text-sm text-grey')
                     p_bar = ui.linear_progress(0).classes('w-full q-my-md')
                     status_lbl = ui.label('Starting...')
@@ -59,12 +59,36 @@ def create_layout(content_function):
                 try:
                     await ygo_service.download_all_images(progress_callback=on_progress, language=config_manager.get_language())
                     prog_dialog.close()
-                    ui.notify(f'All images downloaded.', type='positive')
+                    ui.notify(f'All low res images downloaded.', type='positive')
                 except Exception as e:
                     prog_dialog.close()
                     ui.notify(f"Error: {e}", type='negative')
 
-            ui.button('Download All Images', on_click=download_all_imgs, icon='download_for_offline').classes('w-full q-mt-sm').props('color=secondary')
+            ui.button('Download All Low Res Images', on_click=download_all_imgs, icon='download_for_offline').classes('w-full q-mt-sm').props('color=secondary')
+
+            async def download_all_imgs_high():
+                # Dialog for progress
+                prog_dialog = ui.dialog().props('persistent')
+                with prog_dialog, ui.card().classes('w-96'):
+                    ui.label('Downloading All High Res Images').classes('text-h6')
+                    ui.label('This may take a while and use significant disk space...').classes('text-sm text-grey')
+                    p_bar = ui.linear_progress(0).classes('w-full q-my-md')
+                    status_lbl = ui.label('Starting...')
+                prog_dialog.open()
+
+                def on_progress(val):
+                    p_bar.value = val
+                    status_lbl.set_text(f"{int(val * 100)}%")
+
+                try:
+                    await ygo_service.download_all_images_high_res(progress_callback=on_progress, language=config_manager.get_language())
+                    prog_dialog.close()
+                    ui.notify(f'All high res images downloaded.', type='positive')
+                except Exception as e:
+                    prog_dialog.close()
+                    ui.notify(f"Error: {e}", type='negative')
+
+            ui.button('Download All High Res Images', on_click=download_all_imgs_high, icon='download_for_offline').classes('w-full q-mt-sm').props('color=purple')
 
             async def update_artworks():
                 # Dialog for progress

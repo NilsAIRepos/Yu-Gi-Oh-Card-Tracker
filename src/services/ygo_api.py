@@ -127,7 +127,7 @@ class YugiohService:
         return None
 
     # Forwarding image manager calls
-    async def get_image_path(self, card_id: int, language: str = "en") -> Optional[str]:
+    async def get_image_path(self, card_id: int, language: str = "en", high_res: bool = False) -> Optional[str]:
         # Image URLs might be same across languages usually (Japanese art exists but usually handled by alt IDs)
         # We look up card in cache to get image URL
         card = self.get_card(card_id, language)
@@ -135,8 +135,8 @@ class YugiohService:
             return None
 
         # Use first image
-        url = card.card_images[0].image_url
-        return await image_manager.ensure_image(card_id, url)
+        url = card.card_images[0].image_url if high_res else card.card_images[0].image_url_small
+        return await image_manager.ensure_image(card_id, url, high_res=high_res)
 
     async def download_all_images(self, progress_callback: Optional[Callable[[float], None]] = None, language: str = "en"):
         """Downloads images for all cards in the database."""
@@ -152,6 +152,18 @@ class YugiohService:
                  url_map[card.id] = card.card_images[0].image_url_small
 
         await image_manager.download_batch(url_map, progress_callback=progress_callback)
+
+    async def download_all_images_high_res(self, progress_callback: Optional[Callable[[float], None]] = None, language: str = "en"):
+        """Downloads high-resolution images for all cards in the database."""
+        cards = await self.load_card_database(language)
+
+        url_map = {}
+        for card in cards:
+             if card.card_images:
+                 # Use high res image
+                 url_map[card.id] = card.card_images[0].image_url
+
+        await image_manager.download_batch(url_map, progress_callback=progress_callback, high_res=True)
 
     async def ensure_images_for_cards(self, cards: List[ApiCard]):
         """Ensures images exist for the specified list of cards (using default artwork)."""
