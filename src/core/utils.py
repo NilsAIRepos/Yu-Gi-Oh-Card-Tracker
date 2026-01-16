@@ -20,11 +20,10 @@ def transform_set_code(set_code: str, language: str) -> str:
         return f"{prefix}-{lang_code}{number}"
 
     # Case 2: Code-Number (e.g. SDY-006) - No region code
+    # As per requirements, codes without region identifiers should remain unchanged.
     match = re.match(r'^([A-Za-z0-9]+)-(\d+)$', set_code)
     if match:
-        prefix = match.group(1)
-        number = match.group(2)
-        return f"{prefix}-{lang_code}{number}"
+        return set_code
 
     return set_code
 
