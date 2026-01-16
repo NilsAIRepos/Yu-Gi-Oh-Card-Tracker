@@ -168,15 +168,6 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
                 # Yield Base Row
                 # Check if we have owned cards for this exact base set
                 base_owned = matched_groups.get(base_key, [])
-                if not base_owned and base_lang == "EN":
-                     # Try to see if we have exact match on set code but maybe we missed lang parsing?
-                     # Just look for set_code match in groups
-                     for (gl, gcode), gcards in matched_groups.items():
-                         if gcode == cset.set_code:
-                             base_owned = gcards
-                             # Remove from matched_groups so we don't duplicate
-                             del matched_groups[(gl, gcode)]
-                             break
 
                 qty = sum(c.quantity for c in base_owned)
 
@@ -211,7 +202,7 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[str, List
 
                 # Yield Variant Rows (Owned non-base)
                 for (gl, gcode), gcards in matched_groups.items():
-                    if gcode == cset.set_code: continue # Already handled in base row (if logic above didn't catch it)
+                    if (gl, gcode) == base_key: continue # Already handled in base row
 
                     g_qty = sum(c.quantity for c in gcards)
                     rows.append(CollectorRow(
