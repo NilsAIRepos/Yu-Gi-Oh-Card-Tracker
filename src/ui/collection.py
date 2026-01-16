@@ -538,6 +538,8 @@ class CollectionPage:
             res.sort(key=lambda x: x.api_card.id, reverse=reverse)
         elif key == 'Price':
              res.sort(key=lambda x: get_price(x), reverse=reverse)
+        elif key == 'Quantity':
+             res.sort(key=lambda x: get_qty(x), reverse=reverse)
 
         self.state['filtered_items'] = res
         self.state['page'] = 1
@@ -916,7 +918,7 @@ class CollectionPage:
                 await self.apply_filters()
 
             with ui.row().classes('items-center gap-1'):
-                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
+                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Quantity'], value=self.state['sort_by'], label='Sort',
                         on_change=on_sort_change).classes('w-32'):
                     ui.tooltip('Choose how to sort the displayed cards')
 
