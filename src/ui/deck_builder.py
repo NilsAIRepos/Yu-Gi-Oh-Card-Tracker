@@ -64,13 +64,16 @@ class DeckBuilderPage:
             'page_size': 48,
             'total_pages': 1,
 
-            'view_mode': 'grid', # For deck view
             'loading': False
         }
 
         self.single_card_view = SingleCardView()
         self.filter_pane: Optional[FilterPane] = None
         self.api_card_map = {} # ID -> ApiCard
+        self.dragged_item = None
+
+    def handle_drag_start(self, card, source_zone):
+        self.dragged_item = {'id': card.id, 'from': source_zone}
 
     async def load_initial_data(self):
         self.state['loading'] = True
@@ -320,11 +323,32 @@ class DeckBuilderPage:
 
                                  async def handle_upload(e):
                                      try:
-                                         content = e.content.read().decode('utf-8')
+                                         # NiceGUI 1.4+ uses .content.read(), older/other might use .file
+                                         # Based on search, it seems we should use e.content.read() if it exists.
+                                         # But the error says UploadEventArguments has no attribute 'content'.
+                                         # It likely has 'content' attribute which is a file-like object.
+                                         # Wait, the error said "UploadEventArguments object has no attribute 'content'".
+                                         # This suggests we might need to access e.content differently or use e.content
+                                         # actually the wrapper might be passing the file directly or it's named 'file'.
+                                         # Let's inspect e via dir() if we could, but here we'll try standard file handling.
+
+                                         # Correct approach for many NiceGUI versions: e.content is the file-like object.
+                                         # If that failed, let's try e.content as a direct property if the event structure changed.
+                                         # Actually, usually it is e.content.read(). If e has no content, maybe it has 'file'?
+                                         # Let's try to find the file-like object.
+
+                                         f_obj = None
+                                         if hasattr(e, 'content'):
+                                             f_obj = e.content
+                                         elif hasattr(e, 'file'):
+                                             f_obj = e.file
+
+                                         if not f_obj:
+                                             raise Exception("Could not find file content in upload event")
+
+                                         content = f_obj.read().decode('utf-8')
                                          name = e.name.replace('.ydk', '')
-                                         # Create temp file and load it, or better: Parse content directly
-                                         # Since load_deck takes a filename, I should save it first or refactor load_deck.
-                                         # I'll save it directly.
+
                                          filename = f"{name}.ydk"
                                          filepath = f"data/decks/{filename}"
                                          with open(filepath, 'w', encoding='utf-8') as f:
@@ -334,6 +358,7 @@ class DeckBuilderPage:
                                          d.close()
                                          ui.notify(f"Imported deck: {name}", type='positive')
                                      except Exception as ex:
+                                         logger.error(f"Error importing deck: {ex}", exc_info=True)
                                          ui.notify(f"Error importing: {ex}", type='negative')
 
                                  ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=.ydk').classes('w-full')
@@ -363,15 +388,6 @@ class DeckBuilderPage:
                 self.state['search_text'] = e.value
                 await self.apply_filters()
             ui.input(placeholder='Search cards...', on_change=on_search).props('debounce=300 icon=search').classes('w-64')
-
-            with ui.button_group():
-                is_grid = self.state['view_mode'] == 'grid'
-                with ui.button(icon='grid_view', on_click=lambda: [self.state.update({'view_mode': 'grid'}), self.render_deck_area.refresh(), self.render_header.refresh()]) \
-                    .props(f'flat={not is_grid} color=accent'):
-                    ui.tooltip('Grid View')
-                with ui.button(icon='list', on_click=lambda: [self.state.update({'view_mode': 'list'}), self.render_deck_area.refresh(), self.render_header.refresh()]) \
-                    .props(f'flat={is_grid} color=accent'):
-                    ui.tooltip('List View')
 
             with ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary'):
                 ui.tooltip('Filters')
@@ -407,7 +423,10 @@ class DeckBuilderPage:
                      img_id = card.card_images[0].id if card.card_images else card.id
                      img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
 
-                     with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800') \
+                     # Draggable using props and server-side state
+                     with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
+                        .props('draggable') \
+                        .on('dragstart', lambda c=card: self.handle_drag_start(c, 'gallery')) \
                         .on('click', lambda c=card: self.single_card_view.open_deck_builder(c, self.add_card_to_deck)):
                          ui.image(img_src).classes('w-full aspect-[2/3] object-cover')
                          with ui.column().classes('p-1 gap-0'):
@@ -428,108 +447,154 @@ class DeckBuilderPage:
             for cid in ids:
                 if cid in self.api_card_map:
                     cards.append(self.api_card_map[cid])
-                else:
-                    # Handle unknown cards?
-                    pass
             return cards
 
         main_cards = get_cards(deck.main)
         extra_cards = get_cards(deck.extra)
         side_cards = get_cards(deck.side)
 
-        # Check Ownership
+        # Check Ownership (Global counts)
         ref_col = self.state['reference_collection']
         owned_map = {} # card_id -> quantity
         if ref_col:
             for c in ref_col.cards:
                 owned_map[c.card_id] = c.total_quantity
 
-        def render_section(title, cards, target, max_count):
+        # Calculate usage for ownership indication
+        deck_usage = {}
+        for cid in deck.main + deck.extra + deck.side:
+            deck_usage[cid] = deck_usage.get(cid, 0) + 1
+
+        async def handle_drop_event(e, target):
+             await self.handle_card_drop(e, target)
+
+        def render_zone(title, cards, target, flex_grow=False):
             count = len(cards)
             color = 'text-white'
-            if count < 40 and target == 'main': color = 'text-red-400'
-            elif count > 60 and target == 'main': color = 'text-red-400'
+            if target == 'main':
+                 if count < 40 or count > 60: color = 'text-red-400'
+            elif target in ['extra', 'side']:
+                 if count > 15: color = 'text-red-400'
 
-            with ui.column().classes('w-full h-full bg-dark border border-gray-700 p-2 rounded flex flex-col'):
-                ui.label(f"{title} ({count})").classes(f'font-bold {color} q-mb-sm text-xs uppercase tracking-wider')
+            height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[160px]'
 
-                with ui.column().classes('flex-grow w-full bg-black/20 rounded p-2 overflow-y-auto block'):
-                     def sort_key(c):
-                         # Monster, Spell, Trap
-                         t = 0
-                         if "Monster" in c.type: t=0
-                         elif "Spell" in c.type: t=1
-                         elif "Trap" in c.type: t=2
-                         return (t, c.name)
+            with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
+                # Header
+                with ui.row().classes('w-full items-center justify-between q-mb-sm'):
+                    ui.label(f"{title} ({count})").classes(f'font-bold {color} text-xs uppercase tracking-wider')
+                    with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
+                         ui.tooltip(f'Sort {title}')
 
-                     cards.sort(key=sort_key)
-                     deck_counts = {}
-                     for c in cards: deck_counts[c.id] = deck_counts.get(c.id, 0) + 1
+                # Drop Zone
+                with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors') \
+                   .on('dragover.prevent', lambda: None) \
+                   .on('drop', lambda e, t=target: handle_drop_event(e, t)):
 
-                     if self.state['view_mode'] == 'grid':
-                         with ui.grid(columns='repeat(auto-fill, minmax(60px, 1fr))').classes('w-full gap-2'):
-                             for i, card in enumerate(cards):
-                                  img_id = card.card_images[0].id if card.card_images else card.id
-                                  img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
+                    if not cards:
+                        ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50')
 
-                                  needed = deck_counts[card.id]
-                                  owned = owned_map.get(card.id, 0)
-                                  is_missing = owned < needed
+                    with ui.grid(columns='repeat(auto-fill, minmax(60px, 1fr))').classes('w-full gap-2'):
+                        for i, card in enumerate(cards):
+                             img_id = card.card_images[0].id if card.card_images else card.id
+                             img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
 
-                                  border_class = 'border-red-500 border-2' if is_missing else 'border-transparent'
-                                  opacity = 'opacity-100'
-                                  if is_missing and owned == 0: opacity = 'opacity-50 grayscale'
+                             # Ownership check
+                             owned = owned_map.get(card.id, 0)
+                             needed = deck_usage.get(card.id, 0) # This is global needed, but maybe we should warn if *this* copy exceeds?
+                             # Simple logic: If we need more than we have, all copies get red border
+                             is_missing = owned < needed
 
-                                  with ui.card().classes(f'p-0 cursor-pointer relative group {border_class} {opacity}') \
-                                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
-                                      ui.image(img_src).classes('w-full aspect-[2/3] object-cover rounded')
-                                      # Hover remove icon
-                                      with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
-                                          ui.icon('remove', color='white').classes('text-2xl')
-                     else:
-                        # List View
-                        with ui.column().classes('w-full gap-1'):
-                             unique_cards = []
-                             seen = set()
-                             for c in cards:
-                                 if c.id not in seen:
-                                     unique_cards.append(c)
-                                     seen.add(c.id)
+                             border = 'border-red-500 border-2' if is_missing else 'border-transparent'
+                             opacity = 'opacity-50 grayscale' if (is_missing and owned == 0) else 'opacity-100'
 
-                             for card in unique_cards:
-                                 qty = deck_counts[card.id]
-                                 owned = owned_map.get(card.id, 0)
-                                 missing = max(0, qty - owned)
-
-                                 bg_color = 'bg-gray-800'
-                                 text_color = 'text-white'
-                                 if missing > 0:
-                                     bg_color = 'bg-red-900/30'
-                                     text_color = 'text-red-300'
-
-                                 with ui.row().classes(f'w-full {bg_color} p-1 items-center rounded cursor-pointer group hover:bg-white/10') \
-                                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
-
-                                     ui.label(str(qty)).classes('font-bold w-6 text-center')
-                                     ui.label(card.name).classes(f'flex-grow truncate text-xs {text_color} font-bold')
-                                     ui.label(card.type).classes('text-[10px] text-gray-400 w-16 truncate')
-
-                                     if missing > 0:
-                                          ui.label(f"Miss: {missing}").classes('text-[10px] text-red-400 font-bold')
-
-                                     ui.icon('remove_circle', color='red').classes('text-xs opacity-0 group-hover:opacity-100 transition-opacity')
+                             with ui.card().classes(f'p-0 cursor-pointer w-full aspect-[2/3] {border} {opacity} hover:scale-105 transition-transform relative group') \
+                               .props('draggable') \
+                               .on('dragstart', lambda c=card, t=target: self.handle_drag_start(c, t)) \
+                               .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
+                                 ui.image(img_src).classes('w-full h-full object-cover rounded')
+                                 # Hover remove
+                                 with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
+                                     ui.icon('remove', color='white').classes('text-lg')
 
         with ui.column().classes('w-full h-full gap-2'):
-             # Top: Main Deck (Grow)
-             with ui.row().classes('w-full h-3/5'):
-                 render_section('Main Deck', main_cards, 'main', 60)
+             render_zone('Main Deck', main_cards, 'main', flex_grow=True)
+             render_zone('Extra Deck', extra_cards, 'extra', flex_grow=False)
+             render_zone('Side Deck', side_cards, 'side', flex_grow=False)
 
-             # Bottom: Extra / Side
-             with ui.row().classes('w-full h-2/5 gap-2'):
-                 with ui.column().classes('w-1/2 h-full'):
-                     render_section('Extra Deck', extra_cards, 'extra', 15)
-                 with ui.column().classes('w-1/2 h-full'):
-                     render_section('Side Deck', side_cards, 'side', 15)
+    async def handle_card_drop(self, e, target_zone):
+        try:
+            if not self.dragged_item: return
+            data = self.dragged_item
+
+            card_id = data.get('id')
+            src_zone = data.get('from')
+
+            if not card_id or not src_zone: return
+
+            deck = self.state['current_deck']
+            if not deck: return
+
+            if src_zone == 'gallery':
+                await self.add_card_to_deck(card_id, 1, target_zone)
+
+            elif src_zone in ['main', 'extra', 'side']:
+                if src_zone == target_zone:
+                    # Move within same zone (Reorder)
+                    # For now, just move to end if dropped?
+                    # Implementing robust reordering requires drop-index detection which is complex in Grid.
+                    # We will skip reordering on drag for now, as user has Sort button.
+                    return
+                else:
+                    # Move between zones
+                    src_list = getattr(deck, src_zone)
+                    target_list = getattr(deck, target_zone)
+
+                    if card_id in src_list:
+                        src_list.remove(card_id) # Removes first occurrence
+                        target_list.append(card_id)
+
+                        await self.save_current_deck()
+                        self.render_deck_area.refresh()
+        except Exception as ex:
+             logger.error(f"Drop error: {ex}", exc_info=True)
+             ui.notify("Error moving card.", type='negative')
+
+    async def sort_deck(self, zone):
+        if not self.state['current_deck']: return
+        deck = self.state['current_deck']
+        target_list = getattr(deck, zone)
+
+        # Fetch API cards
+        cards = []
+        unknown = []
+        for cid in target_list:
+            if cid in self.api_card_map:
+                cards.append(self.api_card_map[cid])
+            else:
+                unknown.append(cid)
+
+        def sort_key(c):
+             # 1. Type: Monster (0), Spell (1), Trap (2)
+             t_score = 3
+             if "Monster" in c.type: t_score = 0
+             elif "Spell" in c.type: t_score = 1
+             elif "Trap" in c.type: t_score = 2
+
+             # 2. Level/Rank (High -> Low)
+             lvl = c.level or 0
+
+             # 3. Name (A-Z)
+             return (t_score, -lvl, c.name)
+
+        cards.sort(key=sort_key)
+
+        # Reconstruct list
+        new_list = [c.id for c in cards] + unknown
+        setattr(deck, zone, new_list)
+
+        await self.save_current_deck()
+        self.render_deck_area.refresh()
+        ui.notify(f"Sorted {zone} deck.", type='positive')
 
     def build_ui(self):
         # Filter Dialog
@@ -541,13 +606,13 @@ class DeckBuilderPage:
 
         self.render_header()
 
-        with ui.row().classes('w-full h-[calc(100vh-140px)] gap-2 no-wrap'):
-            # Left: Search Results
-            with ui.column().classes('w-[350px] shrink-0 h-full bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results z-50 relative'):
+        with ui.row().classes('w-full h-[calc(100vh-140px)] gap-4 no-wrap'):
+            # Left: Search Results (25%)
+            with ui.column().classes('w-1/4 shrink-0 h-full bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results z-50 relative'):
                 self.search_results_area()
 
-            # Right: Deck Area
-            with ui.column().classes('col h-full relative deck-builder-deck-area overflow-hidden'):
+            # Right: Deck Area (75% - Flex Grow)
+            with ui.column().classes('col h-full relative deck-builder-deck-area overflow-hidden gap-2'):
                  self.render_deck_area()
 
         ui.timer(0.1, self.load_initial_data, once=True)
