@@ -145,7 +145,7 @@ class SingleCardView:
 
                 ui.button('REMOVE', on_click=confirm_remove).props('color=negative')
 
-    def open_consolidated(
+    async def open_consolidated(
         self,
         card: ApiCard,
         total_owned: int,

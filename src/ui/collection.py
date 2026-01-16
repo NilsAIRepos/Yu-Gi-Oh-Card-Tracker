@@ -546,8 +546,6 @@ class CollectionPage:
         self.state['total_pages'] = (count + self.state['page_size'] - 1) // self.state['page_size']
 
     async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET'):
-        logger.debug(f"save_card_change: id={api_card.id}, mode={mode}, qty={quantity}, var_id={variant_id}, set={set_code}")
-
         if not self.state['current_collection']:
             ui.notify('No collection selected.', type='negative')
             return
@@ -561,11 +559,8 @@ class CollectionPage:
                 break
 
         if not target_card:
-            logger.debug("save_card_change: Card not in collection")
             # If removing/setting 0 and it doesn't exist, do nothing
-            if quantity <= 0 and mode == 'SET':
-                logger.debug("save_card_change: Qty<=0 and SET, doing nothing")
-                return
+            if quantity <= 0 and mode == 'SET': return
             target_card = CollectionCard(card_id=api_card.id, name=api_card.name)
             col.cards.append(target_card)
 
@@ -580,14 +575,12 @@ class CollectionPage:
                 break
 
         if not target_variant:
-             logger.debug(f"save_card_change: Variant {target_variant_id} not found in card")
              # Need to add if quantity > 0
              should_add = False
              if mode == 'SET' and quantity > 0: should_add = True
              elif mode == 'ADD' and quantity > 0: should_add = True
 
              if should_add:
-                 logger.debug("save_card_change: Creating new variant")
                  target_variant = CollectionVariant(
                      variant_id=target_variant_id,
                      set_code=set_code,
@@ -595,8 +588,6 @@ class CollectionPage:
                      image_id=image_id
                  )
                  target_card.variants.append(target_variant)
-             else:
-                 logger.debug("save_card_change: Not creating variant (Qty 0)")
 
         if target_variant:
             target_entry = None
@@ -604,11 +595,6 @@ class CollectionPage:
                 if e.condition == condition and e.language == language and e.first_edition == first_edition:
                     target_entry = e
                     break
-
-            if target_entry:
-                logger.debug("save_card_change: Found target entry")
-            else:
-                logger.debug("save_card_change: Entry not found")
 
             # Calculate new quantity
             final_quantity = 0
@@ -618,8 +604,6 @@ class CollectionPage:
                 final_quantity = quantity
             elif mode == 'ADD':
                 final_quantity = current_quantity + quantity
-
-            logger.debug(f"save_card_change: Final Qty: {final_quantity}")
 
             if final_quantity > 0:
                 if target_entry:
@@ -633,16 +617,13 @@ class CollectionPage:
                     ))
             else:
                 if target_entry:
-                    logger.debug("save_card_change: Removing entry")
                     target_variant.entries.remove(target_entry)
 
             if not target_variant.entries:
-                logger.debug("save_card_change: Removing empty variant")
                 target_card.variants.remove(target_variant)
 
         if not target_card.variants:
             if target_card in col.cards:
-                logger.debug("save_card_change: Removing empty card")
                 col.cards.remove(target_card)
 
         try:
