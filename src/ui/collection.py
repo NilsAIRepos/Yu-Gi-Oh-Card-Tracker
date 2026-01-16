@@ -713,8 +713,8 @@ class CollectionPage:
                         with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
                             def stat(label, value):
                                 with ui.column():
-                                    ui.label(label).classes('text-grey text-sm uppercase select-none')
-                                    ui.label(str(value) if value is not None else '-').classes('font-bold select-text')
+                                    ui.label(label).classes('text-gray-400 text-sm uppercase select-none font-bold')
+                                    ui.label(str(value) if value is not None else '-').classes('font-bold select-text text-xl')
 
                             stat('Card Type', card.type)
                             if 'Monster' in card.type:
@@ -737,18 +737,22 @@ class CollectionPage:
                                 stat('Property', card.race)
                                 stat('Archetype', card.archetype or '-')
 
+                        if card.typeline:
+                             ui.label(' / '.join(card.typeline)).classes('text-gray-400 text-sm mt-2 select-text')
+
                         ui.separator().classes('q-my-md')
-                        ui.label('Effect').classes('text-h6 q-mb-sm select-none')
-                        ui.markdown(card.desc).classes('text-grey-3 leading-relaxed text-lg select-text')
+                        ui.label('Effect').classes('text-h6 q-mb-sm select-none text-accent')
+                        ui.markdown(card.desc).classes('text-gray-300 leading-relaxed text-lg select-text')
                         ui.separator().classes('q-my-md')
 
+                        ui.label('Collection Status').classes('text-h6 q-mb-sm select-none text-accent')
                         if owned_breakdown:
-                            ui.label('Collection Status').classes('text-h6 q-mb-sm select-none')
                             with ui.row().classes('gap-2'):
                                 for lang, count in owned_breakdown.items():
-                                    ui.chip(f"{lang}: {count}", icon='layers').props('color=secondary text-color=white')
+                                    with ui.chip(icon='layers').props('color=secondary text-color=white'):
+                                        ui.label(f"{lang}: {count}").classes('select-text')
                         else:
-                            ui.label('Not in collection').classes('text-grey italic')
+                            ui.label('Not in collection').classes('text-gray-500 italic')
         except Exception as e:
             logger.error(f"ERROR in render_consolidated_single_view: {e}", exc_info=True)
 
@@ -836,15 +840,41 @@ class CollectionPage:
 
                         ui.separator().classes('q-my-md bg-gray-700')
 
-                        with ui.grid(columns=4).classes('w-full gap-4 text-lg items-end'):
-                            lbl_set_name = ui.label(f"Set: {set_name or 'N/A'}").classes('text-gray-400 text-sm')
-                            lbl_set_code = ui.label(f"Code: {set_code}").classes('text-yellow-500 font-mono')
-                            lbl_rarity = ui.label(f"Rarity: {rarity}").classes('text-sm')
-                            lbl_lang = ui.label(f"Lang: {language}").classes('text-sm')
+                        # Card Details Grid
+                        with ui.grid(columns=3).classes('w-full gap-4 text-lg'):
+                             def info_label(title, initial_value, color='white'):
+                                 with ui.column().classes('gap-0'):
+                                     ui.label(title).classes('text-gray-400 text-xs uppercase font-bold select-none')
+                                     l = ui.label(str(initial_value)).classes(f'text-{color} font-bold select-text text-lg')
+                                 return l
 
-                        ui.separator().classes('q-my-md')
-                        ui.label('Market Prices').classes('text-h6 q-mb-sm select-none')
-                        lbl_set_price = ui.label(f"Set Price: ${set_price:.2f}" if set_price else "Set Price: -").classes('text-purple-400 font-bold select-text')
+                             lbl_set_name = info_label('Set Name', set_name or 'N/A')
+                             lbl_set_code = info_label('Set Code', set_code, 'yellow-500')
+                             lbl_rarity = info_label('Rarity', rarity)
+
+                             lbl_lang = info_label('Language', language)
+                             lbl_cond = info_label('Condition', condition)
+                             lbl_edition = info_label('Edition', "1st Edition" if first_edition else "Unlimited")
+
+                        ui.separator().classes('q-my-md bg-gray-700')
+
+                        # Market Prices
+                        ui.label('Market Prices').classes('text-h6 q-mb-sm select-none text-accent')
+                        with ui.grid(columns=4).classes('w-full gap-4'):
+                             tcg_price = '-'
+                             cm_price = '-'
+                             csi_price = '-'
+                             if card.card_prices:
+                                 p = card.card_prices[0]
+                                 if p.tcgplayer_price: tcg_price = f"${p.tcgplayer_price}"
+                                 if p.cardmarket_price: cm_price = f"€{p.cardmarket_price}"
+                                 if p.coolstuffinc_price: csi_price = f"${p.coolstuffinc_price}"
+
+                             info_label('TCGPlayer', tcg_price, 'green-400')
+                             info_label('CardMarket', cm_price, 'blue-400')
+                             info_label('CoolStuffInc', csi_price, 'orange-400')
+
+                             lbl_set_price = info_label('Set Price', f"${set_price:.2f}" if set_price else "-", 'purple-400')
 
                         def update_display_stats():
                             base_code = input_state['set_base_code']
@@ -864,12 +894,15 @@ class CollectionPage:
                                     try: s_price = float(matched_set.set_price)
                                     except: pass
 
-                            lbl_set_name.text = f"Set: {s_name}"
+                            lbl_set_name.text = s_name
                             final_code = transform_set_code(base_code, input_state['language'])
-                            lbl_set_code.text = f"Code: {final_code}"
-                            lbl_rarity.text = f"Rarity: {input_state['rarity']}"
-                            lbl_lang.text = f"Lang: {input_state['language']}"
-                            lbl_set_price.text = f"Set Price: ${s_price:.2f}" if s_price is not None else "Set Price: -"
+                            lbl_set_code.text = final_code
+                            lbl_rarity.text = input_state['rarity']
+                            lbl_lang.text = input_state['language']
+                            lbl_cond.text = input_state['condition']
+                            lbl_edition.text = "1st Edition" if input_state['first_edition'] else "Unlimited"
+
+                            lbl_set_price.text = f"${s_price:.2f}" if s_price is not None else "-"
 
                             cur_owned = 0
                             if self.state['current_collection']:
