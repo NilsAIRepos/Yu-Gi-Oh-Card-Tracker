@@ -14,7 +14,7 @@ STANDARD_RARITIES = [
     'Common', 'Rare', 'Super Rare', 'Ultra Rare', 'Secret Rare',
     'Ultimate Rare', 'Ghost Rare', 'Starlight Rare', "Collector's Rare",
     'Prismatic Secret Rare', 'Platinum Secret Rare', 'Quarter Century Secret Rare',
-    'Gold Rare'
+    'Gold Rare', 'Premium Gold Rare'
 ]
 
 class SingleCardView:
@@ -69,8 +69,7 @@ class SingleCardView:
                 if input_state['set_base_code'] not in set_options and default_set_base_code:
                      input_state['set_base_code'] = default_set_base_code
 
-                ui.select(set_options, label='Set Name', value=input_state['set_base_code'],
-                            on_change=lambda e: [input_state.update({'set_base_code': e.value}), on_change_callback()]).classes('col-grow')
+                set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-grow')
 
             with ui.row().classes('w-full gap-4'):
                 # Ensure current rarity is available in options to prevent crash
@@ -78,8 +77,23 @@ class SingleCardView:
                 if input_state['rarity'] not in rarity_options:
                     rarity_options.append(input_state['rarity'])
 
-                ui.select(rarity_options, label='Rarity', value=input_state['rarity'],
+                rarity_select = ui.select(rarity_options, label='Rarity', value=input_state['rarity'],
                             on_change=lambda e: [input_state.update({'rarity': e.value}), on_change_callback()]).classes('w-1/3')
+
+                def on_set_change(e):
+                    new_code = e.value
+                    input_state['set_base_code'] = new_code
+
+                    if new_code in set_info_map:
+                        s_info = set_info_map[new_code]
+                        # Update rarity if available
+                        if s_info.set_rarity:
+                            input_state['rarity'] = s_info.set_rarity
+                            rarity_select.value = s_info.set_rarity
+
+                    on_change_callback()
+
+                set_select.on_value_change(on_set_change)
                 ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Condition', value=input_state['condition'],
                             on_change=lambda e: [input_state.update({'condition': e.value}), on_change_callback()]).classes('w-1/3')
                 ui.checkbox('1st Edition', value=input_state['first_edition'],
@@ -467,9 +481,11 @@ class SingleCardView:
                         with ui.row().classes('w-full items-center justify-between'):
                             ui.label(card.name).classes('text-h3 font-bold text-white select-text')
 
-                        owned_label = ui.label(str(owned_count)).classes('text-2xl font-bold text-accent')
-                        with owned_label:
-                            ui.tooltip('Owned Count')
+                        with ui.row().classes('items-center gap-2'):
+                             ui.label('Total Owned:').classes('text-lg text-gray-400 font-bold')
+                             owned_label = ui.label(str(owned_count)).classes('text-2xl font-bold text-accent')
+                             with owned_label:
+                                ui.tooltip('Owned Count')
 
                         if owned_count == 0:
                             owned_label.set_visibility(False)
