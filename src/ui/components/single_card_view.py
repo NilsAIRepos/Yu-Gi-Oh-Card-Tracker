@@ -131,6 +131,20 @@ class SingleCardView:
                 ui.button('SET', on_click=lambda: handle_update('SET')).props('color=warning text-color=dark')
                 ui.button('ADD', on_click=lambda: handle_update('ADD')).props('color=secondary')
 
+                async def confirm_remove():
+                    with ui.dialog() as d, ui.card():
+                        ui.label("Are you sure you want to remove this card variant from your collection?").classes('text-lg')
+                        with ui.row().classes('w-full justify-end'):
+                            ui.button('Cancel', on_click=d.close).props('flat')
+                            def do_remove():
+                                d.close()
+                                input_state['quantity'] = 0
+                                handle_update('SET')
+                            ui.button('Remove', on_click=do_remove).props('color=negative')
+                    d.open()
+
+                ui.button('REMOVE', on_click=confirm_remove).props('color=negative')
+
     def open_consolidated(
         self,
         card: ApiCard,
@@ -316,9 +330,6 @@ class SingleCardView:
         save_callback: Callable = None
     ):
         try:
-            if image_id is None:
-                image_id = card.card_images[0].id if card.card_images else None
-
             set_options = {}
             set_info_map = {}
 
