@@ -17,31 +17,23 @@ def test_singles_dialog(page):
     page.wait_for_timeout(2000)
 
     print("Searching for card...")
-    page.get_by_placeholder("Search...").fill("Blue-Eyes White Dragon")
+    page.get_by_placeholder("Search...").fill("Schuberta the Melodious Maestra")
     page.wait_for_timeout(2000)
 
     # Now look for the card.
     print("Looking for card...")
 
-    # In Collectors view, we might see multiple entries if I owned multiple variants, but I only own one in the test file.
-    # However, since I am not filtering by 'Owned', I might see many Blue-Eyes entries (one for each set).
-    # I should try to find the one that says "Owned: 1" or filter by Owned.
-
     # Let's filter by Owned to be sure we find OUR card.
     print("Toggling Owned...")
-    # The switch has text "Owned".
-    # page.get_by_role("switch", name="Owned").click() # Not sure if role is switch.
-    # nicegui switch is q-toggle.
     page.get_by_text("Owned").click()
     page.wait_for_timeout(2000)
 
-    if page.get_by_text("Blue-Eyes White Dragon").count() > 0:
+    if page.get_by_text("Schuberta the Melodious Maestra").count() > 0:
         print("Card found!")
         # Click the first one.
-        page.get_by_text("Blue-Eyes White Dragon").first.click()
+        page.get_by_text("Schuberta the Melodious Maestra").first.click()
     else:
         print("Card NOT found after filtering.")
-        # Debug screenshot
         page.screenshot(path="verification/not_found.png")
         raise Exception("Card not found")
 
@@ -50,9 +42,21 @@ def test_singles_dialog(page):
     page.wait_for_selector(".q-dialog")
     page.wait_for_timeout(2000)
 
-    # Screenshot
-    print("Taking screenshot...")
-    page.screenshot(path="verification/singles_view.png")
+    # Check for "Available Sets" text
+    print("Checking for 'Available Sets'...")
+    try:
+        # It might be down below, so we try to scroll to it.
+        # We locate the element by text.
+        available_sets = page.get_by_text("Available Sets")
+        available_sets.scroll_into_view_if_needed()
+        print("Found 'Available Sets' text.")
+
+        # Take a screenshot specifically of the dialog or just the whole viewport now that we scrolled
+        page.screenshot(path="verification/singles_view_scrolled.png")
+    except Exception as e:
+        print(f"Could not find 'Available Sets': {e}")
+        page.screenshot(path="verification/missing_sets.png")
+        raise e
 
 if __name__ == "__main__":
     with sync_playwright() as p:
@@ -63,7 +67,6 @@ if __name__ == "__main__":
             print("Verification script finished successfully.")
         except Exception as e:
             print(f"Error: {e}")
-            page.screenshot(path="verification/error.png")
             import traceback
             traceback.print_exc()
         finally:

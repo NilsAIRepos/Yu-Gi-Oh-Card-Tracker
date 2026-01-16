@@ -165,6 +165,34 @@ class SingleCardView:
 
                 ui.button('REMOVE', on_click=confirm_remove).props('color=negative')
 
+    def _render_available_sets(self, card: ApiCard):
+        ui.separator().classes('q-my-md')
+        ui.label('Available Sets').classes('text-h6 q-mb-sm select-none text-accent')
+
+        if card.card_sets:
+            with ui.grid(columns=4).classes('w-full gap-2 text-sm'):
+                # Header
+                ui.label('Set Code').classes('font-bold text-gray-400')
+                ui.label('Set Name').classes('font-bold text-gray-400')
+                ui.label('Rarity').classes('font-bold text-gray-400')
+                ui.label('Price').classes('font-bold text-gray-400')
+
+                for s in card.card_sets:
+                    ui.label(s.set_code).classes('font-mono font-bold text-yellow-500')
+                    ui.label(s.set_name).classes('truncate')
+                    ui.label(s.set_rarity)
+                    price = s.set_price
+                    if price:
+                        try:
+                            price_str = f"${float(price):.2f}"
+                        except:
+                            price_str = str(price)
+                    else:
+                        price_str = "-"
+                    ui.label(price_str).classes('text-green-400')
+        else:
+            ui.label('No set information available.').classes('text-gray-500 italic')
+
     async def open_consolidated(
         self,
         card: ApiCard,
@@ -338,32 +366,7 @@ class SingleCardView:
                                 default_set_base_code=default_set_code
                             )
 
-                        ui.separator().classes('q-my-md')
-                        ui.label('Available Sets').classes('text-h6 q-mb-sm select-none text-accent')
-
-                        if card.card_sets:
-                             with ui.grid(columns=4).classes('w-full gap-2 text-sm'):
-                                 # Header
-                                 ui.label('Set Code').classes('font-bold text-gray-400')
-                                 ui.label('Set Name').classes('font-bold text-gray-400')
-                                 ui.label('Rarity').classes('font-bold text-gray-400')
-                                 ui.label('Price').classes('font-bold text-gray-400')
-
-                                 for s in card.card_sets:
-                                     ui.label(s.set_code).classes('font-mono font-bold text-yellow-500')
-                                     ui.label(s.set_name).classes('truncate')
-                                     ui.label(s.set_rarity)
-                                     price = s.set_price
-                                     if price:
-                                         try:
-                                              price_str = f"${float(price):.2f}"
-                                         except:
-                                              price_str = str(price)
-                                     else:
-                                         price_str = "-"
-                                     ui.label(price_str).classes('text-green-400')
-                        else:
-                             ui.label('No set information available.').classes('text-gray-500 italic')
+                        self._render_available_sets(card)
 
         except Exception as e:
             logger.error(f"ERROR in render_consolidated_single_view: {e}", exc_info=True)
@@ -607,6 +610,9 @@ class SingleCardView:
                                 on_save_callback=on_save_wrapper,
                                 default_set_base_code=initial_base_code
                             )
+
+                        self._render_available_sets(card)
+
         except Exception as e:
             logger.error(f"ERROR in render_collectors_single_view: {e}", exc_info=True)
 
