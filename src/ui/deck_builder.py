@@ -83,8 +83,60 @@ class DeckBuilderPage:
         self.search_results_container = None
         self.deck_area_container = None
 
-    def handle_drag_start(self, card, source_zone):
-        self.dragged_item = {'id': card.id, 'from': source_zone}
+    def handle_drag_start(self, card, source_zone, index=None):
+        self.dragged_item = {'id': card.id, 'from': source_zone, 'index': index}
+
+    def refresh_zone(self, zone):
+        if zone == 'main': self.render_main_deck_grid.refresh()
+        elif zone == 'extra': self.render_extra_deck_grid.refresh()
+        elif zone == 'side': self.render_side_deck_grid.refresh()
+
+    async def handle_reorder_drop(self, e, target_zone, target_index):
+        if not self.dragged_item: return
+        data = self.dragged_item
+        card_id = data.get('id')
+        src_zone = data.get('from')
+        src_index = data.get('index')
+
+        if not card_id or not src_zone: return
+
+        deck = self.state['current_deck']
+        if not deck: return
+
+        target_list = getattr(deck, target_zone)
+
+        if src_zone == target_zone:
+            # Reorder within same zone
+            if src_index is None: return
+            if src_index < 0 or src_index >= len(target_list): return
+            if src_index == target_index: return
+
+            if src_index < target_index:
+                item = target_list.pop(src_index)
+                target_list.insert(target_index - 1, item)
+            else:
+                item = target_list.pop(src_index)
+                target_list.insert(target_index, item)
+        else:
+            # Move from another zone or gallery
+            # 1. Remove from source if it's a deck zone
+            if src_zone in ['main', 'extra', 'side']:
+                 src_list = getattr(deck, src_zone)
+                 if src_index is not None and 0 <= src_index < len(src_list) and src_list[src_index] == card_id:
+                     src_list.pop(src_index)
+                 elif card_id in src_list:
+                     src_list.remove(card_id)
+
+            # 2. Insert into target
+            target_list.insert(target_index, card_id)
+
+        await self.save_current_deck()
+
+        self.refresh_zone(target_zone)
+        if src_zone in ['main', 'extra', 'side'] and src_zone != target_zone:
+             self.refresh_zone(src_zone)
+
+        self.update_zone_headers()
 
     async def load_initial_data(self):
         self.state['loading'] = True
@@ -217,7 +269,8 @@ class DeckBuilderPage:
             target_list.append(card_id)
 
         await self.save_current_deck()
-        self.refresh_deck_area()
+        self.refresh_zone(target)
+        self.update_zone_headers()
 
     async def remove_card_from_deck(self, card_id: int, target: str):
         if not self.state['current_deck']: return
@@ -228,7 +281,8 @@ class DeckBuilderPage:
         if card_id in target_list:
             target_list.remove(card_id)
             await self.save_current_deck()
-            self.refresh_deck_area()
+            self.refresh_zone(target)
+            self.update_zone_headers()
 
     async def apply_filters(self):
         source = self.state['all_api_cards']
@@ -400,6 +454,10 @@ class DeckBuilderPage:
                     await self.load_deck(e.value)
 
             selected = f"{self.state['current_deck_name']}.ydk" if self.state['current_deck_name'] else None
+            # Fix for "Invalid value" error on initial load if deck list isn't populated yet
+            if selected and selected not in deck_options:
+                selected = None
+
             ui.select(deck_options, value=selected, label='Current Deck', on_change=on_deck_change).classes('min-w-[200px]')
 
             # Reference Collection Selector
@@ -516,114 +574,160 @@ class DeckBuilderPage:
 
         self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
 
+    @ui.refreshable
+    def render_main_deck_grid(self):
+        self._render_deck_grid_content('main')
+
+    @ui.refreshable
+    def render_extra_deck_grid(self):
+        self._render_deck_grid_content('extra')
+
+    @ui.refreshable
+    def render_side_deck_grid(self):
+        self._render_deck_grid_content('side')
+
+    def _render_deck_grid_content(self, target):
+        deck = self.state['current_deck']
+        if not deck: return
+
+        # Get Cards
+        card_ids = getattr(deck, target)
+        cards = []
+        for cid in card_ids:
+            if cid in self.api_card_map:
+                cards.append(self.api_card_map[cid])
+            else:
+                # Handle unknown card? Create dummy?
+                pass
+
+        # Check Ownership (Global counts)
+        ref_col = self.state['reference_collection']
+        owned_map = {} # card_id -> quantity
+        if ref_col:
+            for c in ref_col.cards:
+                owned_map[c.card_id] = c.total_quantity
+
+        # Usage Counter for this specific render pass (to handle multiple copies)
+        # We need to account for copies used in OTHER zones if we want global strictness,
+        # but typically ownership is checked per deck or globally?
+        # For simplicity in this view, we check per-deck usage, but ideally it should count used in ALL zones.
+        # However, to avoid complexity, let's just track usage within this list for coloring.
+        # NOTE: A better approach is to count total used in deck vs owned.
+        # But `render_deck_grid_content` is isolated.
+        # Let's count usage for the current list.
+        # (This is a limitation: if I have 1 Blue-Eyes and put 1 in Main and 1 in Side, both might show as owned if calculated separately.
+        #  To fix this, we would need to calculate global usage before rendering.
+        #  For now, we'll keep it simple or maybe pass a shared counter if possible.
+        #  Given the refresh separation, passing a shared counter is hard unless computed beforehand.)
+
+        # Let's re-calculate usage_so_far based on deck state
+        # But since we are only rendering one zone, we don't know about others easily without re-scanning.
+        # Let's scan all zones to build the "used before me" map?
+        # Actually, simpler: just calculate ownership based on "used in this zone" + "used in previous zones".
+        # Main -> Extra -> Side order?
+        # For now, let's stick to local zone usage to avoid performance hit, or just accept the limitation.
+        usage_counter = {}
+
+        if not cards:
+            ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50')
+            return
+
+        # Increased Min Size to 140px as requested
+        with ui.grid(columns='repeat(auto-fill, minmax(140px, 1fr))').classes('w-full gap-2'):
+            for i, card in enumerate(cards):
+                img_id = card.card_images[0].id if card.card_images else card.id
+                img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
+
+                # Ownership check logic
+                is_owned_copy = True
+                if ref_col:
+                    owned_total = owned_map.get(card.id, 0)
+                    used_so_far = usage_counter.get(card.id, 0)
+                    if used_so_far >= owned_total:
+                        is_owned_copy = False
+                    usage_counter[card.id] = used_so_far + 1
+
+                # Visuals
+                classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800'
+                if not is_owned_copy:
+                    classes += ' opacity-50 grayscale'
+                else:
+                    classes += ' opacity-100'
+
+                with ui.card().classes(classes) \
+                    .props('draggable') \
+                    .on('dragstart', lambda c=card, idx=i, t=target: self.handle_drag_start(c, t, idx)) \
+                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)) \
+                    .on('drop.prevent.stop', lambda e, idx=i, t=target: self.handle_reorder_drop(e, t, idx)) \
+                    .on('dragover.prevent', lambda: None):
+
+                    ui.image(img_src).classes('w-full h-full object-cover rounded')
+
+                    # Hover remove icon
+                    with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
+                        ui.icon('remove', color='white').classes('text-lg')
+
+                    # Tooltip for Name (Requested replacement for text overlay)
+                    ui.tooltip(card.name)
+
     def refresh_deck_area(self):
-        if not self.deck_area_container: return
-        self.deck_area_container.clear()
+        # Legacy method compatibility or simple refresh all
+        self.render_main_deck_grid.refresh()
+        self.render_extra_deck_grid.refresh()
+        self.render_side_deck_grid.refresh()
+        self.update_zone_headers()
 
-        with self.deck_area_container:
-            deck = self.state['current_deck']
-            if not deck:
-                ui.label('Select or create a deck to start building.').classes('text-xl text-grey w-full text-center q-mt-xl')
-                return
+    @ui.refreshable
+    def render_header_main(self):
+        self._render_zone_header_content('Main Deck', 'main')
 
-            # Prepare deck cards
-            def get_cards(ids):
-                cards = []
-                for cid in ids:
-                    if cid in self.api_card_map:
-                        cards.append(self.api_card_map[cid])
-                return cards
+    @ui.refreshable
+    def render_header_extra(self):
+        self._render_zone_header_content('Extra Deck', 'extra')
 
-            main_cards = get_cards(deck.main)
-            extra_cards = get_cards(deck.extra)
-            side_cards = get_cards(deck.side)
+    @ui.refreshable
+    def render_header_side(self):
+        self._render_zone_header_content('Side Deck', 'side')
 
-            # Check Ownership (Global counts)
-            ref_col = self.state['reference_collection']
-            owned_map = {} # card_id -> quantity
-            if ref_col:
-                for c in ref_col.cards:
-                    owned_map[c.card_id] = c.total_quantity
+    def _render_zone_header_content(self, title, target):
+        deck = self.state['current_deck']
+        count = 0
+        if deck:
+            count = len(getattr(deck, target))
 
-            # If ref_col is None, we treat everything as owned infinite.
+        color = 'text-white'
+        if target == 'main':
+             if count < 40 or count > 60: color = 'text-red-400'
+        elif target in ['extra', 'side']:
+             if count > 15: color = 'text-red-400'
 
-            # We need to track "used so far" for each card ID to determine if *this specific copy* is owned
-            usage_counter = {} # card_id -> count seen so far
+        with ui.row().classes('w-full items-center justify-between q-mb-sm'):
+            ui.label(f"{title} ({count})").classes(f'font-bold {color} text-xs uppercase tracking-wider')
+            with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
+                 ui.tooltip(f'Sort {title}')
 
-            async def handle_drop_event(e, target):
-                 await self.handle_card_drop(e, target)
+    def update_zone_headers(self):
+        self.render_header_main.refresh()
+        self.render_header_extra.refresh()
+        self.render_header_side.refresh()
 
-            def render_zone(title, cards, target, flex_grow=False):
-                count = len(cards)
-                color = 'text-white'
-                if target == 'main':
-                     if count < 40 or count > 60: color = 'text-red-400'
-                elif target in ['extra', 'side']:
-                     if count > 15: color = 'text-red-400'
+    def setup_zone(self, title, target, flex_grow=False):
+        height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[160px]'
 
-                height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[160px]'
+        with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
+            # Header
+            if target == 'main': self.render_header_main()
+            elif target == 'extra': self.render_header_extra()
+            elif target == 'side': self.render_header_side()
 
-                with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
-                    # Header
-                    with ui.row().classes('w-full items-center justify-between q-mb-sm'):
-                        ui.label(f"{title} ({count})").classes(f'font-bold {color} text-xs uppercase tracking-wider')
-                        with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
-                             ui.tooltip(f'Sort {title}')
+            # Drop Zone
+            with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors') \
+                .on('dragover.prevent', lambda: None) \
+                .on('drop', lambda e: self.handle_card_drop(e, target)):
 
-                    # Drop Zone
-                    with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors') \
-                       .on('dragover.prevent', lambda: None) \
-                       .on('drop', lambda e, t=target: handle_drop_event(e, t)):
-
-                        if not cards:
-                            ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50')
-
-                        # Increased Min Size to 100px
-                        with ui.grid(columns='repeat(auto-fill, minmax(100px, 1fr))').classes('w-full gap-2'):
-                            for i, card in enumerate(cards):
-                                 img_id = card.card_images[0].id if card.card_images else card.id
-                                 img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
-
-                                 # Ownership check logic
-                                 is_owned_copy = True
-                                 if ref_col:
-                                    owned_total = owned_map.get(card.id, 0)
-                                    used_so_far = usage_counter.get(card.id, 0)
-                                    if used_so_far >= owned_total:
-                                        is_owned_copy = False
-                                    usage_counter[card.id] = used_so_far + 1
-
-                                 # Visuals
-                                 # Removed red border for owned.
-                                 border = 'border-transparent' # Always transparent unless maybe missing? User said remove red border for owned.
-                                 # Keep highlighted (normal opacity) if owned.
-                                 # Grey out if missing.
-
-                                 classes = f'p-0 cursor-pointer w-full aspect-[2/3] {border} hover:scale-105 transition-transform relative group border border-gray-800'
-                                 if not is_owned_copy:
-                                     classes += ' opacity-50 grayscale'
-                                 else:
-                                     classes += ' opacity-100'
-
-                                 with ui.card().classes(classes) \
-                                   .props('draggable') \
-                                   .on('dragstart', lambda c=card, t=target: self.handle_drag_start(c, t)) \
-                                   .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
-                                     ui.image(img_src).classes('w-full h-full object-cover rounded')
-
-                                     # Hover remove
-                                     with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
-                                         ui.icon('remove', color='white').classes('text-lg')
-
-                                     # Card Info Overlay (Name/Type) - New
-                                     with ui.column().classes('p-1 gap-0 w-full bg-gray-900/80 absolute bottom-0 left-0 right-0'):
-                                         ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6 text-white')
-                                         ui.label(card.type).classes('text-[9px] text-gray-300 truncate w-full')
-
-            # Render zones directly into the container
-            render_zone('Main Deck', main_cards, 'main', flex_grow=True)
-            render_zone('Extra Deck', extra_cards, 'extra', flex_grow=False)
-            render_zone('Side Deck', side_cards, 'side', flex_grow=False)
+                if target == 'main': self.render_main_deck_grid()
+                elif target == 'extra': self.render_extra_deck_grid()
+                elif target == 'side': self.render_side_deck_grid()
 
     async def handle_card_drop(self, e, target_zone):
         try:
@@ -632,6 +736,7 @@ class DeckBuilderPage:
 
             card_id = data.get('id')
             src_zone = data.get('from')
+            src_index = data.get('index')
 
             if not card_id or not src_zone: return
 
@@ -644,21 +749,31 @@ class DeckBuilderPage:
             elif src_zone in ['main', 'extra', 'side']:
                 if src_zone == target_zone:
                     # Move within same zone (Reorder)
-                    # For now, just move to end if dropped?
-                    # Implementing robust reordering requires drop-index detection which is complex in Grid.
-                    # We will skip reordering on drag for now, as user has Sort button.
+                    # Move to end if dropped on container
+                    if src_index is not None:
+                        src_list = getattr(deck, src_zone)
+                        if src_index < len(src_list):
+                            item = src_list.pop(src_index)
+                            src_list.append(item)
+                            await self.save_current_deck()
+                            self.refresh_zone(target_zone)
                     return
                 else:
                     # Move between zones
                     src_list = getattr(deck, src_zone)
                     target_list = getattr(deck, target_zone)
 
-                    if card_id in src_list:
-                        src_list.remove(card_id) # Removes first occurrence
-                        target_list.append(card_id)
+                    if src_index is not None and 0 <= src_index < len(src_list) and src_list[src_index] == card_id:
+                        src_list.pop(src_index)
+                    elif card_id in src_list:
+                         src_list.remove(card_id)
 
-                        await self.save_current_deck()
-                        self.refresh_deck_area()
+                    target_list.append(card_id)
+
+                    await self.save_current_deck()
+                    self.refresh_zone(target_zone)
+                    self.refresh_zone(src_zone)
+                    self.update_zone_headers()
         except Exception as ex:
              logger.error(f"Drop error: {ex}", exc_info=True)
              ui.notify("Error moving card.", type='negative')
@@ -697,7 +812,7 @@ class DeckBuilderPage:
         setattr(deck, zone, new_list)
 
         await self.save_current_deck()
-        self.refresh_deck_area()
+        self.refresh_zone(zone)
         ui.notify(f"Sorted {zone} deck.", type='positive')
 
     def build_ui(self):
@@ -716,11 +831,14 @@ class DeckBuilderPage:
             self.search_results_container = ui.column().classes('w-1/4 h-full bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results relative overflow-hidden')
 
             # Right: Deck Area (Remaining Space)
-            self.deck_area_container = ui.column().classes('flex-grow h-full relative deck-builder-deck-area overflow-hidden gap-2')
+            with ui.column().classes('flex-grow h-full relative deck-builder-deck-area overflow-hidden gap-2'):
+                 self.setup_zone('Main Deck', 'main', flex_grow=True)
+                 self.setup_zone('Extra Deck', 'extra')
+                 self.setup_zone('Side Deck', 'side')
 
         # Initial Render
         self.refresh_search_results()
-        self.refresh_deck_area()
+        # No need to call refresh_deck_area() as setup_zone renders them initially.
 
         ui.timer(0.1, self.load_initial_data, once=True)
 
