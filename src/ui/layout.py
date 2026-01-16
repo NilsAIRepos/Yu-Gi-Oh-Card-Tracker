@@ -41,7 +41,8 @@ def create_layout(content_function):
                     n.dismiss()
                     ui.notify(f'Update failed: {e}', type='negative')
 
-            ui.button('Update Card Database', on_click=update_db, icon='cloud_download').classes('w-full').props('color=secondary')
+            with ui.button('Update Card Database', on_click=update_db, icon='cloud_download').classes('w-full').props('color=secondary'):
+                ui.tooltip('Fetch the latest card data from the remote API')
 
             async def download_all_imgs():
                 # Dialog for progress
@@ -65,7 +66,8 @@ def create_layout(content_function):
                     prog_dialog.close()
                     ui.notify(f"Error: {e}", type='negative')
 
-            ui.button('Download All Low Res Images', on_click=download_all_imgs, icon='download_for_offline').classes('w-full q-mt-sm').props('color=secondary')
+            with ui.button('Download All Low Res Images', on_click=download_all_imgs, icon='download_for_offline').classes('w-full q-mt-sm').props('color=secondary'):
+                ui.tooltip('Download small images for all cards (saves bandwidth)')
 
             async def download_all_imgs_high():
                 # Dialog for progress
@@ -89,7 +91,8 @@ def create_layout(content_function):
                     prog_dialog.close()
                     ui.notify(f"Error: {e}", type='negative')
 
-            ui.button('Download All High Res Images', on_click=download_all_imgs_high, icon='download_for_offline').classes('w-full q-mt-sm').props('color=purple')
+            with ui.button('Download All High Res Images', on_click=download_all_imgs_high, icon='download_for_offline').classes('w-full q-mt-sm').props('color=purple'):
+                ui.tooltip('Download high-quality images for all cards (requires disk space)')
 
             async def update_artworks():
                 # Dialog for progress
@@ -120,7 +123,8 @@ def create_layout(content_function):
                     prog_dialog.close()
                     ui.notify(f"Error: {e}", type='negative')
 
-            ui.button('Update Artwork Mappings', on_click=update_artworks, icon='image').classes('w-full q-mt-sm').props('color=accent')
+            with ui.button('Update Artwork Mappings', on_click=update_artworks, icon='image').classes('w-full q-mt-sm').props('color=accent'):
+                ui.tooltip('Link specific card versions to their correct artwork')
             with ui.row().classes('w-full justify-center'):
                 ui.label('Note: Artwork matching is an approximation and may not be 100% accurate.').classes('text-xs text-grey italic q-mt-xs text-center')
 
@@ -141,10 +145,12 @@ def create_layout(content_function):
                     prog_dialog.close()
                     ui.notify(f"Error: {e}", type='negative')
 
-            ui.button('Fix Legacy Set Codes', on_click=fix_legacy_codes, icon='build').classes('w-full q-mt-sm').props('color=warning')
+            with ui.button('Fix Legacy Set Codes', on_click=fix_legacy_codes, icon='build').classes('w-full q-mt-sm').props('color=warning'):
+                ui.tooltip('Update old set codes in your collection to the new format')
 
             with ui.row().classes('w-full justify-end q-mt-md'):
-                ui.button('Close', on_click=d.close).props('flat')
+                with ui.button('Close', on_click=d.close).props('flat'):
+                    ui.tooltip('Close settings')
         d.open()
 
     # Define the drawer first so it's available for the toggle button
@@ -164,7 +170,8 @@ def create_layout(content_function):
             ui.label('Settings').classes('text-grey-4 q-px-md text-sm uppercase font-bold')
 
             # Custom button for Configuration
-            ui.button('Configuration', icon='settings', on_click=open_settings).props('flat align=left').classes('w-full text-grey-3 hover:bg-white/10')
+            with ui.button('Configuration', icon='settings', on_click=open_settings).props('flat align=left').classes('w-full text-grey-3 hover:bg-white/10'):
+                ui.tooltip('Open application settings and database management')
 
     with ui.header().classes(replace='row items-center') as header:
         header.classes('bg-primary text-white')

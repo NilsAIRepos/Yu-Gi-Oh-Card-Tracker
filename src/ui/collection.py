@@ -1248,11 +1248,14 @@ class CollectionPage:
             ui.label(f"Showing {start+1}-{end} of {len(self.state['filtered_items'])}").classes('text-grey')
 
             with ui.row().classes('items-center gap-2'):
-                ui.button(icon='chevron_left', on_click=lambda: self.change_page(-1)).props('flat dense')
-                ui.number(value=self.state['page'], min=1, max=self.state['total_pages'],
-                          on_change=lambda e: self.set_page(e.value)).classes('w-20').props('dense borderless input-class="text-center"')
+                with ui.button(icon='chevron_left', on_click=lambda: self.change_page(-1)).props('flat dense'):
+                    ui.tooltip('Go to previous page')
+                with ui.number(value=self.state['page'], min=1, max=self.state['total_pages'],
+                          on_change=lambda e: self.set_page(e.value)).classes('w-20').props('dense borderless input-class="text-center"'):
+                    ui.tooltip('Current page number')
                 ui.label(f"/ {max(1, self.state['total_pages'])}")
-                ui.button(icon='chevron_right', on_click=lambda: self.change_page(1)).props('flat dense')
+                with ui.button(icon='chevron_right', on_click=lambda: self.change_page(1)).props('flat dense'):
+                    ui.tooltip('Go to next page')
 
         if not page_items:
             ui.label('No items found.').classes('w-full text-center text-xl text-grey italic q-mt-xl')
@@ -1385,53 +1388,63 @@ class CollectionPage:
 
              # Footer with Reset Button
              with ui.column().classes('p-4 border-t border-gray-700 bg-gray-900 w-full'):
-                 ui.button('Reset All Filters', on_click=self.reset_filters).classes('w-full').props('color=red-9 outline')
+                 with ui.button('Reset All Filters', on_click=self.reset_filters).classes('w-full').props('color=red-9 outline'):
+                     ui.tooltip('Clear all active filters and reset to default')
 
         # Toolbar
         with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
             ui.label('Gallery').classes('text-h5')
 
             files = persistence.list_collections()
-            ui.select(files, value=self.state['selected_file'], label='Collection',
-                      on_change=lambda e: [self.state.update({'selected_file': e.value}), self.load_data()]).classes('w-40')
+            with ui.select(files, value=self.state['selected_file'], label='Collection',
+                      on_change=lambda e: [self.state.update({'selected_file': e.value}), self.load_data()]).classes('w-40'):
+                ui.tooltip('Select which collection file to view')
 
             async def on_search(e):
                 self.state['search_text'] = e.value
                 await self.apply_filters()
 
-            ui.input(placeholder='Search...', on_change=on_search) \
-                .props('debounce=300 icon=search').classes('w-64')
+            with ui.input(placeholder='Search...', on_change=on_search) \
+                .props('debounce=300 icon=search').classes('w-64'):
+                ui.tooltip('Search by card name, type, or description')
 
             async def on_sort_change(e):
                 self.state['sort_by'] = e.value
                 await self.apply_filters()
 
-            ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
-                      on_change=on_sort_change).classes('w-32')
+            with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
+                      on_change=on_sort_change).classes('w-32'):
+                ui.tooltip('Choose how to sort the displayed cards')
 
             async def on_owned_switch(e):
                 self.state['only_owned'] = e.value
                 await self.apply_filters()
 
             with ui.row().classes('items-center'):
-                ui.switch('Owned', on_change=on_owned_switch)
+                with ui.switch('Owned', on_change=on_owned_switch):
+                    ui.tooltip('Toggle to show only cards you own')
 
             ui.separator().props('vertical')
 
             with ui.button_group():
-                ui.button('Consolidated', on_click=lambda: self.switch_scope('consolidated')) \
-                    .props(f'flat={"collectors" in self.state["view_scope"]} color=accent')
-                ui.button('Collectors', on_click=lambda: self.switch_scope('collectors')) \
-                    .props(f'flat={"consolidated" in self.state["view_scope"]} color=accent')
+                with ui.button('Consolidated', on_click=lambda: self.switch_scope('consolidated')) \
+                    .props(f'flat={"collectors" in self.state["view_scope"]} color=accent'):
+                    ui.tooltip('View consolidated gameplay statistics (totals per card)')
+                with ui.button('Collectors', on_click=lambda: self.switch_scope('collectors')) \
+                    .props(f'flat={"consolidated" in self.state["view_scope"]} color=accent'):
+                    ui.tooltip('View detailed market and collection data (separate entries per set/rarity)')
 
             with ui.button_group():
-                ui.button(icon='grid_view', on_click=lambda: [self.state.update({'view_mode': 'grid'}), self.content_area.refresh()]) \
-                    .props(f'flat={"list" == self.state["view_mode"]} color=accent')
-                ui.button(icon='list', on_click=lambda: [self.state.update({'view_mode': 'list'}), self.content_area.refresh()]) \
-                    .props(f'flat={"grid" == self.state["view_mode"]} color=accent')
+                with ui.button(icon='grid_view', on_click=lambda: [self.state.update({'view_mode': 'grid'}), self.content_area.refresh()]) \
+                    .props(f'flat={"list" == self.state["view_mode"]} color=accent'):
+                    ui.tooltip('Show cards in a grid layout')
+                with ui.button(icon='list', on_click=lambda: [self.state.update({'view_mode': 'list'}), self.content_area.refresh()]) \
+                    .props(f'flat={"grid" == self.state["view_mode"]} color=accent'):
+                    ui.tooltip('Show cards in a list layout')
 
             ui.space()
-            ui.button(icon='filter_list', on_click=filter_dialog.open).props('color=primary size=lg')
+            with ui.button(icon='filter_list', on_click=filter_dialog.open).props('color=primary size=lg'):
+                ui.tooltip('Open advanced filters')
 
         self.content_area()
         ui.timer(0.1, self.load_data, once=True)
