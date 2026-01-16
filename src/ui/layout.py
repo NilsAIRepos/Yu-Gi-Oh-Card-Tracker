@@ -94,40 +94,6 @@ def create_layout(content_function):
             with ui.button('Download All High Res Images', on_click=download_all_imgs_high, icon='download_for_offline').classes('w-full q-mt-sm').props('color=purple'):
                 ui.tooltip('Download high-quality images for all cards (requires disk space)')
 
-            async def update_artworks():
-                # Dialog for progress
-                prog_dialog = ui.dialog().props('persistent')
-                with prog_dialog, ui.card().classes('w-96'):
-                    ui.label('Updating Artwork Mappings').classes('text-h6')
-                    ui.label('Fetching set-specific image data...').classes('text-sm text-grey')
-                    p_bar = ui.linear_progress(0).classes('w-full q-my-md')
-                    status_lbl = ui.label('Starting...')
-                prog_dialog.open()
-
-                def on_progress(val):
-                    p_bar.value = val
-                    status_lbl.set_text(f"{int(val * 100)}%")
-
-                try:
-                    count = await ygo_service.fetch_artwork_mappings(progress_callback=on_progress)
-                    prog_dialog.close()
-                    ui.notify(f'Mappings updated. Checked {count} cards.', type='positive')
-
-                    # Migration
-                    n_mig = ui.notification('Migrating collections...', type='info', spinner=True)
-                    migrated = await ygo_service.migrate_collections()
-                    n_mig.dismiss()
-                    ui.notify(f'Migration complete. Updated {migrated} collections.', type='positive')
-
-                except Exception as e:
-                    prog_dialog.close()
-                    ui.notify(f"Error: {e}", type='negative')
-
-            with ui.button('Update Artwork Mappings', on_click=update_artworks, icon='image').classes('w-full q-mt-sm').props('color=accent'):
-                ui.tooltip('Link specific card versions to their correct artwork')
-            with ui.row().classes('w-full justify-center'):
-                ui.label('Note: Artwork matching is an approximation and may not be 100% accurate.').classes('text-xs text-grey italic q-mt-xs text-center')
-
             async def fix_legacy_codes():
                 # Dialog for progress
                 prog_dialog = ui.dialog().props('persistent')

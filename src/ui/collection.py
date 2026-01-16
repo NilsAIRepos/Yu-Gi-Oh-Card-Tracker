@@ -11,6 +11,7 @@ import asyncio
 import traceback
 import re
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -1231,14 +1232,79 @@ class CollectionPage:
         await self.load_data()
         self.render_header.refresh()
 
+    def open_new_collection_dialog(self):
+        with ui.dialog() as d, ui.card().classes('w-96'):
+            ui.label('Create New Collection').classes('text-h6')
+
+            name_input = ui.input('Collection Name').classes('w-full').props('autofocus')
+
+            async def create():
+                name = name_input.value.strip()
+                if not name:
+                    ui.notify('Please enter a name.', type='warning')
+                    return
+
+                # Ensure extension
+                if not name.endswith(('.json', '.yaml', '.yml')):
+                    name += '.json'
+
+                # Check if exists
+                existing = persistence.list_collections()
+                if name in existing:
+                    ui.notify(f'Collection "{name}" already exists.', type='negative')
+                    return
+
+                # Create empty collection
+                new_col = Collection(cards=[])
+                try:
+                    await run.io_bound(persistence.save_collection, new_col, name)
+                    ui.notify(f'Collection "{name}" created.', type='positive')
+                    self.state['selected_file'] = name
+                    d.close()
+                    # Reload data and header
+                    await self.load_data()
+                    self.render_header.refresh()
+                except Exception as e:
+                    logger.error(f"Error creating collection: {e}")
+                    ui.notify(f"Error creating collection: {e}", type='negative')
+
+            with ui.row().classes('w-full justify-end q-mt-md'):
+                ui.button('Cancel', on_click=lambda: [d.close(), self.render_header.refresh()]).props('flat')
+                ui.button('Create', on_click=create).props('color=positive')
+        d.open()
+
     @ui.refreshable
     def render_header(self):
         with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
             ui.label('Gallery').classes('text-h5')
 
             files = persistence.list_collections()
-            with ui.select(files, value=self.state['selected_file'], label='Collection',
-                      on_change=lambda e: [self.state.update({'selected_file': e.value}), self.load_data()]).classes('w-40'):
+            # Transform file list to dict for cleaner display (hide .json/.yaml)
+            file_options = {}
+            for f in files:
+                display_name = f
+                if f.endswith('.json'): display_name = f[:-5]
+                elif f.endswith('.yaml'): display_name = f[:-5]
+                elif f.endswith('.yml'): display_name = f[:-4]
+                file_options[f] = display_name
+
+            # Add option to create new
+            file_options['__NEW_COLLECTION__'] = '+ New Collection'
+
+            async def handle_collection_change(e):
+                val = e.value
+                if val == '__NEW_COLLECTION__':
+                    # Reset selection to previous valid one temporarily or None to avoid sticking on 'New'
+                    # Actually keeping it momentarily is fine as we open dialog
+                    self.open_new_collection_dialog()
+                    # Revert selection to current real collection if dialog is cancelled?
+                    # We will handle that in the dialog logic or just refresh header
+                else:
+                    self.state['selected_file'] = val
+                    await self.load_data()
+
+            with ui.select(file_options, value=self.state['selected_file'], label='Collection',
+                      on_change=handle_collection_change).classes('w-40'):
                 ui.tooltip('Select which collection file to view')
 
             async def on_search(e):
