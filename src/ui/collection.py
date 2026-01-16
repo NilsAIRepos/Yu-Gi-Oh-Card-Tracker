@@ -7,6 +7,7 @@ from src.core.config import config_manager
 from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
+from src.services.collection_editor import CollectionEditor
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Callable
 import asyncio
@@ -40,6 +41,7 @@ class CollectorRow:
     condition: str
     first_edition: bool
     image_id: Optional[int] = None
+    variant_id: Optional[str] = None
 
 def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[int, CollectionCard]) -> List[CardViewModel]:
     vms = []
@@ -147,7 +149,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                                 language=lang,
                                 condition=cond,
                                 first_edition=first,
-                                image_id=matched_cv.image_id
+                                image_id=matched_cv.image_id,
+                                variant_id=matched_cv.variant_id
                             ))
                 else:
                     # No owned variants matched this API set -> Show empty placeholder row
@@ -173,7 +176,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         language=base_lang,
                         condition="Near Mint",
                         first_edition=False,
-                        image_id=cset.image_id
+                        image_id=cset.image_id,
+                        variant_id=cset.variant_id
                     ))
 
         # 2. Handle Custom/Unknown Variants
@@ -204,7 +208,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         language=lang,
                         condition=cond,
                         first_edition=first,
-                        image_id=cv.image_id
+                        image_id=cv.image_id,
+                        variant_id=cv.variant_id
                     ))
 
         # 3. Fallback if no sets in API and no owned variants
@@ -221,7 +226,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                     language="EN",
                     condition="Near Mint",
                     first_edition=False,
-                    image_id=default_image_id
+                    image_id=default_image_id,
+                    variant_id=None
                 ))
 
     return rows
@@ -595,87 +601,33 @@ class CollectionPage:
 
         col = self.state['current_collection']
 
-        target_card = None
-        for c in col.cards:
-            if c.card_id == api_card.id:
-                target_card = c
-                break
-
-        if not target_card:
-            # If removing/setting 0 and it doesn't exist, do nothing
-            if quantity <= 0 and mode == 'SET': return
-            target_card = CollectionCard(card_id=api_card.id, name=api_card.name)
-            col.cards.append(target_card)
-
-        target_variant_id = variant_id
-        if not target_variant_id:
-             target_variant_id = generate_variant_id(api_card.id, set_code, rarity, image_id)
-
-        target_variant = None
-        for v in target_card.variants:
-            if v.variant_id == target_variant_id:
-                target_variant = v
-                break
-
-        if not target_variant:
-             # Need to add if quantity > 0
-             should_add = False
-             if mode == 'SET' and quantity > 0: should_add = True
-             elif mode == 'ADD' and quantity > 0: should_add = True
-
-             if should_add:
-                 target_variant = CollectionVariant(
-                     variant_id=target_variant_id,
-                     set_code=set_code,
-                     rarity=rarity,
-                     image_id=image_id
-                 )
-                 target_card.variants.append(target_variant)
-
-        if target_variant:
-            target_entry = None
-            for e in target_variant.entries:
-                if e.condition == condition and e.language == language and e.first_edition == first_edition:
-                    target_entry = e
-                    break
-
-            # Calculate new quantity
-            final_quantity = 0
-            current_quantity = target_entry.quantity if target_entry else 0
-
-            if mode == 'SET':
-                final_quantity = quantity
-            elif mode == 'ADD':
-                final_quantity = current_quantity + quantity
-
-            if final_quantity > 0:
-                if target_entry:
-                    target_entry.quantity = final_quantity
-                else:
-                    target_variant.entries.append(CollectionEntry(
-                        condition=condition,
-                        language=language,
-                        first_edition=first_edition,
-                        quantity=final_quantity
-                    ))
-            else:
-                if target_entry:
-                    target_variant.entries.remove(target_entry)
-
-            if not target_variant.entries:
-                target_card.variants.remove(target_variant)
-
-        if not target_card.variants:
-            if target_card in col.cards:
-                col.cards.remove(target_card)
-
         try:
-            await run.io_bound(persistence.save_collection, col, self.state['selected_file'])
-            logger.info(f"Collection saved: {self.state['selected_file']}")
-            ui.notify('Collection saved.', type='positive')
-            await self.load_data(keep_page=True)
+            # Delegate logic to CollectionEditor
+            modified = CollectionEditor.apply_change(
+                collection=col,
+                api_card=api_card,
+                set_code=set_code,
+                rarity=rarity,
+                language=language,
+                quantity=quantity,
+                condition=condition,
+                first_edition=first_edition,
+                image_id=image_id,
+                variant_id=variant_id,
+                mode=mode
+            )
+
+            if modified:
+                await run.io_bound(persistence.save_collection, col, self.state['selected_file'])
+                logger.info(f"Collection saved: {self.state['selected_file']}")
+                ui.notify('Collection saved.', type='positive')
+                await self.load_data(keep_page=True)
+            else:
+                # No change needed, but maybe refresh just in case? Or just do nothing.
+                pass
+
         except Exception as e:
-            logger.error(f"Error saving collection: {e}")
+            logger.error(f"Error saving collection: {e}", exc_info=True)
             ui.notify(f"Error saving: {e}", type='negative')
 
     async def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, condition: str = "Near Mint", first_edition: bool = False, image_url: str = None, image_id: int = None, set_price: float = 0.0):
@@ -698,7 +650,7 @@ class CollectionPage:
             return
 
         if self.state['view_scope'] == 'collectors':
-             await self.single_card_view.open_collectors(card, quantity, initial_set or "N/A", rarity, set_name, language, condition, first_edition, image_url, image_id, set_price, self.state['current_collection'], on_save)
+             await self.single_card_view.open_collectors(card, quantity, initial_set or "N/A", rarity, set_name, language, condition, first_edition, image_url, image_id, set_price, self.state['current_collection'], on_save, variant_id=variant_id)
              return
 
         # Fallback removed
@@ -783,7 +735,7 @@ class CollectionPage:
                     img_src = f"/images/{img_id}.jpg"
 
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
-                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, condition=c.condition, first_edition=c.first_edition, image_url=c.image_url, image_id=c.image_id, set_price=c.price)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, condition=c.condition, first_edition=c.first_edition, image_url=c.image_url, image_id=c.image_id, set_price=c.price, variant_id=c.variant_id)):
                     ui.image(img_src).classes('h-10 w-8 object-cover')
                     ui.label(item.api_card.name).classes('truncate text-sm font-bold')
                     with ui.column().classes('gap-0'):
@@ -818,7 +770,7 @@ class CollectionPage:
                     img_src = f"/images/{img_id}.jpg"
 
                 with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
-                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, condition=c.condition, first_edition=c.first_edition, image_url=c.image_url, image_id=c.image_id, set_price=c.price)):
+                        .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, condition=c.condition, first_edition=c.first_edition, image_url=c.image_url, image_id=c.image_id, set_price=c.price, variant_id=c.variant_id)):
 
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if img_src: ui.image(img_src).classes('w-full h-full object-cover')

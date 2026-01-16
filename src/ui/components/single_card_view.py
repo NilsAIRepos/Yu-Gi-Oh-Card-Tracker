@@ -54,12 +54,21 @@ class SingleCardView:
         set_info_map: Dict[str, Any],
         on_change_callback: Callable[[], None],
         on_save_callback: Callable[[str], Any],
-        default_set_base_code: str = None
+        default_set_base_code: str = None,
+        original_variant_id: str = None
     ):
         """
         Renders the inventory management section (Language, Set, Rarity, etc.).
         Shared by both Consolidated and Collectors views.
         """
+        # Store initial input state for comparison
+        initial_check_state = {
+            'set_base_code': input_state['set_base_code'],
+            'rarity': input_state['rarity'],
+            'image_id': input_state['image_id'],
+            'language': input_state['language']
+        }
+
         with ui.card().classes('w-full bg-transparent p-4 gap-4'):
             with ui.row().classes('w-full gap-4'):
                 ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
@@ -115,6 +124,20 @@ class SingleCardView:
                     base_code = input_state['set_base_code']
                     sel_rarity = input_state['rarity']
                     sel_img = input_state['image_id']
+
+                    # Check if inputs still match original
+                    is_original = (
+                        base_code == initial_check_state['set_base_code'] and
+                        sel_rarity == initial_check_state['rarity'] and
+                        sel_img == initial_check_state['image_id'] and
+                        input_state['language'] == initial_check_state['language']
+                    )
+
+                    # If inputs haven't changed and we have the original variant ID, use it.
+                    # This bypasses regeneration/matching logic which might fail for edge cases.
+                    if is_original and original_variant_id:
+                        await on_save_callback(mode, original_variant_id)
+                        return
 
                     # Calculate the target code based on language (e.g. LDS2-EN025 -> LDS2-DE025)
                     final_code = transform_set_code(base_code, input_state['language'])
@@ -396,7 +419,8 @@ class SingleCardView:
         image_id: int = None,
         set_price: float = 0.0,
         current_collection: Any = None,
-        save_callback: Callable = None
+        save_callback: Callable = None,
+        variant_id: str = None
     ):
         try:
             set_options = {}
@@ -603,7 +627,7 @@ class SingleCardView:
                         inventory_expansion.value = True
 
                         with inventory_expansion:
-                             async def on_save_wrapper(mode, variant_id):
+                             async def on_save_wrapper(mode, target_variant_id):
                                 final_set_code = transform_set_code(input_state['set_base_code'], input_state['language'])
 
                                 await save_callback(
@@ -615,7 +639,7 @@ class SingleCardView:
                                     input_state['condition'],
                                     input_state['first_edition'],
                                     input_state['image_id'],
-                                    variant_id,
+                                    target_variant_id,
                                     mode
                                 )
                                 d.close()
@@ -627,7 +651,8 @@ class SingleCardView:
                                 set_info_map=set_info_map,
                                 on_change_callback=update_display_stats,
                                 on_save_callback=on_save_wrapper,
-                                default_set_base_code=initial_base_code
+                                default_set_base_code=initial_base_code,
+                                original_variant_id=variant_id
                             )
 
                         self._render_available_sets(card)
