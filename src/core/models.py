@@ -1,6 +1,5 @@
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
-from datetime import datetime
 import uuid
 
 # --- Collection Models ---
@@ -13,9 +12,7 @@ class CardMetadata(BaseModel):
     condition: Literal["Mint", "Near Mint", "Played", "Damaged"] = "Near Mint"
     first_edition: bool = False
     storage_location: Optional[str] = Field(None, description="e.g., Box A, Row 2")
-    purchase_price: float = 0.0
     market_value: float = 0.0
-    purchase_date: Optional[datetime] = None
 
 class Card(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
