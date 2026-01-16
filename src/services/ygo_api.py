@@ -103,6 +103,24 @@ class YugiohService:
 
     def _merge_database_data(self, local_cards: List[ApiCard], api_cards: List[ApiCard]) -> List[ApiCard]:
         """Merges API data into local data, preserving custom variants and IDs."""
+
+        # PRE-CLEANUP: Ensure all local sets have valid IDs before merging.
+        # This prevents duplicate/missing/empty IDs from causing drops during deduplication.
+        for l_card in local_cards:
+            # Fallback default image id
+            l_default_img = l_card.card_images[0].id if l_card.card_images else None
+
+            for s in l_card.card_sets:
+                # 1. Ensure image_id is present
+                if s.image_id is None:
+                    s.image_id = l_default_img
+
+                # 2. Ensure variant_id is present and valid (not None or empty string)
+                if not s.variant_id:
+                    s.variant_id = generate_variant_id(
+                        l_card.id, s.set_code, s.set_rarity, s.image_id
+                    )
+
         local_map = {c.id: c for c in local_cards}
         merged_list = []
 
@@ -128,7 +146,7 @@ class YugiohService:
                     local_sets_map[key].append(s)
 
                 merged_sets = []
-                processed_local_sets = set() # Track by object id or variant_id
+                processed_local_sets = set() # Track by variant_id
 
                 for api_set in api_card.card_sets:
                     key = (api_set.set_code, api_set.set_rarity)
@@ -136,22 +154,17 @@ class YugiohService:
                         # Match found. Update all matching local sets with fresh price/info
                         # but keep their IDs and image_ids
                         for local_s in local_sets_map[key]:
+                            # This check is now safe because we pre-cleaned variant_id
                             if local_s.variant_id in processed_local_sets:
                                 continue
 
                             # Update mutable fields from API
                             local_s.set_price = api_set.set_price
 
-                            # Ensure image_id and variant_id are populated
+                            # (Redundant safety check, already handled in pre-cleanup but harmless to keep if logic changes)
                             if local_s.image_id is None:
                                 local_s.image_id = default_image_id
-
-                            # Regenerate variant_id if missing or if image_id changed (implicitly handled if logic requires)
-                            # Ideally we only generate if missing to be minimally invasive, but if image_id changed from None,
-                            # we SHOULD regenerate to keep hash consistent.
-                            # However, checking if image_id changed is hard without tracking.
-                            # If variant_id is None, definitely generate.
-                            if local_s.variant_id is None:
+                            if not local_s.variant_id:
                                 local_s.variant_id = generate_variant_id(
                                     api_card.id, local_s.set_code, local_s.set_rarity, local_s.image_id
                                 )
