@@ -3,6 +3,7 @@ from src.ui.theme import apply_theme
 from src.core.config import config_manager
 from src.services.ygo_api import ygo_service
 from src.core.migrations import fix_legacy_set_codes
+from src.services.sample_generator import generate_sample_collection
 
 def create_layout(content_function):
     """
@@ -147,6 +148,19 @@ def create_layout(content_function):
 
             with ui.button('Fix Legacy Set Codes', on_click=fix_legacy_codes, icon='build').classes('w-full q-mt-sm').props('color=warning'):
                 ui.tooltip('Update old set codes in your collection to the new format')
+
+            async def gen_sample_coll():
+                n = ui.notification('Generating Sample Collection...', type='info', spinner=True, timeout=None)
+                try:
+                    filename = await generate_sample_collection()
+                    n.dismiss()
+                    ui.notify(f'Sample collection created: {filename}', type='positive')
+                except Exception as e:
+                    n.dismiss()
+                    ui.notify(f"Generation failed: {e}", type='negative')
+
+            with ui.button('Generate Sample Collection', on_click=gen_sample_coll, icon='playlist_add').classes('w-full q-mt-sm').props('color=positive'):
+                 ui.tooltip('Create a random sample collection for testing')
 
             with ui.row().classes('w-full justify-end q-mt-md'):
                 with ui.button('Close', on_click=d.close).props('flat'):
