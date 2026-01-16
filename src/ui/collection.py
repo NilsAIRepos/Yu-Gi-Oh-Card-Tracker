@@ -563,21 +563,48 @@ class CollectionPage:
         # Set Filter (Enhanced)
         if self.state['filter_set']:
             s_val = self.state['filter_set']
-            # Format: "Name | Prefix"
-            prefix_search = s_val.split('|')[-1].strip().lower()
-            name_search = s_val.split('|')[0].strip().lower()
 
-            if self.state['view_scope'] == 'consolidated':
-                def match_set(c):
-                    if not c.api_card.card_sets: return False
-                    for cs in c.api_card.card_sets:
-                        # Match prefix in set_code or name
-                        if prefix_search in cs.set_code.lower() or name_search in cs.set_name.lower():
-                            return True
-                    return False
-                res = [c for c in res if match_set(c)]
+            # Detect Strict Mode (Dropdown Selection has '|')
+            is_strict = '|' in s_val
+
+            if is_strict:
+                # Format: "Name | Prefix"
+                target_prefix = s_val.split('|')[-1].strip().lower()
+
+                if self.state['view_scope'] == 'consolidated':
+                    def match_set_strict(c):
+                        if not c.api_card.card_sets: return False
+                        for cs in c.api_card.card_sets:
+                             # Strict Match on Prefix
+                             parts = cs.set_code.split('-')
+                             c_prefix = parts[0].lower() if parts else cs.set_code.lower()
+                             if c_prefix == target_prefix:
+                                 return True
+                        return False
+                    res = [c for c in res if match_set_strict(c)]
+                else:
+                    # Collectors view - row has set_code
+                    def match_row_strict(c):
+                        parts = c.set_code.split('-')
+                        c_prefix = parts[0].lower() if parts else c.set_code.lower()
+                        return c_prefix == target_prefix
+
+                    res = [c for c in res if match_row_strict(c)]
+
             else:
-                res = [c for c in res if prefix_search in c.set_code.lower() or name_search in c.set_name.lower()]
+                # Loose Match (Search Text)
+                txt = s_val.strip().lower()
+
+                if self.state['view_scope'] == 'consolidated':
+                    def match_set_loose(c):
+                        if not c.api_card.card_sets: return False
+                        for cs in c.api_card.card_sets:
+                            if txt in cs.set_code.lower() or txt in cs.set_name.lower():
+                                return True
+                        return False
+                    res = [c for c in res if match_set_loose(c)]
+                else:
+                    res = [c for c in res if txt in c.set_code.lower() or txt in c.set_name.lower()]
 
         # Rarity Filter
         if self.state['filter_rarity']:
