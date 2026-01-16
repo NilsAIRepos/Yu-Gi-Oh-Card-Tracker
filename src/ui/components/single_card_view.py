@@ -148,18 +148,24 @@ class SingleCardView:
                     # We pass the variant_id back to the saver
                     await on_save_callback(mode, matched_variant_id)
 
-                ui.button('SET', on_click=lambda: handle_update('SET')).props('color=warning text-color=dark')
-                ui.button('ADD', on_click=lambda: handle_update('ADD')).props('color=secondary')
+                async def do_set():
+                    await handle_update('SET')
+
+                async def do_add():
+                    await handle_update('ADD')
+
+                ui.button('SET', on_click=do_set).props('color=warning text-color=dark')
+                ui.button('ADD', on_click=do_add).props('color=secondary')
 
                 async def confirm_remove():
                     with ui.dialog() as d, ui.card():
                         ui.label("Are you sure you want to remove this card variant from your collection?").classes('text-lg')
                         with ui.row().classes('w-full justify-end'):
                             ui.button('Cancel', on_click=d.close).props('flat')
-                            def do_remove():
+                            async def do_remove():
                                 d.close()
                                 input_state['quantity'] = 0
-                                handle_update('SET')
+                                await handle_update('SET')
                             ui.button('Remove', on_click=do_remove).props('color=negative')
                     d.open()
 
@@ -678,9 +684,13 @@ class SingleCardView:
                                  await on_add_callback(card.id, qty, target)
                                  d.close()
 
-                             ui.button('Add to Main', on_click=lambda: add('main')).props('color=positive icon=add')
-                             ui.button('Add to Side', on_click=lambda: add('side')).props('color=warning text-color=dark icon=add')
-                             ui.button('Add to Extra', on_click=lambda: add('extra')).props('color=purple icon=add')
+                             async def add_main(): await add('main')
+                             async def add_side(): await add('side')
+                             async def add_extra(): await add('extra')
+
+                             ui.button('Add to Main', on_click=add_main).props('color=positive icon=add')
+                             ui.button('Add to Side', on_click=add_side).props('color=warning text-color=dark icon=add')
+                             ui.button('Add to Extra', on_click=add_extra).props('color=purple icon=add')
 
         except Exception as e:
             logger.error(f"Error opening deck builder view: {e}", exc_info=True)
