@@ -4,7 +4,7 @@ from src.core.models import Collection, CollectionCard, CollectionVariant, Colle
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
-from src.core.utils import transform_set_code, generate_variant_id
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from dataclasses import dataclass, field
@@ -101,31 +101,56 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                              break
 
                 target_variant_id = cset.variant_id
-                matched_cv = owned_variants.get(target_variant_id)
 
-                if matched_cv:
-                    processed_variant_ids.add(target_variant_id)
-                    groups = {}
-                    for entry in matched_cv.entries:
-                        k = (entry.language, entry.condition, entry.first_edition)
-                        groups[k] = groups.get(k, 0) + entry.quantity
+                # Find ALL matching variants (Exact ID match + Fuzzy/Normalized matches)
+                matching_variants = []
 
-                    for (lang, cond, first), qty in groups.items():
-                        rows.append(CollectorRow(
-                            api_card=card,
-                            set_code=set_code,
-                            set_name=set_name,
-                            rarity=rarity,
-                            price=price,
-                            image_url=row_img_url,
-                            owned_count=qty,
-                            is_owned=True,
-                            language=lang,
-                            condition=cond,
-                            first_edition=first,
-                            image_id=cset.image_id
-                        ))
+                # 1. Exact Match
+                exact_match = owned_variants.get(target_variant_id)
+                if exact_match:
+                    matching_variants.append(exact_match)
+
+                # 2. Fuzzy Match (Normalized Code + Rarity)
+                norm_api = normalize_set_code(cset.set_code)
+                for var_id, var in owned_variants.items():
+                    # Skip if already matched exactly (avoid duplicates)
+                    if var.variant_id == target_variant_id:
+                        continue
+
+                    # Skip if previously processed (e.g. matched by another API set entry? Unlikely but safe)
+                    if var_id in processed_variant_ids:
+                         continue
+
+                    # Check normalization match
+                    if normalize_set_code(var.set_code) == norm_api and var.rarity == cset.set_rarity:
+                        matching_variants.append(var)
+
+                if matching_variants:
+                    for matched_cv in matching_variants:
+                        processed_variant_ids.add(matched_cv.variant_id)
+
+                        groups = {}
+                        for entry in matched_cv.entries:
+                            k = (entry.language, entry.condition, entry.first_edition)
+                            groups[k] = groups.get(k, 0) + entry.quantity
+
+                        for (lang, cond, first), qty in groups.items():
+                            rows.append(CollectorRow(
+                                api_card=card,
+                                set_code=matched_cv.set_code, # Use the actual owned set code (e.g. MP25-DE278)
+                                set_name=set_name,
+                                rarity=rarity,
+                                price=price,
+                                image_url=row_img_url,
+                                owned_count=qty,
+                                is_owned=True,
+                                language=lang,
+                                condition=cond,
+                                first_edition=first,
+                                image_id=cset.image_id
+                            ))
                 else:
+                    # No owned variants matched this API set -> Show empty placeholder row
                     base_lang = "EN"
                     if "-" in set_code:
                         parts = set_code.split('-')
