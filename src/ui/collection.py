@@ -14,6 +14,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_LANGUAGES = ['EN', 'DE', 'FR', 'IT', 'ES', 'PT']
+STANDARD_RARITIES = [
+    'Common', 'Rare', 'Super Rare', 'Ultra Rare', 'Secret Rare',
+    'Ultimate Rare', 'Ghost Rare', 'Starlight Rare', "Collector's Rare",
+    'Prismatic Secret Rare', 'Platinum Secret Rare', 'Quarter Century Secret Rare',
+    'Gold Rare'
+]
+
 @dataclass
 class CardViewModel:
     api_card: ApiCard
@@ -858,41 +866,48 @@ class CollectionPage:
             if image_id is None:
                 image_id = card.card_images[0].id if card.card_images else None
 
-            # State
-            current_image_id = {'value': image_id}
-            current_qty = {'value': owned_count}
-            current_cond = {'value': condition}
-            current_first = {'value': first_edition}
+            # Prepare Set Options
+            # Map: Base Code -> {label, set_name}
+            set_options = {}
+            # Also need to map Back: Base Code -> ApiCardSet (sample) to get Name if needed
+            set_info_map = {}
 
-            def refresh_qty_from_collection():
-                 if not self.state['current_collection']: return
+            if card.card_sets:
+                for s in card.card_sets:
+                    # Use set_code as key. Multiple rarities/arts share set_code.
+                    code = s.set_code
+                    if code not in set_options:
+                        set_options[code] = f"{s.set_name} ({code})"
+                        set_info_map[code] = s
+            else:
+                # If no sets, provide a fallback option or "Custom"
+                set_options["Custom"] = "Custom Set"
 
-                 # Search
-                 qty = 0
-                 target_img = current_image_id['value']
+            # Determine initial base set code from passed set_code
+            initial_base_code = None
+            if set_code in set_options:
+                initial_base_code = set_code
+            else:
+                # Try to reverse transform or match prefix
+                found = False
+                for base in set_options.keys():
+                    if transform_set_code(base, language) == set_code:
+                        initial_base_code = base
+                        found = True
+                        break
+                if not found:
+                     initial_base_code = list(set_options.keys())[0] if set_options else "Custom"
 
-                 # Prepare set code match logic
-                 # We assume set_code passed in is either raw or transformed.
-                 # save_card_change uses transform_set_code. We should too.
-                 target_set = transform_set_code(set_code, language)
-
-                 for c in self.state['current_collection'].cards:
-                     c_img = c.metadata.image_id
-                     if c_img is None and card.card_images: c_img = card.card_images[0].id
-
-                     if (c.name == card.name and
-                         c.metadata.set_code == target_set and
-                         c.metadata.language == language and
-                         c.metadata.rarity == rarity and
-                         c.metadata.condition == current_cond['value'] and
-                         c.metadata.first_edition == current_first['value'] and
-                         c_img == target_img):
-                         qty = c.quantity
-                         break
-
-                 current_qty['value'] = qty
-                 if 'qty_input' in locals():
-                     locals()['qty_input'].value = qty
+            # Input State
+            input_state = {
+                'language': language,
+                'quantity': 1,
+                'rarity': rarity,
+                'condition': condition,
+                'first_edition': first_edition,
+                'set_base_code': initial_base_code,
+                'image_id': image_id
+            }
 
             with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
                 d.open()
@@ -905,11 +920,10 @@ class CollectionPage:
                         image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
 
                         def update_image():
-                            img_id = current_image_id['value']
+                            img_id = input_state['image_id']
                             high_res_remote_url = None
-                            low_res_url = None # Try to find one matching this ID
+                            low_res_url = None
 
-                            # Find Remote URL
                             if card.card_images:
                                 for img in card.card_images:
                                     if img.id == img_id:
@@ -917,7 +931,6 @@ class CollectionPage:
                                         low_res_url = img.image_url_small
                                         break
 
-                            # Fallback if specific image ID not found (unlikely)
                             if not low_res_url:
                                 low_res_url = image_url or (card.card_images[0].image_url_small if card.card_images else None)
 
@@ -926,141 +939,204 @@ class CollectionPage:
                                 high_res_remote_url,
                                 low_res_url,
                                 image_element,
-                                current_id_check=lambda: current_image_id['value'] == img_id
+                                current_id_check=lambda: input_state['image_id'] == img_id
                             )
 
                         update_image()
 
                     # Right: Info
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
-                        # Helper for stats
-                        def stat(label, value, color=None, bind_obj=None, bind_key='value', transform=None):
-                            with ui.column():
-                                ui.label(label).classes('text-grey text-sm uppercase select-none')
-                                classes = 'font-bold select-text'
-                                if color: classes += f' text-{color}'
-                                lbl = ui.label(str(value) if value is not None else '-').classes(classes)
-                                if bind_obj:
-                                    lbl.bind_text_from(bind_obj, bind_key, backward=transform or (lambda x: str(x)))
-
                         # Header
                         with ui.row().classes('w-full items-center justify-between'):
                             ui.label(card.name).classes('text-h3 font-bold text-white select-text')
-                        if owned_count > 0:
-                            ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
+
+                        # Top Owned Badge (Reactive)
+                        owned_badge = ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
+                        if owned_count == 0:
+                            owned_badge.set_visibility(False)
 
                         ui.separator().classes('q-my-md bg-gray-700')
 
-                        # Set Info
-                        ui.label('Set Information').classes('text-h6 q-mb-sm select-none')
+                        # Dynamic Info State
+                        # Use labels that we can update
                         with ui.grid(columns=4).classes('w-full gap-4 text-lg items-end'):
-                            stat('Set Name', set_name or 'N/A')
-                            stat('Set Code', set_code or 'N/A', 'yellow-500')
-                            stat('Rarity', rarity or 'Common')
-                            stat('Archetype', card.archetype or '-')
-
-                            stat('Condition', condition, bind_obj=current_cond)
-                            stat('Edition', "1st Edition" if first_edition else "Unlimited",
-                                 bind_obj=current_first,
-                                 transform=lambda x: "1st Edition" if x else "Unlimited")
-                            stat('Language', language)
+                            lbl_set_name = ui.label(f"Set: {set_name or 'N/A'}").classes('text-gray-400 text-sm')
+                            lbl_set_code = ui.label(f"Code: {set_code}").classes('text-yellow-500 font-mono')
+                            lbl_rarity = ui.label(f"Rarity: {rarity}").classes('text-sm')
+                            lbl_lang = ui.label(f"Lang: {language}").classes('text-sm')
 
                         ui.separator().classes('q-my-md')
 
                         # Prices
                         ui.label('Market Prices').classes('text-h6 q-mb-sm select-none')
-                        prices = card.card_prices[0] if card.card_prices else None
+                        lbl_set_price = ui.label(f"Set Price: ${set_price:.2f}" if set_price else "Set Price: -").classes('text-purple-400 font-bold select-text')
 
-                        with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
-                            stat('Set Price', f"${set_price:.2f}" if set_price else "-", 'purple-400')
-                            if prices:
-                                if prices.tcgplayer_price: stat('TCGPlayer', f"${prices.tcgplayer_price}", 'green-400')
-                                if prices.cardmarket_price: stat('CardMarket', f"€{prices.cardmarket_price}", 'blue-400')
-                                if prices.coolstuffinc_price: stat('CoolStuffInc', f"${prices.coolstuffinc_price}", 'orange-400')
-                            else:
-                                ui.label('No price data available').classes('text-grey italic select-none')
+                        # Update Function
+                        def update_display_stats():
+                            # 1. Update Labels based on selection
+                            base_code = input_state['set_base_code']
+
+                            s_name = "N/A"
+                            s_price = None
+
+                            if base_code in set_info_map:
+                                s_obj = set_info_map[base_code]
+                                s_name = s_obj.set_name
+                                # Try to find price for this specific rarity if possible?
+                                # card.card_sets has one entry per variant in DB.
+                                # But we might select a rarity that doesn't exist in DB yet.
+                                # Search DB for exact match
+                                matched_set = None
+                                for s in card.card_sets:
+                                    s_img = s.image_id if s.image_id is not None else (card.card_images[0].id if card.card_images else None)
+                                    if s.set_code == base_code and s.set_rarity == input_state['rarity'] and s_img == input_state['image_id']:
+                                        matched_set = s
+                                        break
+
+                                if matched_set and matched_set.set_price:
+                                    try: s_price = float(matched_set.set_price)
+                                    except: pass
+
+                            lbl_set_name.text = f"Set: {s_name}"
+                            final_code = transform_set_code(base_code, input_state['language'])
+                            lbl_set_code.text = f"Code: {final_code}"
+                            lbl_rarity.text = f"Rarity: {input_state['rarity']}"
+                            lbl_lang.text = f"Lang: {input_state['language']}"
+
+                            lbl_set_price.text = f"Set Price: ${s_price:.2f}" if s_price is not None else "Set Price: -"
+
+                            # 2. Update Owned Count
+                            cur_owned = 0
+                            if self.state['current_collection']:
+                                for c in self.state['current_collection'].cards:
+                                    c_img = c.metadata.image_id
+                                    if c_img is None and card.card_images: c_img = card.card_images[0].id
+
+                                    if (c.name == card.name and
+                                        c.metadata.set_code == final_code and
+                                        c.metadata.language == input_state['language'] and
+                                        c.metadata.rarity == input_state['rarity'] and
+                                        c.metadata.condition == input_state['condition'] and
+                                        c.metadata.first_edition == input_state['first_edition'] and
+                                        c_img == input_state['image_id']):
+                                        cur_owned = c.quantity
+                                        break
+
+                            owned_badge.text = f"Owned: {cur_owned}"
+                            owned_badge.set_visibility(cur_owned > 0)
+
 
                         ui.separator().classes('q-my-md')
 
-                        # Chart (Placeholder)
-                        ui.label('Price History (Last 6 Months)').classes('text-h6 q-mb-sm select-none')
-                        ui.echart({
-                            'tooltip': {'trigger': 'axis'},
-                            'xAxis': {'type': 'category', 'data': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']},
-                            'yAxis': {'type': 'value', 'axisLabel': {'formatter': '${value}'}},
-                            'series': [{
-                                'data': [1.20, 1.35, 1.10, 1.45, 1.60, 1.55],
-                                'type': 'line',
-                                'smooth': True,
-                                'areaStyle': {'opacity': 0.5},
-                                'itemStyle': {'color': '#4ade80'}
-                            }]
-                        }).classes('w-full h-64')
-
-                        # Manage (Edit) Section
-                        ui.separator().classes('q-my-md')
+                        # Manage Inventory Section
                         inventory_expansion = ui.expansion().classes('w-full bg-gray-800 rounded').props('icon=edit label="Manage Inventory"')
                         inventory_expansion.value = True
                         with inventory_expansion:
-                            with ui.card().classes('w-full bg-transparent p-4'):
+                            with ui.card().classes('w-full bg-transparent p-4 gap-4'):
 
-                                # Artwork Selection
-                                if card.card_images and len(card.card_images) > 1:
-                                    ui.label('Artwork Version').classes('text-sm text-gray-400')
-                                    art_options = {img.id: f"Artwork {i+1} (ID: {img.id})" for i, img in enumerate(card.card_images)}
+                                # Row 1: Language & Set
+                                with ui.row().classes('w-full gap-4'):
+                                    ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
+                                              on_change=lambda e: [input_state.update({'language': e.value}), update_display_stats()]).classes('w-1/3')
 
-                                    def on_art_change(e):
-                                        current_image_id['value'] = e.value
-                                        update_image()
-                                        refresh_qty_from_collection()
+                                    ui.select(set_options, label='Set Name', value=input_state['set_base_code'],
+                                              on_change=lambda e: [input_state.update({'set_base_code': e.value}), update_display_stats()]).classes('col-grow')
 
-                                    ui.select(art_options, value=current_image_id['value'], on_change=on_art_change).classes('w-full q-mb-md')
+                                # Row 2: Rarity & Condition & 1st Ed
+                                with ui.row().classes('w-full gap-4'):
+                                    ui.select(STANDARD_RARITIES, label='Rarity', value=input_state['rarity'],
+                                              on_change=lambda e: [input_state.update({'rarity': e.value}), update_display_stats()]).classes('w-1/3')
 
-                                # Condition & Edition
-                                with ui.row().classes('w-full gap-4 q-mb-md'):
-                                    def on_cond_change(e):
-                                        current_cond['value'] = e.value
-                                        refresh_qty_from_collection()
+                                    ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Condition', value=input_state['condition'],
+                                              on_change=lambda e: [input_state.update({'condition': e.value}), update_display_stats()]).classes('w-1/3')
 
-                                    ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], value=condition, label='Condition', on_change=on_cond_change).classes('w-48')
+                                    ui.checkbox('1st Edition', value=input_state['first_edition'],
+                                                on_change=lambda e: [input_state.update({'first_edition': e.value}), update_display_stats()]).classes('my-auto')
 
-                                    def on_first_change(e):
-                                        current_first['value'] = e.value
-                                        refresh_qty_from_collection()
+                                # Row 3: Artwork & Quantity
+                                with ui.row().classes('w-full gap-4 items-center'):
+                                    if card.card_images and len(card.card_images) > 1:
+                                        art_options = {img.id: f"Artwork {i+1} (ID: {img.id})" for i, img in enumerate(card.card_images)}
+                                        ui.select(art_options, label='Artwork', value=input_state['image_id'],
+                                                  on_change=lambda e: [input_state.update({'image_id': e.value}), update_image(), update_display_stats()]).classes('col-grow')
 
-                                    ui.checkbox('1st Edition', value=first_edition, on_change=on_first_change).classes('my-auto')
+                                    ui.number('Quantity', min=0, value=input_state['quantity'],
+                                              on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('w-32')
 
-                                ui.label('Quantity').classes('text-sm text-gray-400')
-                                with ui.row().classes('items-center gap-4'):
+                                # Row 4: Action Buttons
+                                with ui.row().classes('w-full gap-4 justify-end q-mt-md'):
 
-                                    def update_qty_display(val):
-                                        qty_input.value = val
-                                        current_qty['value'] = val
+                                    async def handle_update(mode):
+                                        # 1. Resolve Inputs
+                                        base_code = input_state['set_base_code']
+                                        sel_lang = input_state['language']
+                                        sel_rarity = input_state['rarity']
+                                        sel_img = input_state['image_id']
+                                        sel_cond = input_state['condition']
+                                        sel_first = input_state['first_edition']
+                                        input_qty = int(input_state['quantity'])
 
-                                    ui.button('-', on_click=lambda: update_qty_display(max(0, current_qty['value'] - 1))).props('round dense color=red')
-                                    qty_input = ui.number(min=0, value=owned_count, on_change=lambda e: update_qty_display(int(e.value or 0))).classes('w-32')
-                                    ui.button('+', on_click=lambda: update_qty_display(current_qty['value'] + 1)).props('round dense color=green')
+                                        # 2. Check/Add DB Variant
+                                        variant_exists = False
+                                        for s in card.card_sets:
+                                            s_img = s.image_id if s.image_id is not None else (card.card_images[0].id if card.card_images else None)
+                                            if s.set_code == base_code and s.set_rarity == sel_rarity and s_img == sel_img:
+                                                variant_exists = True
+                                                break
 
-                                    ui.space()
+                                        if not variant_exists:
+                                            s_name = set_info_map[base_code].set_name if base_code in set_info_map else "Custom Set"
+                                            await ygo_service.add_card_variant(
+                                                card_id=card.id,
+                                                set_name=s_name,
+                                                set_code=base_code,
+                                                set_rarity=sel_rarity,
+                                                image_id=sel_img,
+                                                language="en"
+                                            )
+                                            ui.notify(f"Added new variant: {base_code} / {sel_rarity}", type='positive')
 
-                                    async def on_update():
-                                        # Ensure set code matches language logic (even for existing rows, to correct them if saved again)
-                                        final_set_code = transform_set_code(set_code, language)
+                                        # 3. Calculate Target Quantity
+                                        final_set_code = transform_set_code(base_code, sel_lang)
+
+                                        current_owned = 0
+                                        if self.state['current_collection']:
+                                            for c in self.state['current_collection'].cards:
+                                                c_img = c.metadata.image_id
+                                                if c_img is None and card.card_images: c_img = card.card_images[0].id
+
+                                                if (c.name == card.name and
+                                                    c.metadata.set_code == final_set_code and
+                                                    c.metadata.language == sel_lang and
+                                                    c.metadata.rarity == sel_rarity and
+                                                    c.metadata.condition == sel_cond and
+                                                    c.metadata.first_edition == sel_first and
+                                                    c_img == sel_img):
+                                                    current_owned = c.quantity
+                                                    break
+
+                                        new_quantity = 0
+                                        if mode == 'SET':
+                                            new_quantity = input_qty
+                                        elif mode == 'ADD':
+                                            new_quantity = max(0, current_owned + input_qty)
+
+                                        # 4. Save
                                         await self.save_card_change(
                                             card,
                                             final_set_code,
-                                            rarity,
-                                            language,
-                                            int(current_qty['value']),
-                                            current_cond['value'],
-                                            current_first['value'],
-                                            image_id=current_image_id['value']
+                                            sel_rarity,
+                                            sel_lang,
+                                            new_quantity,
+                                            sel_cond,
+                                            sel_first,
+                                            image_id=sel_img
                                         )
                                         d.close()
 
-                                    ui.button('Update', on_click=on_update).props('color=secondary size=lg icon=save')
+                                    ui.button('SET', on_click=lambda: handle_update('SET')).props('color=warning text-color=dark')
+                                    ui.button('ADD', on_click=lambda: handle_update('ADD')).props('color=secondary')
 
-                                ui.label('Note: Updates specific variant (Set+Rarity+Lang+Art+Cond+Ed).').classes('text-xs text-grey select-none q-mt-sm')
         except Exception as e:
             logger.error(f"ERROR in render_collectors_single_view: {e}", exc_info=True)
 
