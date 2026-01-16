@@ -61,6 +61,14 @@ class SingleCardView:
         Renders the inventory management section (Language, Set, Rarity, etc.).
         Shared by both Consolidated and Collectors views.
         """
+        # Ensure set_base_code is valid or default
+        if input_state['set_base_code'] not in set_options and default_set_base_code:
+            input_state['set_base_code'] = default_set_base_code
+
+        # Ensure image_id is valid or default
+        if input_state['image_id'] is None and card.card_images:
+            input_state['image_id'] = card.card_images[0].id
+
         # Store initial input state for comparison
         initial_check_state = {
             'set_base_code': input_state['set_base_code'],
@@ -73,10 +81,6 @@ class SingleCardView:
             with ui.row().classes('w-full gap-4'):
                 ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
                             on_change=lambda e: [input_state.update({'language': e.value}), on_change_callback()]).classes('w-1/3')
-
-                # Ensure set_base_code is valid or default
-                if input_state['set_base_code'] not in set_options and default_set_base_code:
-                     input_state['set_base_code'] = default_set_base_code
 
                 set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-grow')
 
