@@ -519,10 +519,20 @@ class DeckBuilderPage:
                 if not items:
                     ui.label('No cards found.').classes('text-grey italic w-full text-center')
                     return
+
+                # Calculate owned counts for the current page
+                owned_map = {}
+                if self.state['reference_collection']:
+                    for c in self.state['reference_collection'].cards:
+                        owned_map[c.card_id] = c.total_quantity
+
                 with ui.grid(columns='repeat(auto-fill, minmax(100px, 1fr))').classes('w-full gap-2'):
                     for card in items:
                          img_id = card.card_images[0].id if card.card_images else card.id
                          img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
+
+                         owned_qty = owned_map.get(card.id, 0)
+
                          with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
                             .props('draggable') \
                             .on('dragstart', lambda c=card: self.handle_drag_start(c, 'gallery')) \
@@ -530,12 +540,17 @@ class DeckBuilderPage:
                             .on('dragend.once', 'event.target.classList.remove("opacity-50")') \
                             .on('dragend', self.handle_drag_end) \
                             .on('click', lambda c=card: self.open_deck_builder_wrapper(c)):
-                             ui.image(img_src).classes('w-full aspect-[2/3] object-cover')
+
+                             with ui.element('div').classes('relative w-full aspect-[2/3]'):
+                                 ui.image(img_src).classes('w-full h-full object-cover')
+                                 if owned_qty > 0:
+                                     ui.label(f"{owned_qty}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
+
                              with ui.column().classes('p-1 gap-0 w-full'):
                                  ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
                                  ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
 
-    def open_deck_builder_wrapper(self, card):
+    async def open_deck_builder_wrapper(self, card):
         owned_count = 0
         owned_breakdown = {}
         if self.state['reference_collection']:
@@ -546,7 +561,7 @@ class DeckBuilderPage:
                              owned_breakdown[e.language] = owned_breakdown.get(e.language, 0) + e.quantity
                              owned_count += e.quantity
                      break
-        self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
+        await self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
 
     @ui.refreshable
     def render_main_deck_grid(self):
