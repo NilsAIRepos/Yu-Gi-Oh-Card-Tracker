@@ -5,6 +5,7 @@ from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
 from src.core.utils import transform_set_code, generate_variant_id
+from src.ui.components.filter_pane import FilterPane
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Callable
 import asyncio
@@ -30,6 +31,7 @@ class CardViewModel:
     is_owned: bool
     lowest_price: float = 0.0
     owned_languages: Set[str] = field(default_factory=set)
+    owned_conditions: Set[str] = field(default_factory=set)
 
 @dataclass
 class CollectorRow:
@@ -52,10 +54,12 @@ def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[int, Co
         c_card = owned_details.get(card.id)
         qty = c_card.total_quantity if c_card else 0
         owned_langs = set()
+        owned_conds = set()
         if c_card:
             for v in c_card.variants:
                 for e in v.entries:
                     owned_langs.add(e.language)
+                    owned_conds.add(e.condition)
 
         lowest = 0.0
         prices = []
@@ -70,7 +74,7 @@ def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[int, Co
         if prices:
             lowest = min(prices)
 
-        vms.append(CardViewModel(card, qty, qty > 0, lowest, owned_langs))
+        vms.append(CardViewModel(card, qty, qty > 0, lowest, owned_langs, owned_conds))
     return vms
 
 def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, CollectionCard], language: str) -> List[CollectorRow]:
@@ -216,14 +220,15 @@ class CollectionPage:
             'available_monster_races': [],
             'available_st_races': [],
             'available_archetypes': [],
-            'available_card_types': ['Monster', 'Spell', 'Trap'],
+            'available_card_types': ['Monster', 'Spell', 'Trap', 'Skill'],
             'max_owned_quantity': 100,
 
             'search_text': '',
             'filter_set': '',
             'filter_rarity': '',
             'filter_attr': '',
-            'filter_card_type': '',
+            'filter_card_type': ['Monster', 'Spell', 'Trap'],
+            'filter_condition': [],
             'filter_monster_race': '',
             'filter_st_race': '',
             'filter_archetype': '',
@@ -243,6 +248,7 @@ class CollectionPage:
             'only_owned': False,
             'language': config_manager.get_language(),
             'sort_by': 'Name',
+            'sort_descending': False,
 
             'view_scope': 'consolidated',
             'view_mode': 'grid',
@@ -253,7 +259,7 @@ class CollectionPage:
 
         files = persistence.list_collections()
         self.state['selected_file'] = files[0] if files else None
-        self.filter_inputs = {}
+        self.filter_pane: Optional[FilterPane] = None
 
     async def load_data(self):
         logger.info(f"Loading data... (Language: {self.state['language']})")
@@ -321,25 +327,8 @@ class CollectionPage:
         logger.info(f"Data loaded. Items: {len(self.state['cards_consolidated'])}")
 
     def update_filter_ui(self):
-        if hasattr(self, 'set_selector'):
-            self.set_selector.options = self.state['available_sets']
-            self.set_selector.update()
-        if hasattr(self, 'm_race_selector'):
-            self.m_race_selector.options = self.state['available_monster_races']
-            self.m_race_selector.update()
-        if hasattr(self, 'st_race_selector'):
-            self.st_race_selector.options = self.state['available_st_races']
-            self.st_race_selector.update()
-        if hasattr(self, 'archetype_selector'):
-            self.archetype_selector.options = self.state['available_archetypes']
-            self.archetype_selector.update()
-
-        if 'ownership' in self.filter_inputs:
-             slider, min_inp, max_inp = self.filter_inputs['ownership']
-             slider.max = self.state['max_owned_quantity']
-             slider.update()
-             max_inp.max = self.state['max_owned_quantity']
-             max_inp.update()
+        if self.filter_pane:
+            self.filter_pane.update_options()
 
     async def reset_filters(self):
         self.state.update({
@@ -347,7 +336,8 @@ class CollectionPage:
             'filter_set': '',
             'filter_rarity': '',
             'filter_attr': '',
-            'filter_card_type': '',
+            'filter_card_type': ['Monster', 'Spell', 'Trap'],
+            'filter_condition': [],
             'filter_monster_race': '',
             'filter_st_race': '',
             'filter_archetype': '',
@@ -365,21 +355,8 @@ class CollectionPage:
             'only_owned': False
         })
 
-        for key, components in self.filter_inputs.items():
-            slider, min_inp, max_inp = components
-
-            if key == 'atk':
-                min_val, max_val = 0, 5000
-            elif key == 'def':
-                min_val, max_val = 0, 5000
-            elif key == 'ownership':
-                min_val, max_val = 0, self.state['max_owned_quantity']
-            elif key == 'price':
-                min_val, max_val = 0.0, 1000.0
-
-            slider.value = {'min': min_val, 'max': max_val}
-            min_inp.value = min_val
-            max_inp.value = max_val
+        if self.filter_pane:
+            self.filter_pane.reset_ui_elements()
 
         await self.apply_filters()
 
@@ -462,11 +439,20 @@ class CollectionPage:
             else:
                  res = [c for c in res if c.language == target_lang]
 
+        if self.state.get('filter_condition'):
+            conds = self.state['filter_condition']
+            if self.state['view_scope'] == 'consolidated':
+                res = [c for c in res if any(cond in c.owned_conditions for cond in conds)]
+            else:
+                res = [c for c in res if c.condition in conds]
+
         if self.state['filter_attr']:
             res = [c for c in res if c.api_card.attribute == self.state['filter_attr']]
 
         if self.state['filter_card_type']:
-             res = [c for c in res if self.state['filter_card_type'] in c.api_card.type]
+             ctypes = self.state['filter_card_type']
+             if isinstance(ctypes, str): ctypes = [ctypes]
+             res = [c for c in res if any(t in c.api_card.type for t in ctypes)]
 
         if self.state['filter_monster_race']:
              res = [c for c in res if "Monster" in c.api_card.type and c.api_card.race == self.state['filter_monster_race']]
@@ -539,18 +525,20 @@ class CollectionPage:
                  res = [c for c in res if r == c.rarity.lower()]
 
         key = self.state['sort_by']
+        reverse = self.state.get('sort_descending', False)
+
         if key == 'Name':
-            res.sort(key=lambda x: x.api_card.name)
+            res.sort(key=lambda x: x.api_card.name, reverse=reverse)
         elif key == 'ATK':
-            res.sort(key=lambda x: (x.api_card.atk or -1), reverse=True)
+            res.sort(key=lambda x: (x.api_card.atk or -1), reverse=reverse)
         elif key == 'DEF':
-            res.sort(key=lambda x: (getattr(x.api_card, 'def_', None) or -1), reverse=True)
+            res.sort(key=lambda x: (getattr(x.api_card, 'def_', None) or -1), reverse=reverse)
         elif key == 'Level':
-            res.sort(key=lambda x: (x.api_card.level or -1), reverse=True)
+            res.sort(key=lambda x: (x.api_card.level or -1), reverse=reverse)
         elif key == 'Newest':
-            res.sort(key=lambda x: x.api_card.id, reverse=True)
+            res.sort(key=lambda x: x.api_card.id, reverse=reverse)
         elif key == 'Price':
-             res.sort(key=lambda x: get_price(x))
+             res.sort(key=lambda x: get_price(x), reverse=reverse)
 
         self.state['filtered_items'] = res
         self.state['page'] = 1
@@ -1351,11 +1339,27 @@ class CollectionPage:
 
             async def on_sort_change(e):
                 self.state['sort_by'] = e.value
+                # Smart default: non-Name fields usually sort descending (High to Low)
+                if e.value != 'Name':
+                    self.state['sort_descending'] = True
+                else:
+                    self.state['sort_descending'] = False
+                self.render_header.refresh()
                 await self.apply_filters()
 
-            with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
-                      on_change=on_sort_change).classes('w-32'):
-                ui.tooltip('Choose how to sort the displayed cards')
+            with ui.row().classes('items-center gap-1'):
+                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
+                        on_change=on_sort_change).classes('w-32'):
+                    ui.tooltip('Choose how to sort the displayed cards')
+
+                async def toggle_sort_dir():
+                    self.state['sort_descending'] = not self.state['sort_descending']
+                    self.render_header.refresh()
+                    await self.apply_filters()
+
+                icon = 'arrow_downward' if self.state.get('sort_descending') else 'arrow_upward'
+                with ui.button(icon=icon, on_click=toggle_sort_dir).props('flat round dense'):
+                    ui.tooltip('Toggle sort direction')
 
             async def on_owned_switch(e):
                 self.state['only_owned'] = e.value
@@ -1439,95 +1443,8 @@ class CollectionPage:
         self.filter_dialog = ui.dialog().props('position=right')
         with self.filter_dialog, ui.card().classes('h-full w-96 bg-gray-900 border-l border-gray-700 p-0 flex flex-col'):
              with ui.scroll_area().classes('flex-grow w-full'):
-                 with ui.column().classes('w-full p-4 gap-4'):
-                    ui.label('Filters').classes('text-h6')
-
-                    self.set_selector = ui.select(self.state['available_sets'], label='Set', with_input=True, clearable=True,
-                              on_change=self.apply_filters).bind_value(self.state, 'filter_set').classes('w-full').props('use-input fill-input input-debounce=0')
-
-                    common_rarities = ["Common", "Rare", "Super Rare", "Ultra Rare", "Secret Rare", "Ghost Rare", "Ultimate Rare", "Starlight Rare", "Collector's Rare"]
-                    ui.select(common_rarities, label='Rarity', with_input=True, clearable=True, on_change=self.apply_filters).bind_value(self.state, 'filter_rarity').classes('w-full')
-
-                    ui.select(['DARK', 'LIGHT', 'EARTH', 'WIND', 'FIRE', 'WATER', 'DIVINE'],
-                              label='Attribute', clearable=True, on_change=self.apply_filters).bind_value(self.state, 'filter_attr').classes('w-full')
-
-                    self.ctype_selector = ui.select(self.state['available_card_types'], label='Card Types', with_input=True, clearable=True,
-                                                    on_change=self.apply_filters).bind_value(self.state, 'filter_card_type').classes('w-full')
-
-                    self.m_race_selector = ui.select(self.state['available_monster_races'], label='Monster Type', with_input=True, clearable=True,
-                                                    on_change=self.apply_filters).bind_value(self.state, 'filter_monster_race').classes('w-full')
-
-                    self.st_race_selector = ui.select(self.state['available_st_races'], label='Spell/Trap Type', with_input=True, clearable=True,
-                                                    on_change=self.apply_filters).bind_value(self.state, 'filter_st_race').classes('w-full')
-
-                    self.archetype_selector = ui.select(self.state['available_archetypes'], label='Archetype', with_input=True, clearable=True,
-                                                    on_change=self.apply_filters).bind_value(self.state, 'filter_archetype').classes('w-full')
-
-                    categories = ['Effect', 'Normal', 'Synchro', 'Xyz', 'Ritual', 'Fusion', 'Link', 'Pendulum', 'Toon', 'Spirit', 'Union', 'Gemini', 'Flip']
-                    ui.select(categories, label='Monster Category', multiple=True, clearable=True, on_change=self.apply_filters).bind_value(self.state, 'filter_monster_category').classes('w-full').props('use-chips')
-
-                    ui.number('Level/Rank', min=0, max=13, on_change=self.apply_filters).bind_value(self.state, 'filter_level').classes('w-full')
-
-                    def setup_range_filter(label, min_key, max_key, min_limit, max_limit, step=1, name=''):
-                        ui.label(label).classes('text-sm text-gray-400')
-                        with ui.row().classes('w-full items-center gap-2'):
-                            min_input = ui.number(min=min_limit, max=max_limit, step=step).classes('w-16').props('dense borderless')
-                            max_input = ui.number(min=min_limit, max=max_limit, step=step).classes('w-16').props('dense borderless')
-
-                            slider = ui.range(min=min_limit, max=max_limit, step=step).classes('col-grow')
-
-                            async def on_slider_change(e):
-                                val = e.args[0] if isinstance(e.args[0], dict) else e.value
-                                self.state[min_key] = val['min']
-                                self.state[max_key] = val['max']
-                                min_input.value = val['min']
-                                max_input.value = val['max']
-                                await self.apply_filters()
-
-                            async def on_min_input_change(e):
-                                try:
-                                    val = float(e.value) if e.value is not None else min_limit
-                                except: val = min_limit
-                                self.state[min_key] = val
-                                slider.value = {'min': val, 'max': self.state[max_key]}
-                                await self.apply_filters()
-
-                            async def on_max_input_change(e):
-                                try:
-                                    val = float(e.value) if e.value is not None else max_limit
-                                except: val = max_limit
-                                self.state[max_key] = val
-                                slider.value = {'min': self.state[min_key], 'max': val}
-                                await self.apply_filters()
-
-                            slider.on('update:model-value', on_slider_change)
-                            slider.value = {'min': self.state[min_key], 'max': self.state[max_key]}
-
-                            min_input.on('change', on_min_input_change)
-                            min_input.value = self.state[min_key]
-
-                            max_input.on('change', on_max_input_change)
-                            max_input.value = self.state[max_key]
-
-                            if name:
-                                self.filter_inputs[name] = (slider, min_input, max_input)
-
-
-                    setup_range_filter('ATK', 'filter_atk_min', 'filter_atk_max', 0, 5000, 50, 'atk')
-                    setup_range_filter('DEF', 'filter_def_min', 'filter_def_max', 0, 5000, 50, 'def')
-
-                    ui.separator()
-                    ui.label('Ownership & Price').classes('text-h6')
-
-                    setup_range_filter('Ownership Quantity Range', 'filter_ownership_min', 'filter_ownership_max', 0, self.state['max_owned_quantity'], 1, 'ownership')
-                    setup_range_filter('Price Range ($)', 'filter_price_min', 'filter_price_max', 0, 1000, 1, 'price')
-
-                    ui.select(['EN', 'DE', 'FR', 'IT', 'PT'], label='Owned Language', clearable=True,
-                              on_change=self.apply_filters).bind_value(self.state, 'filter_owned_lang').classes('w-full')
-
-             with ui.column().classes('p-4 border-t border-gray-700 bg-gray-900 w-full'):
-                 with ui.button('Reset All Filters', on_click=self.reset_filters).classes('w-full').props('color=red-9 outline'):
-                     ui.tooltip('Clear all active filters and reset to default')
+                 self.filter_pane = FilterPane(self.state, self.apply_filters, self.reset_filters)
+                 self.filter_pane.build()
 
         self.render_header()
 
