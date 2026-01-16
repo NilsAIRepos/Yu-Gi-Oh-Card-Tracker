@@ -2,11 +2,13 @@ import requests
 import json
 import os
 import asyncio
+import uuid
 import logging
 from typing import List, Optional, Callable, Dict
-from src.core.models import ApiCard
+from src.core.models import ApiCard, ApiCardSet
 from src.services.image_manager import image_manager
 from src.core.persistence import persistence
+from src.core.utils import generate_variant_id
 from nicegui import run
 
 API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -45,7 +47,7 @@ class YugiohService:
         return os.path.join(DB_DIR, filename)
 
     async def fetch_card_database(self, language: str = "en") -> int:
-        """Downloads the full database from the API. Returns count of cards."""
+        """Downloads the full database from the API and merges it with local data."""
         logger.info(f"Fetching card database for language: {language}")
         params = {}
         if language != "en":
@@ -59,28 +61,131 @@ class YugiohService:
 
         if response.status_code == 200:
             data = response.json()
-            # The API returns {"data": [...] }
             cards_data = data.get("data", [])
             logger.info(f"Fetched {len(cards_data)} cards from API.")
 
-            # Save raw JSON first
+            # Parse new API data
             try:
-                await run.io_bound(self._save_db_file, cards_data, language)
+                api_cards = await run.io_bound(parse_cards_data, cards_data)
             except RuntimeError:
-                await asyncio.to_thread(self._save_db_file, cards_data, language)
+                api_cards = parse_cards_data(cards_data)
 
-            # Update cache (parse in thread)
+            # Load existing local data to merge
+            local_cards = []
             try:
-                parsed_cards = await run.io_bound(parse_cards_data, cards_data)
-            except RuntimeError:
-                # If run.io_bound fails, run directly
-                parsed_cards = parse_cards_data(cards_data)
+                # Attempt to read file directly to avoid recursive fetch
+                if hasattr(run, 'io_bound'):
+                     local_raw = await run.io_bound(self._read_db_file, language)
+                else:
+                     local_raw = self._read_db_file(language)
 
-            self._cards_cache[language] = parsed_cards
+                if local_raw:
+                    try:
+                        local_cards = await run.io_bound(parse_cards_data, local_raw) if hasattr(run, 'io_bound') else parse_cards_data(local_raw)
+                    except RuntimeError:
+                        local_cards = parse_cards_data(local_raw)
+            except (FileNotFoundError, json.JSONDecodeError):
+                logger.info("No valid local database found, starting fresh.")
+
+            # Merge
+            try:
+                 merged_cards = await run.io_bound(self._merge_database_data, local_cards, api_cards)
+            except RuntimeError:
+                 merged_cards = self._merge_database_data(local_cards, api_cards)
+
+            # Save merged data
+            await self.save_card_database(merged_cards, language)
+
             return len(self._cards_cache[language])
         else:
             logger.error(f"API Error: {response.status_code}")
             raise Exception(f"API Error: {response.status_code}")
+
+    def _merge_database_data(self, local_cards: List[ApiCard], api_cards: List[ApiCard]) -> List[ApiCard]:
+        """Merges API data into local data, preserving custom variants and IDs."""
+        local_map = {c.id: c for c in local_cards}
+        merged_list = []
+
+        for api_card in api_cards:
+            local_card = local_map.get(api_card.id)
+            if local_card:
+                # Use API card as base for stats/text, but merge sets
+                merged_card = api_card.model_copy() if hasattr(api_card, 'model_copy') else api_card.copy()
+
+                # Map local sets by (code, rarity) for matching
+                # Note: We group by key because there might be multiple (e.g. alt arts)
+                local_sets_map = {}
+                for s in local_card.card_sets:
+                    key = (s.set_code, s.set_rarity)
+                    if key not in local_sets_map:
+                        local_sets_map[key] = []
+                    local_sets_map[key].append(s)
+
+                merged_sets = []
+                processed_local_sets = set() # Track by object id or variant_id
+
+                for api_set in api_card.card_sets:
+                    key = (api_set.set_code, api_set.set_rarity)
+                    if key in local_sets_map:
+                        # Match found. Update all matching local sets with fresh price/info
+                        # but keep their IDs and image_ids
+                        for local_s in local_sets_map[key]:
+                            if local_s.variant_id in processed_local_sets:
+                                continue
+
+                            # Update mutable fields from API
+                            local_s.set_price = api_set.set_price
+                            # Keep local_s in merged list
+                            merged_sets.append(local_s)
+                            # Mark as processed
+                            processed_local_sets.add(local_s.variant_id)
+                    else:
+                        # New set from API
+                        api_set.variant_id = generate_variant_id(
+                            api_card.id, api_set.set_code, api_set.set_rarity, api_set.image_id
+                        )
+                        merged_sets.append(api_set)
+
+                # Add remaining local sets (custom or those not returned by API currently)
+                for sets in local_sets_map.values():
+                    for s in sets:
+                        if s.variant_id not in processed_local_sets:
+                            merged_sets.append(s)
+
+                merged_card.card_sets = merged_sets
+                merged_list.append(merged_card)
+            else:
+                # New card entirely
+                for s in api_card.card_sets:
+                    s.variant_id = generate_variant_id(
+                        api_card.id, s.set_code, s.set_rarity, s.image_id
+                    )
+                merged_list.append(api_card)
+
+        # We generally do not keep cards that are in Local but NOT in API,
+        # as that usually means they were removed/invalid.
+        # (Unless we support custom cards which have IDs not in API range?)
+        # For now, we stick to API as master list for existence of cards.
+
+        return merged_list
+
+    async def save_card_database(self, cards: List[ApiCard], language: str = "en"):
+        """Saves the card database to disk."""
+        self._cards_cache[language] = cards
+
+        if not cards:
+            return
+
+        # Serialize
+        if hasattr(cards[0], 'model_dump'):
+             raw_data = [c.model_dump(mode='json', by_alias=True) for c in cards]
+        else:
+             raw_data = [c.dict(by_alias=True) for c in cards]
+
+        try:
+            await run.io_bound(self._save_db_file, raw_data, language)
+        except RuntimeError:
+            await asyncio.to_thread(self._save_db_file, raw_data, language)
 
     def _save_db_file(self, data, language: str = "en"):
         if not os.path.exists(DB_DIR):
@@ -89,6 +194,39 @@ class YugiohService:
         filepath = self._get_db_file(language)
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f)
+
+    async def add_card_variant(self, card_id: int, set_name: str, set_code: str, set_rarity: str,
+                               set_rarity_code: Optional[str] = None, set_price: Optional[str] = None,
+                               image_id: Optional[int] = None, language: str = "en") -> ApiCardSet:
+        """
+        Adds a new custom variant to a card in the database.
+        Generates a unique variant_id using UUID to distinguish it from API-sourced variants.
+        """
+        cards = await self.load_card_database(language)
+        card = next((c for c in cards if c.id == card_id), None)
+
+        if not card:
+            raise ValueError(f"Card with ID {card_id} not found.")
+
+        new_variant_id = str(uuid.uuid4())
+
+        new_set = ApiCardSet(
+            variant_id=new_variant_id,
+            set_name=set_name,
+            set_code=set_code,
+            set_rarity=set_rarity,
+            set_rarity_code=set_rarity_code,
+            set_price=set_price,
+            image_id=image_id
+        )
+
+        card.card_sets.append(new_set)
+
+        # Save updated database
+        await self.save_card_database(cards, language)
+        logger.info(f"Added new variant {new_variant_id} to card {card_id}")
+
+        return new_set
 
     async def load_card_database(self, language: str = "en") -> List[ApiCard]:
         """Loads the database from disk. If missing, fetches it."""
@@ -296,15 +434,7 @@ class YugiohService:
 
         # Save back to disk
         try:
-             # Use model_dump if available (Pydantic v2), else dict
-             # And ensure aliases (like 'def') are used
-             if hasattr(cards[0], 'model_dump'):
-                 raw_data = [c.model_dump(mode='json', by_alias=True) for c in cards]
-             else:
-                 # Fallback for older Pydantic
-                 raw_data = [c.dict(by_alias=True) for c in cards]
-
-             await run.io_bound(self._save_db_file, raw_data, language)
+             await self.save_card_database(cards, language)
              logger.info("Saved updated database with artwork mappings.")
         except Exception as e:
             logger.error(f"Error saving updated database: {e}")

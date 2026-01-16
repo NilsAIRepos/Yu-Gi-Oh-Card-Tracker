@@ -43,12 +43,17 @@ class ApiCardImage(BaseModel):
     image_url_cropped: Optional[str] = None
 
 class ApiCardSet(BaseModel):
+    variant_id: Optional[str] = None
     set_name: str
     set_code: str
     set_rarity: str
     set_rarity_code: Optional[str] = None
     set_price: Optional[str] = None
-    image_id: Optional[int] = None
+    image_id: Optional[int] = Field(None, alias='card_image_id')
+
+    model_config = {
+        "populate_by_name": True
+    }
 
 class ApiCardPrice(BaseModel):
     cardmarket_price: Optional[str] = None
