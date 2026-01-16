@@ -6,6 +6,7 @@ from src.services.image_manager import image_manager
 from src.core.config import config_manager
 from src.core.utils import transform_set_code, generate_variant_id
 from src.ui.components.filter_pane import FilterPane
+from src.ui.components.single_card_view import render_consolidated_single_view, render_collectors_single_view
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Callable
 import asyncio
@@ -15,14 +16,6 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
-
-SUPPORTED_LANGUAGES = ['EN', 'DE', 'FR', 'IT', 'ES', 'PT']
-STANDARD_RARITIES = [
-    'Common', 'Rare', 'Super Rare', 'Ultra Rare', 'Secret Rare',
-    'Ultimate Rare', 'Ghost Rare', 'Starlight Rare', "Collector's Rare",
-    'Prismatic Secret Rare', 'Platinum Secret Rare', 'Quarter Century Secret Rare',
-    'Gold Rare'
-]
 
 @dataclass
 class CardViewModel:
@@ -551,7 +544,7 @@ class CollectionPage:
         count = len(self.state['filtered_items'])
         self.state['total_pages'] = (count + self.state['page_size'] - 1) // self.state['page_size']
 
-    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None):
+    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET'):
         if not self.state['current_collection']:
             ui.notify('No collection selected.', type='negative')
             return
@@ -565,7 +558,8 @@ class CollectionPage:
                 break
 
         if not target_card:
-            if quantity <= 0: return
+            # If removing/setting 0 and it doesn't exist, do nothing
+            if quantity <= 0 and mode == 'SET': return
             target_card = CollectionCard(card_id=api_card.id, name=api_card.name)
             col.cards.append(target_card)
 
@@ -580,7 +574,12 @@ class CollectionPage:
                 break
 
         if not target_variant:
-             if quantity > 0:
+             # Need to add if quantity > 0
+             should_add = False
+             if mode == 'SET' and quantity > 0: should_add = True
+             elif mode == 'ADD' and quantity > 0: should_add = True
+
+             if should_add:
                  target_variant = CollectionVariant(
                      variant_id=target_variant_id,
                      set_code=set_code,
@@ -596,15 +595,24 @@ class CollectionPage:
                     target_entry = e
                     break
 
-            if quantity > 0:
+            # Calculate new quantity
+            final_quantity = 0
+            current_quantity = target_entry.quantity if target_entry else 0
+
+            if mode == 'SET':
+                final_quantity = quantity
+            elif mode == 'ADD':
+                final_quantity = current_quantity + quantity
+
+            if final_quantity > 0:
                 if target_entry:
-                    target_entry.quantity = quantity
+                    target_entry.quantity = final_quantity
                 else:
                     target_variant.entries.append(CollectionEntry(
                         condition=condition,
                         language=language,
                         first_edition=first_edition,
-                        quantity=quantity
+                        quantity=final_quantity
                     ))
             else:
                 if target_entry:
@@ -614,7 +622,8 @@ class CollectionPage:
                 target_card.variants.remove(target_variant)
 
         if not target_card.variants:
-            col.cards.remove(target_card)
+            if target_card in col.cards:
+                col.cards.remove(target_card)
 
         try:
             await run.io_bound(persistence.save_collection, col, self.state['selected_file'])
@@ -625,35 +634,10 @@ class CollectionPage:
             logger.error(f"Error saving collection: {e}")
             ui.notify(f"Error saving: {e}", type='negative')
 
-    def setup_high_res_image_logic(self, img_id: int, high_res_remote_url: str, low_res_url: str, image_element: ui.image, current_id_check: Callable[[], bool] = None):
-        """
-        Sets the source of the image element.
-        Prioritizes local high-res > remote high-res.
-        If local high-res is missing but remote high-res is available, downloads it in background.
-        """
-        if not img_id:
-             image_element.source = high_res_remote_url or low_res_url
-             return
-
-        # Check local high-res
-        if image_manager.image_exists(img_id, high_res=True):
-             image_element.source = f"/images/{img_id}_high.jpg"
-             image_element.update()
-             return
-
-        # Use remote high-res directly, fallback to low-res only if high-res is missing
-        image_element.source = high_res_remote_url if high_res_remote_url else low_res_url
-        image_element.update()
-
-        # Background download high-res
-        if high_res_remote_url:
-             async def download_task():
-                 await image_manager.ensure_image(img_id, high_res_remote_url, high_res=True)
-
-             # Run in background
-             asyncio.create_task(download_task())
-
     def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, condition: str = "Near Mint", first_edition: bool = False, image_url: str = None, image_id: int = None, set_price: float = 0.0):
+        async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
+            await self.save_card_change(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode)
+
         if self.state['view_scope'] == 'consolidated':
             owned_breakdown = {}
             total_owned = 0
@@ -666,450 +650,14 @@ class CollectionPage:
                                  total_owned += e.quantity
                          break
 
-            self.render_consolidated_single_view(card, total_owned, owned_breakdown)
+            render_consolidated_single_view(card, total_owned, owned_breakdown, on_save)
             return
 
         if self.state['view_scope'] == 'collectors':
-             self.render_collectors_single_view(card, quantity, initial_set, rarity, set_name, language, condition, first_edition, image_url, image_id, set_price)
+             render_collectors_single_view(card, quantity, set_code or "N/A", rarity, set_name, language, condition, first_edition, image_url, image_id, set_price, self.state['current_collection'], on_save)
              return
 
-        self.open_single_view_legacy(card, is_owned, quantity, initial_set, owned_languages)
-
-    def render_consolidated_single_view(self, card: ApiCard, total_owned: int, owned_breakdown: Dict[str, int]):
-        try:
-            with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
-                d.open()
-                ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
-
-                with ui.row().classes('w-full h-full no-wrap gap-0'):
-                    with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
-                        img_id = card.card_images[0].id if card.card_images else card.id
-                        high_res_url = card.card_images[0].image_url if card.card_images else None
-                        low_res_url = card.card_images[0].image_url_small if card.card_images else None
-
-                        image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
-                        self.setup_high_res_image_logic(img_id, high_res_url, low_res_url, image_element)
-
-                    with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
-                        with ui.row().classes('w-full items-center justify-between'):
-                            ui.label(card.name).classes('text-4xl font-bold text-white select-text')
-                        if total_owned > 0:
-                            ui.badge(f"Total Owned: {total_owned}", color='accent').classes('text-lg')
-
-                        ui.separator().classes('q-my-md bg-gray-700')
-
-                        with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
-                            def stat(label, value):
-                                with ui.column():
-                                    ui.label(label).classes('text-gray-400 text-sm uppercase select-none font-bold')
-                                    ui.label(str(value) if value is not None else '-').classes('font-bold select-text text-xl')
-
-                            stat('Card Type', card.type)
-                            if 'Monster' in card.type:
-                                stat('Attribute', card.attribute)
-                                stat('Race', card.race)
-                                stat('Archetype', card.archetype or '-')
-                                if 'Link' in card.type:
-                                    stat('Link Rating', card.linkval)
-                                    if card.linkmarkers:
-                                        stat('Link Markers', ', '.join(card.linkmarkers))
-                                else:
-                                    stat('Level/Rank', card.level)
-                                if 'Pendulum' in card.type:
-                                    stat('Scale', card.scale)
-                                stat('ATK', card.atk)
-                                if 'Link' not in card.type:
-                                    val = card.def_
-                                    stat('DEF', val if val is not None else '-')
-                            else:
-                                stat('Property', card.race)
-                                stat('Archetype', card.archetype or '-')
-
-                        if card.typeline:
-                             ui.label(' / '.join(card.typeline)).classes('text-gray-400 text-sm mt-2 select-text')
-
-                        ui.separator().classes('q-my-md')
-                        ui.label('Effect').classes('text-h6 q-mb-sm select-none text-accent')
-                        ui.markdown(card.desc).classes('text-gray-300 leading-relaxed text-lg select-text')
-                        ui.separator().classes('q-my-md')
-
-                        ui.label('Collection Status').classes('text-h6 q-mb-sm select-none text-accent')
-                        if owned_breakdown:
-                            with ui.row().classes('gap-2'):
-                                for lang, count in owned_breakdown.items():
-                                    with ui.chip(icon='layers').props('color=secondary text-color=white'):
-                                        ui.label(f"{lang}: {count}").classes('select-text')
-                        else:
-                            ui.label('Not in collection').classes('text-gray-500 italic')
-        except Exception as e:
-            logger.error(f"ERROR in render_consolidated_single_view: {e}", exc_info=True)
-
-    def render_collectors_single_view(self, card: ApiCard, owned_count: int, set_code: str, rarity: str, set_name: str, language: str, condition: str, first_edition: bool, image_url: str = None, image_id: int = None, set_price: float = 0.0):
-        try:
-            if image_id is None:
-                image_id = card.card_images[0].id if card.card_images else None
-
-            set_options = {}
-            set_info_map = {}
-
-            if card.card_sets:
-                for s in card.card_sets:
-                    code = s.set_code
-                    if code not in set_options:
-                        set_options[code] = f"{s.set_name} ({code})"
-                        set_info_map[code] = s
-            else:
-                set_options["Custom"] = "Custom Set"
-
-            initial_base_code = None
-            if set_code in set_options:
-                initial_base_code = set_code
-            else:
-                found = False
-                for base in set_options.keys():
-                    if transform_set_code(base, language) == set_code:
-                        initial_base_code = base
-                        found = True
-                        break
-                if not found:
-                     initial_base_code = list(set_options.keys())[0] if set_options else "Custom"
-
-            input_state = {
-                'language': language,
-                'quantity': 1,
-                'rarity': rarity,
-                'condition': condition,
-                'first_edition': first_edition,
-                'set_base_code': initial_base_code,
-                'image_id': image_id
-            }
-
-            with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
-                d.open()
-                ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
-
-                with ui.row().classes('w-full h-full no-wrap gap-0'):
-                    with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
-
-                        image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
-
-                        def update_image():
-                            img_id = input_state['image_id']
-                            high_res_remote_url = None
-                            low_res_url = None
-
-                            if card.card_images:
-                                for img in card.card_images:
-                                    if img.id == img_id:
-                                        high_res_remote_url = img.image_url
-                                        low_res_url = img.image_url_small
-                                        break
-
-                            if not low_res_url:
-                                low_res_url = image_url or (card.card_images[0].image_url_small if card.card_images else None)
-
-                            self.setup_high_res_image_logic(
-                                img_id,
-                                high_res_remote_url,
-                                low_res_url,
-                                image_element,
-                                current_id_check=lambda: input_state['image_id'] == img_id
-                            )
-
-                        update_image()
-
-                    with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
-                        with ui.row().classes('w-full items-center justify-between'):
-                            ui.label(card.name).classes('text-h3 font-bold text-white select-text')
-
-                        owned_badge = ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
-                        if owned_count == 0:
-                            owned_badge.set_visibility(False)
-
-                        ui.separator().classes('q-my-md bg-gray-700')
-
-                        # Card Details Grid
-                        with ui.grid(columns=3).classes('w-full gap-4 text-lg'):
-                             def info_label(title, initial_value, color='white'):
-                                 with ui.column().classes('gap-0'):
-                                     ui.label(title).classes('text-gray-400 text-xs uppercase font-bold select-none')
-                                     l = ui.label(str(initial_value)).classes(f'text-{color} font-bold select-text text-lg')
-                                 return l
-
-                             lbl_set_name = info_label('Set Name', set_name or 'N/A')
-                             lbl_set_code = info_label('Set Code', set_code, 'yellow-500')
-                             lbl_rarity = info_label('Rarity', rarity)
-
-                             lbl_lang = info_label('Language', language)
-                             lbl_cond = info_label('Condition', condition)
-                             lbl_edition = info_label('Edition', "1st Edition" if first_edition else "Unlimited")
-
-                        ui.separator().classes('q-my-md bg-gray-700')
-
-                        # Market Prices
-                        ui.label('Market Prices').classes('text-h6 q-mb-sm select-none text-accent')
-                        with ui.grid(columns=4).classes('w-full gap-4'):
-                             tcg_price = '-'
-                             cm_price = '-'
-                             csi_price = '-'
-                             if card.card_prices:
-                                 p = card.card_prices[0]
-                                 if p.tcgplayer_price: tcg_price = f"${p.tcgplayer_price}"
-                                 if p.cardmarket_price: cm_price = f"€{p.cardmarket_price}"
-                                 if p.coolstuffinc_price: csi_price = f"${p.coolstuffinc_price}"
-
-                             info_label('TCGPlayer', tcg_price, 'green-400')
-                             info_label('CardMarket', cm_price, 'blue-400')
-                             info_label('CoolStuffInc', csi_price, 'orange-400')
-
-                             lbl_set_price = info_label('Set Price', f"${set_price:.2f}" if set_price else "-", 'purple-400')
-
-                        def update_display_stats():
-                            base_code = input_state['set_base_code']
-                            s_name = "N/A"
-                            s_price = None
-
-                            if base_code in set_info_map:
-                                s_obj = set_info_map[base_code]
-                                s_name = s_obj.set_name
-                                matched_set = None
-                                for s in card.card_sets:
-                                    s_img = s.image_id if s.image_id is not None else (card.card_images[0].id if card.card_images else None)
-                                    if s.set_code == base_code and s.set_rarity == input_state['rarity'] and s_img == input_state['image_id']:
-                                        matched_set = s
-                                        break
-                                if matched_set and matched_set.set_price:
-                                    try: s_price = float(matched_set.set_price)
-                                    except: pass
-
-                            lbl_set_name.text = s_name
-                            final_code = transform_set_code(base_code, input_state['language'])
-                            lbl_set_code.text = final_code
-                            lbl_rarity.text = input_state['rarity']
-                            lbl_lang.text = input_state['language']
-                            lbl_cond.text = input_state['condition']
-                            lbl_edition.text = "1st Edition" if input_state['first_edition'] else "Unlimited"
-
-                            lbl_set_price.text = f"${s_price:.2f}" if s_price is not None else "-"
-
-                            cur_owned = 0
-                            if self.state['current_collection']:
-                                for c in self.state['current_collection'].cards:
-                                    if c.card_id == card.id:
-                                         for v in c.variants:
-                                             if v.set_code == final_code and v.rarity == input_state['rarity'] and v.image_id == input_state['image_id']:
-                                                 for e in v.entries:
-                                                     if e.language == input_state['language'] and e.condition == input_state['condition'] and e.first_edition == input_state['first_edition']:
-                                                         cur_owned = e.quantity
-                                                         break
-                                                 break
-                                         break
-
-                            owned_badge.text = f"Owned: {cur_owned}"
-                            owned_badge.set_visibility(cur_owned > 0)
-
-
-                        ui.separator().classes('q-my-md')
-
-                        inventory_expansion = ui.expansion().classes('w-full bg-gray-800 rounded').props('icon=edit label="Manage Inventory"')
-                        inventory_expansion.value = True
-                        with inventory_expansion:
-                            with ui.card().classes('w-full bg-transparent p-4 gap-4'):
-                                with ui.row().classes('w-full gap-4'):
-                                    ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
-                                              on_change=lambda e: [input_state.update({'language': e.value}), update_display_stats()]).classes('w-1/3')
-                                    ui.select(set_options, label='Set Name', value=input_state['set_base_code'],
-                                              on_change=lambda e: [input_state.update({'set_base_code': e.value}), update_display_stats()]).classes('col-grow')
-
-                                with ui.row().classes('w-full gap-4'):
-                                    ui.select(STANDARD_RARITIES, label='Rarity', value=input_state['rarity'],
-                                              on_change=lambda e: [input_state.update({'rarity': e.value}), update_display_stats()]).classes('w-1/3')
-                                    ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Condition', value=input_state['condition'],
-                                              on_change=lambda e: [input_state.update({'condition': e.value}), update_display_stats()]).classes('w-1/3')
-                                    ui.checkbox('1st Edition', value=input_state['first_edition'],
-                                                on_change=lambda e: [input_state.update({'first_edition': e.value}), update_display_stats()]).classes('my-auto')
-
-                                with ui.row().classes('w-full gap-4 items-center'):
-                                    if card.card_images and len(card.card_images) > 1:
-                                        art_options = {img.id: f"Artwork {i+1} (ID: {img.id})" for i, img in enumerate(card.card_images)}
-                                        ui.select(art_options, label='Artwork', value=input_state['image_id'],
-                                                  on_change=lambda e: [input_state.update({'image_id': e.value}), update_image(), update_display_stats()]).classes('col-grow')
-                                    ui.number('Quantity', min=0, value=input_state['quantity'],
-                                              on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('w-32')
-
-                                with ui.row().classes('w-full gap-4 justify-end q-mt-md'):
-                                    async def handle_update(mode):
-                                        base_code = input_state['set_base_code']
-                                        sel_lang = input_state['language']
-                                        sel_rarity = input_state['rarity']
-                                        sel_img = input_state['image_id']
-                                        sel_cond = input_state['condition']
-                                        sel_first = input_state['first_edition']
-                                        input_qty = int(input_state['quantity'])
-
-                                        variant_exists = False
-                                        matched_variant_id = None
-
-                                        for s in card.card_sets:
-                                            s_img = s.image_id if s.image_id is not None else (card.card_images[0].id if card.card_images else None)
-                                            if s.set_code == base_code and s.set_rarity == sel_rarity and s_img == sel_img:
-                                                variant_exists = True
-                                                matched_variant_id = s.variant_id
-                                                break
-
-                                        if not variant_exists:
-                                            s_name = set_info_map[base_code].set_name if base_code in set_info_map else "Custom Set"
-                                            await ygo_service.add_card_variant(
-                                                card_id=card.id,
-                                                set_name=s_name,
-                                                set_code=base_code,
-                                                set_rarity=sel_rarity,
-                                                image_id=sel_img,
-                                                language="en"
-                                            )
-                                            ui.notify(f"Added new variant: {base_code} / {sel_rarity}", type='positive')
-                                            matched_variant_id = generate_variant_id(card.id, base_code, sel_rarity, sel_img)
-
-                                        final_set_code = transform_set_code(base_code, sel_lang)
-
-                                        current_owned = 0
-                                        if self.state['current_collection']:
-                                             for c in self.state['current_collection'].cards:
-                                                 if c.card_id == card.id:
-                                                     for v in c.variants:
-                                                         if v.variant_id == matched_variant_id:
-                                                             for e in v.entries:
-                                                                 if e.language == sel_lang and e.condition == sel_cond and e.first_edition == sel_first:
-                                                                     current_owned = e.quantity
-                                                                     break
-                                                             break
-                                                     break
-
-                                        new_quantity = 0
-                                        if mode == 'SET':
-                                            new_quantity = input_qty
-                                        elif mode == 'ADD':
-                                            new_quantity = max(0, current_owned + input_qty)
-
-                                        await self.save_card_change(
-                                            card,
-                                            final_set_code,
-                                            sel_rarity,
-                                            sel_lang,
-                                            new_quantity,
-                                            sel_cond,
-                                            sel_first,
-                                            image_id=sel_img,
-                                            variant_id=matched_variant_id
-                                        )
-                                        d.close()
-
-                                    ui.button('SET', on_click=lambda: handle_update('SET')).props('color=warning text-color=dark')
-                                    ui.button('ADD', on_click=lambda: handle_update('ADD')).props('color=secondary')
-
-        except Exception as e:
-            logger.error(f"ERROR in render_collectors_single_view: {e}", exc_info=True)
-
-    def open_single_view_legacy(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None):
-        set_opts = [s.set_code for s in card.card_sets] if card.card_sets else ["N/A"]
-
-        edit_state = {
-            'set': initial_set if initial_set and initial_set in set_opts else (set_opts[0] if set_opts else "N/A"),
-            'rarity': card.card_sets[0].set_rarity if card.card_sets else "Common",
-            'language': self.state['language'].upper(),
-            'quantity': quantity
-        }
-
-        if initial_set and card.card_sets:
-            for s in card.card_sets:
-                if s.set_code == initial_set:
-                    edit_state['rarity'] = s.set_rarity
-                    break
-
-        with ui.dialog().props('maximized') as d, ui.card().classes('w-full h-full p-0 flex flex-row overflow-hidden'):
-            ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
-
-            with ui.column().classes('w-1/3 h-full bg-black items-center justify-center p-8'):
-                img_id = card.card_images[0].id if card.card_images else card.id
-                high_res_url = card.card_images[0].image_url if card.card_images else None
-                low_res_url = card.card_images[0].image_url_small if card.card_images else None
-
-                image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
-                self.setup_high_res_image_logic(img_id, high_res_url, low_res_url, image_element)
-
-            with ui.column().classes('w-2/3 h-full p-8 scroll'):
-                with ui.row().classes('w-full items-center justify-between'):
-                    ui.label(card.name).classes('text-h3 font-bold')
-                    if is_owned:
-                        ui.badge(f"Owned: {quantity}", color='accent').classes('text-lg')
-
-                if is_owned and owned_languages:
-                     with ui.row().classes('w-full gap-2 q-mb-sm'):
-                         ui.label('Owned Languages:').classes('font-bold text-gray-400')
-                         for lang in sorted(list(owned_languages)):
-                             ui.badge(lang, color='positive').props('outline')
-
-                with ui.card().classes('w-full bg-gray-800 p-4 q-my-md border border-gray-700'):
-                    ui.label('Manage Collection').classes('text-h6 q-mb-sm')
-                    with ui.grid(columns=4).classes('w-full gap-4 items-end'):
-                        ui.select(set_opts, label='Set').bind_value(edit_state, 'set').classes('w-full')
-                        ui.input('Rarity').bind_value(edit_state, 'rarity').classes('w-full')
-                        ui.select(['EN', 'DE', 'FR', 'IT', 'PT'], label='Language').bind_value(edit_state, 'language').classes('w-full')
-                        ui.number('Quantity', min=0).bind_value(edit_state, 'quantity').classes('w-full')
-
-                    async def on_legacy_update():
-                        final_set_code = transform_set_code(edit_state['set'], edit_state['language'])
-
-                        matched_variant_id = None
-                        if card.card_sets:
-                             for s in card.card_sets:
-                                 if s.set_code == edit_state['set'] and s.set_rarity == edit_state['rarity']:
-                                     matched_variant_id = s.variant_id
-                                     break
-
-                        await self.save_card_change(
-                            card,
-                            final_set_code,
-                            edit_state['rarity'],
-                            edit_state['language'],
-                            int(edit_state['quantity']),
-                            "Near Mint",
-                            False,
-                            variant_id=matched_variant_id
-                        )
-                        d.close()
-
-                    ui.button('Update Collection', on_click=on_legacy_update) \
-                        .classes('w-full q-mt-md').props('color=secondary')
-
-                ui.separator().classes('q-my-md')
-                with ui.grid(columns=4).classes('w-full gap-4 text-lg'):
-                    def stat(label, value):
-                        with ui.column():
-                            ui.label(label).classes('text-grey text-sm uppercase')
-                            ui.label(str(value)).classes('font-bold')
-                    stat('Card Type', card.type)
-                    race_label = 'Monster Type'
-                    if 'Spell' in card.type or 'Trap' in card.type:
-                        race_label = 'Property'
-                    stat(race_label, card.race)
-                    stat('Attribute', card.attribute)
-                    stat('Level', card.level)
-                    stat('ATK', card.atk)
-                    stat('DEF', getattr(card, 'def_', '-'))
-                    stat('Category', next((p for p in ['Tuner', 'Spirit', 'Gemini', 'Toon', 'Union'] if p in card.type), '-'))
-
-                ui.separator().classes('q-my-md')
-                ui.label('Description').classes('text-h6 q-mb-sm')
-                ui.markdown(card.desc).classes('text-grey-3 leading-relaxed')
-
-                ui.separator().classes('q-my-md')
-                ui.label('Set List').classes('text-h6 q-mb-sm')
-                if card.card_sets:
-                    with ui.grid(columns=3).classes('w-full gap-2'):
-                        for cset in card.card_sets:
-                            ui.label(f"{cset.set_code} - {cset.set_rarity}").classes('bg-grey-9 p-2 rounded text-sm border border-grey-800')
-            d.open()
+        # Fallback removed
 
     # --- Renderers ---
 
