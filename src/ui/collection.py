@@ -6,7 +6,7 @@ from src.services.image_manager import image_manager
 from src.core.config import config_manager
 from src.core.utils import transform_set_code, generate_variant_id
 from src.ui.components.filter_pane import FilterPane
-from src.ui.components.single_card_view import render_consolidated_single_view, render_collectors_single_view
+from src.ui.components.single_card_view import SingleCardView
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Callable
 import asyncio
@@ -253,6 +253,7 @@ class CollectionPage:
         files = persistence.list_collections()
         self.state['selected_file'] = files[0] if files else None
         self.filter_pane: Optional[FilterPane] = None
+        self.single_card_view = SingleCardView()
 
     async def load_data(self):
         logger.info(f"Loading data... (Language: {self.state['language']})")
@@ -650,11 +651,11 @@ class CollectionPage:
                                  total_owned += e.quantity
                          break
 
-            render_consolidated_single_view(card, total_owned, owned_breakdown, on_save)
+            self.single_card_view.open_consolidated(card, total_owned, owned_breakdown, on_save)
             return
 
         if self.state['view_scope'] == 'collectors':
-             render_collectors_single_view(card, quantity, set_code or "N/A", rarity, set_name, language, condition, first_edition, image_url, image_id, set_price, self.state['current_collection'], on_save)
+             self.single_card_view.open_collectors(card, quantity, initial_set or "N/A", rarity, set_name, language, condition, first_edition, image_url, image_id, set_price, self.state['current_collection'], on_save)
              return
 
         # Fallback removed
