@@ -116,6 +116,9 @@ class SingleCardView:
                     sel_rarity = input_state['rarity']
                     sel_img = input_state['image_id']
 
+                    # Calculate the target code based on language (e.g. LDS2-EN025 -> LDS2-DE025)
+                    final_code = transform_set_code(base_code, input_state['language'])
+
                     # Check if variant exists in API data
                     variant_exists = False
                     matched_variant_id = None
@@ -123,27 +126,28 @@ class SingleCardView:
                     if card.card_sets:
                         for s in card.card_sets:
                             s_img = s.image_id if s.image_id is not None else (card.card_images[0].id if card.card_images else None)
-                            # We compare image IDs loosely? No, exact match usually.
-                            # But input_state['image_id'] comes from UI, might be int.
-                            if s.set_code == base_code and s.set_rarity == sel_rarity and s_img == sel_img:
+
+                            # Check against the TRANSFORMED code, not just the base code
+                            # This ensures we find the DE variant if it already exists
+                            if s.set_code == final_code and s.set_rarity == sel_rarity and s_img == sel_img:
                                 variant_exists = True
                                 matched_variant_id = s.variant_id
                                 break
 
                     if not variant_exists:
                         s_name = set_info_map[base_code].set_name if base_code in set_info_map else "Custom Set"
-                        # Create new variant if it doesn't exist
-                        # We might need to handle this more gracefully or assume add_card_variant works
+
+                        # Create new variant if it doesn't exist, using the TRANSFORMED code
                         await ygo_service.add_card_variant(
                             card_id=card.id,
                             set_name=s_name,
-                            set_code=base_code,
+                            set_code=final_code,  # Use final_code here
                             set_rarity=sel_rarity,
                             image_id=sel_img,
                             language="en"
                         )
-                        ui.notify(f"Added new variant: {base_code} / {sel_rarity}", type='positive')
-                        matched_variant_id = generate_variant_id(card.id, base_code, sel_rarity, sel_img)
+                        ui.notify(f"Added new variant: {final_code} / {sel_rarity}", type='positive')
+                        matched_variant_id = generate_variant_id(card.id, final_code, sel_rarity, sel_img)
 
                     # We pass the variant_id back to the saver
                     await on_save_callback(mode, matched_variant_id)
