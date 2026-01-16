@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Set
 import logging
 import asyncio
+import copy
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ class DeckBuilderPage:
             'filter_price_max': 1000.0,
             'filter_owned_lang': '',
 
-            'only_owned': False, # New Toggle
+            'only_owned': False,
 
             'sort_by': 'Name',
             'sort_descending': False,
@@ -79,20 +81,70 @@ class DeckBuilderPage:
         self.filter_pane: Optional[FilterPane] = None
         self.api_card_map = {} # ID -> ApiCard
         self.dragged_item = None
+        self.drag_preview = {'zone': None, 'index': None} # Preview state for visual reordering
 
         self.search_results_container = None
         self.deck_area_container = None
 
     def handle_drag_start(self, card, source_zone, index=None):
         self.dragged_item = {'id': card.id, 'from': source_zone, 'index': index}
+        self.drag_preview = {'zone': None, 'index': None}
+
+    async def handle_drag_enter(self, target_zone, index):
+        """Called when dragging over a specific card slot."""
+        if not self.dragged_item: return
+
+        # Don't update if nothing changed
+        if self.drag_preview['zone'] == target_zone and self.drag_preview['index'] == index:
+            return
+
+        self.drag_preview = {'zone': target_zone, 'index': index}
+        self.refresh_zone(target_zone)
+
+    async def handle_zone_drag_over(self, target_zone):
+        """Called when dragging over the zone container (empty space)."""
+        if not self.dragged_item: return
+
+        # Default to appending to end if not over a specific card
+        # Only update if we are not already at the end of this zone
+        if self.drag_preview['zone'] != target_zone or self.drag_preview['index'] != 9999:
+             self.drag_preview = {'zone': target_zone, 'index': 9999} # 9999 = End
+             self.refresh_zone(target_zone)
+
+    def handle_drag_end(self):
+        """Called when drag operation ends (success or cancelled). Cleans up state."""
+        self.dragged_item = None
+        self.drag_preview = {'zone': None, 'index': None}
+        self.refresh_deck_area()
 
     def refresh_zone(self, zone):
         if zone == 'main': self.render_main_deck_grid.refresh()
         elif zone == 'extra': self.render_extra_deck_grid.refresh()
         elif zone == 'side': self.render_side_deck_grid.refresh()
 
-    async def handle_reorder_drop(self, e, target_zone, target_index):
+    async def handle_drop(self, e, target_zone):
         if not self.dragged_item: return
+
+        # Commit the change based on preview or default
+        # If preview is set for this zone, use that index.
+        target_index = None
+        if self.drag_preview['zone'] == target_zone:
+             target_index = self.drag_preview['index']
+
+        # If no index (e.g. dropped on container without triggering enter), append.
+        if target_index is None or target_index == 9999:
+             deck = self.state['current_deck']
+             target_list = getattr(deck, target_zone)
+             target_index = len(target_list)
+
+        await self.execute_move(target_zone, target_index)
+
+        # Reset
+        self.dragged_item = None
+        self.drag_preview = {'zone': None, 'index': None}
+        self.refresh_deck_area() # Refresh all to ensure clean state
+
+    async def execute_move(self, target_zone, target_index):
         data = self.dragged_item
         card_id = data.get('id')
         src_zone = data.get('from')
@@ -109,14 +161,16 @@ class DeckBuilderPage:
             # Reorder within same zone
             if src_index is None: return
             if src_index < 0 or src_index >= len(target_list): return
-            if src_index == target_index: return
 
-            if src_index < target_index:
-                item = target_list.pop(src_index)
-                target_list.insert(target_index - 1, item)
-            else:
-                item = target_list.pop(src_index)
-                target_list.insert(target_index, item)
+            # The target_index corresponds to the list state *during* drag,
+            # which matches the list with the source item removed (visual gap).
+            item = target_list.pop(src_index)
+
+            # If target_index was "End" (9999), set to len
+            if target_index > len(target_list): target_index = len(target_list)
+
+            target_list.insert(target_index, item)
+
         else:
             # Move from another zone or gallery
             # 1. Remove from source if it's a deck zone
@@ -128,15 +182,10 @@ class DeckBuilderPage:
                      src_list.remove(card_id)
 
             # 2. Insert into target
+            if target_index > len(target_list): target_index = len(target_list)
             target_list.insert(target_index, card_id)
 
         await self.save_current_deck()
-
-        self.refresh_zone(target_zone)
-        if src_zone in ['main', 'extra', 'side'] and src_zone != target_zone:
-             self.refresh_zone(src_zone)
-
-        self.update_zone_headers()
 
     async def load_initial_data(self):
         self.state['loading'] = True
@@ -187,7 +236,6 @@ class DeckBuilderPage:
                     logger.error(f"Failed to load reference collection {target_col}: {e}")
                     self.state['reference_collection'] = None
             else:
-                 # Default to None
                  self.state['reference_collection'] = None
                  self.state['reference_collection_name'] = None
 
@@ -214,7 +262,6 @@ class DeckBuilderPage:
             name = filename.replace('.ydk', '')
             self.state['current_deck_name'] = name
 
-            # Update Session
             persistence.save_ui_state({'deck_builder_last_deck': name})
 
             self.refresh_deck_area()
@@ -231,7 +278,6 @@ class DeckBuilderPage:
             filename = f"{self.state['current_deck_name']}.ydk"
             await run.io_bound(persistence.save_deck, self.state['current_deck'], filename)
             ui.notify('Deck saved.', type='positive')
-            # Refresh list in case it was new
             self.state['available_decks'] = persistence.list_decks()
             self.render_header.refresh()
         except Exception as e:
@@ -248,8 +294,6 @@ class DeckBuilderPage:
         new_deck = Deck(name=name)
         self.state['current_deck'] = new_deck
         self.state['current_deck_name'] = name
-
-        # Update Session
         persistence.save_ui_state({'deck_builder_last_deck': name})
 
         await self.save_current_deck()
@@ -264,7 +308,6 @@ class DeckBuilderPage:
         deck = self.state['current_deck']
         target_list = getattr(deck, target)
 
-        # Add copies
         for _ in range(quantity):
             target_list.append(card_id)
 
@@ -292,18 +335,14 @@ class DeckBuilderPage:
         if txt:
              res = [c for c in res if txt in c.name.lower() or txt in c.type.lower() or txt in c.desc.lower()]
 
-        # Reuse similar filtering logic from CollectionPage (simplified for brevity here, can expand)
-        # Type
         if self.state['filter_card_type']:
              ctypes = self.state['filter_card_type']
              if isinstance(ctypes, str): ctypes = [ctypes]
              res = [c for c in res if any(t in c.type for t in ctypes)]
 
-        # Attribute
         if self.state['filter_attr']:
              res = [c for c in res if c.attribute == self.state['filter_attr']]
 
-        # Race/Archetype...
         if self.state['filter_monster_race']:
              res = [c for c in res if "Monster" in c.type and c.race == self.state['filter_monster_race']]
         if self.state['filter_st_race']:
@@ -311,7 +350,6 @@ class DeckBuilderPage:
         if self.state['filter_archetype']:
              res = [c for c in res if c.archetype == self.state['filter_archetype']]
 
-        # Level/ATK/DEF
         if self.state['filter_level']:
              res = [c for c in res if c.level == int(self.state['filter_level'])]
 
@@ -319,7 +357,6 @@ class DeckBuilderPage:
         if atk_min > 0 or atk_max < 5000:
              res = [c for c in res if c.atk is not None and atk_min <= int(c.atk) <= atk_max]
 
-        # Sorting
         key = self.state['sort_by']
         reverse = self.state['sort_descending']
 
@@ -334,24 +371,13 @@ class DeckBuilderPage:
         elif key == 'Newest':
             res.sort(key=lambda x: x.id, reverse=reverse)
 
-        # Filter Owned (New)
         if self.state['only_owned'] and self.state['reference_collection']:
-             # Get owned IDs
              owned_ids = set(c.card_id for c in self.state['reference_collection'].cards)
              res = [c for c in res if c.id in owned_ids]
-        # If 'only_owned' is checked but Reference Collection is None -> Show everything? Or nothing?
-        # User said "None option where every card in the deck is highlighted like its in the collection".
-        # This implies "None" collection means "I have everything" or "Don't track ownership".
-        # So if Only Owned is checked and Ref is None, we probably shouldn't filter, or filter to All.
-        # Let's assume: Ref None -> Treat as "Infinite Collection" -> Show All.
-        pass
-
 
         self.state['filtered_items'] = res
         self.state['page'] = 1
         self.update_pagination()
-
-        # Prepare images for current page
         await self.prepare_current_page_images()
         self.refresh_search_results()
 
@@ -380,35 +406,27 @@ class DeckBuilderPage:
             'filter_rarity': '',
             'filter_attr': '',
             'filter_card_type': ['Monster', 'Spell', 'Trap'],
-            # ... reset others ...
             'filter_level': None,
             'filter_atk_min': 0, 'filter_atk_max': 5000,
-            # ...
         })
         if self.filter_pane: self.filter_pane.reset_ui_elements()
         await self.apply_filters()
-
-    # --- UI Renderers ---
 
     @ui.refreshable
     def render_header(self):
         with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
             ui.label('Deck Builder').classes('text-h5')
 
-            # Deck Selector
             deck_options = {f: f.replace('.ydk', '') for f in self.state['available_decks']}
             deck_options['__NEW__'] = '+ New Deck'
 
             async def on_deck_change(e):
                 if e.value == '__NEW__':
-                    # Open Dialog
                     with ui.dialog() as d, ui.card().classes('w-96'):
                          ui.label('Create New Deck').classes('text-h6')
-
                          with ui.tabs().classes('w-full') as tabs:
                              t_new = ui.tab('New Empty')
                              t_import = ui.tab('Import .ydk')
-
                          with ui.tab_panels(tabs, value=t_new).classes('w-full'):
                              with ui.tab_panel(t_new):
                                  name_input = ui.input('Deck Name').classes('w-full')
@@ -416,91 +434,62 @@ class DeckBuilderPage:
                                      await self.create_new_deck(name_input.value)
                                      d.close()
                                  ui.button('Create', on_click=create).props('color=positive').classes('w-full q-mt-md')
-
                              with ui.tab_panel(t_import):
                                  ui.label('Select .ydk file').classes('text-sm text-grey')
-
                                  async def handle_upload(e):
                                      try:
                                          f_obj = None
-                                         if hasattr(e, 'content'):
-                                             f_obj = e.content
-                                         elif hasattr(e, 'file'):
-                                             f_obj = e.file
-
-                                         if not f_obj:
-                                             raise Exception("Could not find file content in upload event")
-
+                                         if hasattr(e, 'content'): f_obj = e.content
+                                         elif hasattr(e, 'file'): f_obj = e.file
+                                         if not f_obj: raise Exception("Could not find file content")
                                          content = f_obj.read().decode('utf-8')
-                                         name = e.name.replace('.ydk', '')
-
+                                         name = os.path.basename(e.name).replace('.ydk', '')
                                          filename = f"{name}.ydk"
                                          filepath = f"data/decks/{filename}"
-                                         with open(filepath, 'w', encoding='utf-8') as f:
-                                             f.write(content)
-
+                                         with open(filepath, 'w', encoding='utf-8') as f: f.write(content)
                                          await self.load_deck(filename)
                                          d.close()
                                          ui.notify(f"Imported deck: {name}", type='positive')
                                      except Exception as ex:
                                          logger.error(f"Error importing deck: {ex}", exc_info=True)
                                          ui.notify(f"Error importing: {ex}", type='negative')
-
                                  ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=.ydk').classes('w-full')
-
                     d.open()
-                    # Reset selector logic handled by refresh
                 elif e.value:
                     await self.load_deck(e.value)
 
             selected = f"{self.state['current_deck_name']}.ydk" if self.state['current_deck_name'] else None
-            # Fix for "Invalid value" error on initial load if deck list isn't populated yet
-            if selected and selected not in deck_options:
-                selected = None
-
+            if selected and selected not in deck_options: selected = None
             ui.select(deck_options, value=selected, label='Current Deck', on_change=on_deck_change).classes('min-w-[200px]')
 
-            # Reference Collection Selector
             col_options = {f: f.replace('.json', '') for f in self.state['available_collections']}
-            col_options[None] = 'None (All Owned)' # Add None option
+            col_options[None] = 'None (All Owned)'
 
             async def on_col_change(e):
                 val = e.value
-                # Update Session
                 persistence.save_ui_state({'deck_builder_last_collection': val})
-
                 self.state['reference_collection_name'] = val
-
                 if val:
                      self.state['reference_collection'] = await run.io_bound(persistence.load_collection, val)
                 else:
                      self.state['reference_collection'] = None
-
-                await self.apply_filters() # Re-apply filters (for owned check)
+                await self.apply_filters()
                 self.refresh_deck_area()
 
             curr_col_file = self.state.get('reference_collection_name')
-            # If current is not in options (e.g. deleted), default to None
-            if curr_col_file and curr_col_file not in col_options:
-                 curr_col_file = None
-
+            if curr_col_file and curr_col_file not in col_options: curr_col_file = None
             ui.select(col_options, value=curr_col_file, label='Reference Collection', on_change=on_col_change).classes('min-w-[200px]')
 
             ui.space()
 
-            # Search Input
             async def on_search(e):
                 self.state['search_text'] = e.value
                 await self.apply_filters()
-
-            # Bind value to state to prevent clearing
             ui.input(placeholder='Search cards...', value=self.state['search_text'], on_change=on_search).props('debounce=300 icon=search').classes('w-64')
 
-            # Owned Toggle
             async def on_owned_toggle(e):
                 self.state['only_owned'] = e.value
                 await self.apply_filters()
-
             ui.switch('Owned Only', value=self.state['only_owned'], on_change=on_owned_toggle).classes('text-white')
 
             with ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary'):
@@ -509,13 +498,11 @@ class DeckBuilderPage:
     def refresh_search_results(self):
         if not self.search_results_container: return
         self.search_results_container.clear()
-
         with self.search_results_container:
             start = (self.state['page'] - 1) * self.state['page_size']
             end = min(start + self.state['page_size'], len(self.state['filtered_items']))
             items = self.state['filtered_items'][start:end]
 
-            # Pagination Controls
             with ui.row().classes('w-full items-center justify-between q-mb-xs px-2'):
                 ui.label(f"{start+1}-{end} of {len(self.state['filtered_items'])}").classes('text-xs text-grey')
                 with ui.row().classes('gap-1'):
@@ -525,7 +512,6 @@ class DeckBuilderPage:
                              self.state['page'] = new_p
                              await self.prepare_current_page_images()
                              self.refresh_search_results()
-
                      ui.button(icon='chevron_left', on_click=lambda: change_page(-1)).props('flat dense size=sm')
                      ui.button(icon='chevron_right', on_click=lambda: change_page(1)).props('flat dense size=sm')
 
@@ -533,28 +519,23 @@ class DeckBuilderPage:
                 if not items:
                     ui.label('No cards found.').classes('text-grey italic w-full text-center')
                     return
-
-                # Render Grid
                 with ui.grid(columns='repeat(auto-fill, minmax(100px, 1fr))').classes('w-full gap-2'):
                     for card in items:
                          img_id = card.card_images[0].id if card.card_images else card.id
                          img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
-
-                         # Draggable using props and server-side state
-                         # Updated Styling as requested: line-clamp-2, Card Type instead of ATK/DEF
                          with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
                             .props('draggable') \
                             .on('dragstart', lambda c=card: self.handle_drag_start(c, 'gallery')) \
-                            .on('click', lambda c=card: self.open_deck_builder_wrapper(c)): # Use wrapper
+                            .on('dragstart.once', 'event.target.classList.add("opacity-50")') \
+                            .on('dragend.once', 'event.target.classList.remove("opacity-50")') \
+                            .on('dragend', self.handle_drag_end) \
+                            .on('click', lambda c=card: self.open_deck_builder_wrapper(c)):
                              ui.image(img_src).classes('w-full aspect-[2/3] object-cover')
                              with ui.column().classes('p-1 gap-0 w-full'):
-                                 # Title with line-clamp-2, fixed height to avoid layout shift
                                  ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
-                                 # Card Type instead of ATK/DEF
                                  ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
 
     def open_deck_builder_wrapper(self, card):
-        # Calculate owned stats
         owned_count = 0
         owned_breakdown = {}
         if self.state['reference_collection']:
@@ -565,13 +546,6 @@ class DeckBuilderPage:
                              owned_breakdown[e.language] = owned_breakdown.get(e.language, 0) + e.quantity
                              owned_count += e.quantity
                      break
-        else:
-             # If no ref collection, maybe assume owned?
-             # For "Collection Status" view, if ref is None, we show "0" or "N/A"?
-             # User said "None option where every card ... highlighted like its in collection".
-             # But for specific stats, we don't have them.
-             pass
-
         self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
 
     @ui.refreshable
@@ -590,117 +564,132 @@ class DeckBuilderPage:
         deck = self.state['current_deck']
         if not deck: return
 
-        # Get Cards
-        card_ids = getattr(deck, target)
-        cards = []
-        for cid in card_ids:
-            if cid in self.api_card_map:
-                cards.append(self.api_card_map[cid])
-            else:
-                # Handle unknown card? Create dummy?
-                pass
+        real_card_ids = getattr(deck, target)
 
-        # Check Ownership (Global counts)
+        # Build Display List
+        # We separate the source item (if in this zone) from the flow items
+        # to ensure correct indexing and visual placement.
+        display_cards = []
+        source_item = None
+
+        for i, cid in enumerate(real_card_ids):
+             is_source = (self.dragged_item and
+                          self.dragged_item['from'] == target and
+                          self.dragged_item['index'] == i)
+
+             item_data = {'id': cid, 'real_index': i, 'is_preview': False, 'is_source': is_source}
+
+             if is_source:
+                 source_item = item_data
+             else:
+                 display_cards.append(item_data)
+
+        # Insert Preview Card (Ghost)
+        if self.dragged_item and self.drag_preview['zone'] == target:
+            idx = self.drag_preview['index']
+            # Clamp index
+            if idx is None or idx > len(display_cards): idx = len(display_cards)
+
+            ghost_data = {'id': self.dragged_item['id'], 'real_index': None, 'is_preview': True, 'is_source': False}
+            display_cards.insert(idx, ghost_data)
+
+        # Append source item at the end of the list but marked as hidden
+        # This keeps it in the DOM (to sustain drag) but removes it from visual flow
+        if source_item:
+            display_cards.append(source_item)
+
+        # Check Ownership (for coloring)
         ref_col = self.state['reference_collection']
-        owned_map = {} # card_id -> quantity
+        owned_map = {}
         if ref_col:
             for c in ref_col.cards:
                 owned_map[c.card_id] = c.total_quantity
 
-        # Usage Counter for this specific render pass (to handle multiple copies)
-        # We need to account for copies used in OTHER zones if we want global strictness,
-        # but typically ownership is checked per deck or globally?
-        # For simplicity in this view, we check per-deck usage, but ideally it should count used in ALL zones.
-        # However, to avoid complexity, let's just track usage within this list for coloring.
-        # NOTE: A better approach is to count total used in deck vs owned.
-        # But `render_deck_grid_content` is isolated.
-        # Let's count usage for the current list.
-        # (This is a limitation: if I have 1 Blue-Eyes and put 1 in Main and 1 in Side, both might show as owned if calculated separately.
-        #  To fix this, we would need to calculate global usage before rendering.
-        #  For now, we'll keep it simple or maybe pass a shared counter if possible.
-        #  Given the refresh separation, passing a shared counter is hard unless computed beforehand.)
-
-        # Let's re-calculate usage_so_far based on deck state
-        # But since we are only rendering one zone, we don't know about others easily without re-scanning.
-        # Let's scan all zones to build the "used before me" map?
-        # Actually, simpler: just calculate ownership based on "used in this zone" + "used in previous zones".
-        # Main -> Extra -> Side order?
-        # For now, let's stick to local zone usage to avoid performance hit, or just accept the limitation.
         usage_counter = {}
 
-        if not cards:
-            ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50')
-            return
+        if not display_cards:
+            # Render empty state but ensure grid exists to accept drops
+             with ui.grid(columns='repeat(auto-fill, minmax(140px, 1fr))').classes('w-full gap-2 min-h-[50px]'):
+                  ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50 col-span-full')
+             return
 
-        # Increased Min Size to 140px as requested
         with ui.grid(columns='repeat(auto-fill, minmax(140px, 1fr))').classes('w-full gap-2'):
-            for i, card in enumerate(cards):
+            for i, item in enumerate(display_cards):
+                cid = item['id']
+                is_preview = item['is_preview']
+                is_source = item.get('is_source', False)
+                real_index = item.get('real_index') # None if preview or new
+
+                # Fetch API Data
+                card = self.api_card_map.get(cid)
+                if not card: continue # Should not happen
+
                 img_id = card.card_images[0].id if card.card_images else card.id
                 img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
 
-                # Ownership check logic
+                # Ownership
                 is_owned_copy = True
                 if ref_col:
-                    owned_total = owned_map.get(card.id, 0)
-                    used_so_far = usage_counter.get(card.id, 0)
+                    owned_total = owned_map.get(cid, 0)
+                    used_so_far = usage_counter.get(cid, 0)
                     if used_so_far >= owned_total:
                         is_owned_copy = False
-                    usage_counter[card.id] = used_so_far + 1
+                    usage_counter[cid] = used_so_far + 1
 
-                # Visuals
                 classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800'
-                if not is_owned_copy:
+
+                if is_source:
+                    # Hidden source card - absolute positioning to remove from flow, opacity 0 to hide
+                    # pointer-events-none to prevent interaction
+                    classes += ' opacity-0 absolute w-0 h-0 overflow-hidden pointer-events-none'
+                elif is_preview:
+                    classes += ' opacity-70 border-2 border-yellow-400' # Visual indicator for preview
+                elif not is_owned_copy:
                     classes += ' opacity-50 grayscale'
                 else:
                     classes += ' opacity-100'
 
+                # Render Card
                 with ui.card().classes(classes) \
                     .props('draggable') \
-                    .on('dragstart', lambda c=card, idx=i, t=target: self.handle_drag_start(c, t, idx)) \
+                    .on('dragstart', lambda c=card, idx=real_index, t=target: self.handle_drag_start(c, t, idx)) \
+                    .on('dragstart.once', 'event.target.classList.add("opacity-50")') \
+                    .on('dragend.once', 'event.target.classList.remove("opacity-50")') \
+                    .on('dragend', self.handle_drag_end) \
                     .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)) \
-                    .on('drop.prevent.stop', lambda e, idx=i, t=target: self.handle_reorder_drop(e, t, idx)) \
-                    .on('dragover.prevent', lambda: None):
+                    .on('dragenter', lambda idx=i, s=is_source: self.handle_drag_enter(target, idx) if not s else None) \
+                    .on('dragover.prevent.stop', lambda: None) \
+                    .on('drop', lambda e: self.handle_drop(e, target)):
 
                     ui.image(img_src).classes('w-full h-full object-cover rounded')
-
-                    # Hover remove icon
-                    with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
-                        ui.icon('remove', color='white').classes('text-lg')
-
-                    # Tooltip for Name (Requested replacement for text overlay)
-                    ui.tooltip(card.name)
+                    # Only show hover actions for normal cards
+                    if not is_preview and not is_source:
+                        with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
+                            ui.icon('remove', color='white').classes('text-lg')
+                        ui.tooltip(card.name)
 
     def refresh_deck_area(self):
-        # Legacy method compatibility or simple refresh all
         self.render_main_deck_grid.refresh()
         self.render_extra_deck_grid.refresh()
         self.render_side_deck_grid.refresh()
         self.update_zone_headers()
 
     @ui.refreshable
-    def render_header_main(self):
-        self._render_zone_header_content('Main Deck', 'main')
-
+    def render_header_main(self): self._render_zone_header_content('Main Deck', 'main')
     @ui.refreshable
-    def render_header_extra(self):
-        self._render_zone_header_content('Extra Deck', 'extra')
-
+    def render_header_extra(self): self._render_zone_header_content('Extra Deck', 'extra')
     @ui.refreshable
-    def render_header_side(self):
-        self._render_zone_header_content('Side Deck', 'side')
+    def render_header_side(self): self._render_zone_header_content('Side Deck', 'side')
 
     def _render_zone_header_content(self, title, target):
         deck = self.state['current_deck']
         count = 0
-        if deck:
-            count = len(getattr(deck, target))
-
+        if deck: count = len(getattr(deck, target))
         color = 'text-white'
         if target == 'main':
              if count < 40 or count > 60: color = 'text-red-400'
         elif target in ['extra', 'side']:
              if count > 15: color = 'text-red-400'
-
         with ui.row().classes('w-full items-center justify-between q-mb-sm'):
             ui.label(f"{title} ({count})").classes(f'font-bold {color} text-xs uppercase tracking-wider')
             with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
@@ -713,110 +702,44 @@ class DeckBuilderPage:
 
     def setup_zone(self, title, target, flex_grow=False):
         height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[160px]'
-
         with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
-            # Header
             if target == 'main': self.render_header_main()
             elif target == 'extra': self.render_header_extra()
             elif target == 'side': self.render_header_side()
 
-            # Drop Zone
+            # The container handles drops on empty space
             with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors') \
-                .on('dragover.prevent', lambda: None) \
-                .on('drop', lambda e: self.handle_card_drop(e, target)):
+                .on('dragover.prevent', lambda t=target: self.handle_zone_drag_over(t)) \
+                .on('drop', lambda e: self.handle_drop(e, target)):
 
                 if target == 'main': self.render_main_deck_grid()
                 elif target == 'extra': self.render_extra_deck_grid()
                 elif target == 'side': self.render_side_deck_grid()
 
-    async def handle_card_drop(self, e, target_zone):
-        try:
-            if not self.dragged_item: return
-            data = self.dragged_item
-
-            card_id = data.get('id')
-            src_zone = data.get('from')
-            src_index = data.get('index')
-
-            if not card_id or not src_zone: return
-
-            deck = self.state['current_deck']
-            if not deck: return
-
-            if src_zone == 'gallery':
-                await self.add_card_to_deck(card_id, 1, target_zone)
-
-            elif src_zone in ['main', 'extra', 'side']:
-                if src_zone == target_zone:
-                    # Move within same zone (Reorder)
-                    # Move to end if dropped on container
-                    if src_index is not None:
-                        src_list = getattr(deck, src_zone)
-                        if src_index < len(src_list):
-                            item = src_list.pop(src_index)
-                            src_list.append(item)
-                            await self.save_current_deck()
-                            self.refresh_zone(target_zone)
-                    return
-                else:
-                    # Move between zones
-                    src_list = getattr(deck, src_zone)
-                    target_list = getattr(deck, target_zone)
-
-                    if src_index is not None and 0 <= src_index < len(src_list) and src_list[src_index] == card_id:
-                        src_list.pop(src_index)
-                    elif card_id in src_list:
-                         src_list.remove(card_id)
-
-                    target_list.append(card_id)
-
-                    await self.save_current_deck()
-                    self.refresh_zone(target_zone)
-                    self.refresh_zone(src_zone)
-                    self.update_zone_headers()
-        except Exception as ex:
-             logger.error(f"Drop error: {ex}", exc_info=True)
-             ui.notify("Error moving card.", type='negative')
-
     async def sort_deck(self, zone):
         if not self.state['current_deck']: return
         deck = self.state['current_deck']
         target_list = getattr(deck, zone)
-
-        # Fetch API cards
         cards = []
         unknown = []
         for cid in target_list:
-            if cid in self.api_card_map:
-                cards.append(self.api_card_map[cid])
-            else:
-                unknown.append(cid)
-
+            if cid in self.api_card_map: cards.append(self.api_card_map[cid])
+            else: unknown.append(cid)
         def sort_key(c):
-             # 1. Type: Monster (0), Spell (1), Trap (2)
              t_score = 3
              if "Monster" in c.type: t_score = 0
              elif "Spell" in c.type: t_score = 1
              elif "Trap" in c.type: t_score = 2
-
-             # 2. Level/Rank (High -> Low)
              lvl = c.level or 0
-
-             # 3. Name (A-Z)
              return (t_score, -lvl, c.name)
-
         cards.sort(key=sort_key)
-
-        # Reconstruct list
         new_list = [c.id for c in cards] + unknown
         setattr(deck, zone, new_list)
-
         await self.save_current_deck()
         self.refresh_zone(zone)
         ui.notify(f"Sorted {zone} deck.", type='positive')
 
     def build_ui(self):
-        # Filter Dialog
         self.filter_dialog = ui.dialog().props('position=right')
         with self.filter_dialog, ui.card().classes('h-full w-96 bg-gray-900 border-l border-gray-700 p-0 flex flex-col'):
              with ui.scroll_area().classes('flex-grow w-full'):
@@ -824,22 +747,14 @@ class DeckBuilderPage:
                  self.filter_pane.build()
 
         self.render_header()
-
         with ui.row().classes('w-full h-[calc(100vh-140px)] gap-4 flex-nowrap'):
-            # Left: Search Results (25%)
-            # We assign to self.search_results_container so we can clear/refill it
             self.search_results_container = ui.column().classes('w-1/4 h-full bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results relative overflow-hidden')
-
-            # Right: Deck Area (Remaining Space)
             with ui.column().classes('flex-grow h-full relative deck-builder-deck-area overflow-hidden gap-2'):
                  self.setup_zone('Main Deck', 'main', flex_grow=True)
                  self.setup_zone('Extra Deck', 'extra')
                  self.setup_zone('Side Deck', 'side')
 
-        # Initial Render
         self.refresh_search_results()
-        # No need to call refresh_deck_area() as setup_zone renders them initially.
-
         ui.timer(0.1, self.load_initial_data, once=True)
 
 def deck_builder_page():
