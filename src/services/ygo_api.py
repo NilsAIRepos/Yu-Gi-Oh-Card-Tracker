@@ -108,6 +108,12 @@ class YugiohService:
 
         for api_card in api_cards:
             local_card = local_map.get(api_card.id)
+
+            # Determine default image ID for this card (fallback if specific mapping missing)
+            default_image_id = None
+            if api_card.card_images:
+                default_image_id = api_card.card_images[0].id
+
             if local_card:
                 # Use API card as base for stats/text, but merge sets
                 merged_card = api_card.model_copy() if hasattr(api_card, 'model_copy') else api_card.copy()
@@ -135,12 +141,30 @@ class YugiohService:
 
                             # Update mutable fields from API
                             local_s.set_price = api_set.set_price
+
+                            # Ensure image_id and variant_id are populated
+                            if local_s.image_id is None:
+                                local_s.image_id = default_image_id
+
+                            # Regenerate variant_id if missing or if image_id changed (implicitly handled if logic requires)
+                            # Ideally we only generate if missing to be minimally invasive, but if image_id changed from None,
+                            # we SHOULD regenerate to keep hash consistent.
+                            # However, checking if image_id changed is hard without tracking.
+                            # If variant_id is None, definitely generate.
+                            if local_s.variant_id is None:
+                                local_s.variant_id = generate_variant_id(
+                                    api_card.id, local_s.set_code, local_s.set_rarity, local_s.image_id
+                                )
+
                             # Keep local_s in merged list
                             merged_sets.append(local_s)
                             # Mark as processed
                             processed_local_sets.add(local_s.variant_id)
                     else:
                         # New set from API
+                        if api_set.image_id is None:
+                            api_set.image_id = default_image_id
+
                         api_set.variant_id = generate_variant_id(
                             api_card.id, api_set.set_code, api_set.set_rarity, api_set.image_id
                         )
@@ -150,6 +174,13 @@ class YugiohService:
                 for sets in local_sets_map.values():
                     for s in sets:
                         if s.variant_id not in processed_local_sets:
+                            # Ensure IDs for local orphans too
+                            if s.image_id is None:
+                                s.image_id = default_image_id
+                            if s.variant_id is None:
+                                s.variant_id = generate_variant_id(
+                                    api_card.id, s.set_code, s.set_rarity, s.image_id
+                                )
                             merged_sets.append(s)
 
                 merged_card.card_sets = merged_sets
@@ -157,6 +188,9 @@ class YugiohService:
             else:
                 # New card entirely
                 for s in api_card.card_sets:
+                    if s.image_id is None:
+                        s.image_id = default_image_id
+
                     s.variant_id = generate_variant_id(
                         api_card.id, s.set_code, s.set_rarity, s.image_id
                     )
