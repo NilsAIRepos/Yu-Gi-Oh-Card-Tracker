@@ -25,6 +25,11 @@ class DeckCardViewModel:
 
 class DeckBuilderPage:
     def __init__(self):
+        # Load persisted UI state
+        ui_state = persistence.load_ui_state()
+        last_deck = ui_state.get('deck_builder_last_deck')
+        last_col = ui_state.get('deck_builder_last_collection')
+
         self.state = {
             'search_text': '',
             'filter_set': '',
@@ -47,12 +52,15 @@ class DeckBuilderPage:
             'filter_price_max': 1000.0,
             'filter_owned_lang': '',
 
+            'only_owned': False, # New Toggle
+
             'sort_by': 'Name',
             'sort_descending': False,
 
             'current_deck': None, # Deck object
-            'current_deck_name': None,
+            'current_deck_name': last_deck, # Initialize from session
             'reference_collection': None, # Collection object for ownership check
+            'reference_collection_name': last_col, # Track filename
 
             'available_decks': [],
             'available_collections': [],
@@ -116,12 +124,24 @@ class DeckBuilderPage:
             # Load Collections List (for reference)
             cols = persistence.list_collections()
             self.state['available_collections'] = cols
-            if cols:
-                # Load first collection as default reference
-                try:
-                    self.state['reference_collection'] = await run.io_bound(persistence.load_collection, cols[0])
-                except Exception as e:
-                    logger.error(f"Failed to load default reference collection: {e}")
+
+            # Load Reference Collection
+            target_col = self.state.get('reference_collection_name')
+
+            if target_col and target_col in cols:
+                 try:
+                    self.state['reference_collection'] = await run.io_bound(persistence.load_collection, target_col)
+                 except Exception as e:
+                    logger.error(f"Failed to load reference collection {target_col}: {e}")
+                    self.state['reference_collection'] = None
+            else:
+                 # Default to None
+                 self.state['reference_collection'] = None
+                 self.state['reference_collection_name'] = None
+
+            # Load Deck if present in session
+            if self.state['current_deck_name']:
+                 await self.load_deck(f"{self.state['current_deck_name']}.ydk")
 
             # Apply initial filters
             await self.apply_filters()
@@ -139,7 +159,12 @@ class DeckBuilderPage:
         try:
             deck = await run.io_bound(persistence.load_deck, filename)
             self.state['current_deck'] = deck
-            self.state['current_deck_name'] = filename.replace('.ydk', '')
+            name = filename.replace('.ydk', '')
+            self.state['current_deck_name'] = name
+
+            # Update Session
+            persistence.save_ui_state({'deck_builder_last_deck': name})
+
             self.refresh_deck_area()
             self.render_header.refresh()
             ui.notify(f"Loaded deck: {self.state['current_deck_name']}", type='positive')
@@ -171,6 +196,10 @@ class DeckBuilderPage:
         new_deck = Deck(name=name)
         self.state['current_deck'] = new_deck
         self.state['current_deck_name'] = name
+
+        # Update Session
+        persistence.save_ui_state({'deck_builder_last_deck': name})
+
         await self.save_current_deck()
         self.render_header.refresh()
         self.refresh_deck_area()
@@ -250,6 +279,19 @@ class DeckBuilderPage:
             res.sort(key=lambda x: (x.level or -1), reverse=reverse)
         elif key == 'Newest':
             res.sort(key=lambda x: x.id, reverse=reverse)
+
+        # Filter Owned (New)
+        if self.state['only_owned'] and self.state['reference_collection']:
+             # Get owned IDs
+             owned_ids = set(c.card_id for c in self.state['reference_collection'].cards)
+             res = [c for c in res if c.id in owned_ids]
+        # If 'only_owned' is checked but Reference Collection is None -> Show everything? Or nothing?
+        # User said "None option where every card in the deck is highlighted like its in the collection".
+        # This implies "None" collection means "I have everything" or "Don't track ownership".
+        # So if Only Owned is checked and Ref is None, we probably shouldn't filter, or filter to All.
+        # Let's assume: Ref None -> Treat as "Infinite Collection" -> Show All.
+        pass
+
 
         self.state['filtered_items'] = res
         self.state['page'] = 1
@@ -362,13 +404,29 @@ class DeckBuilderPage:
 
             # Reference Collection Selector
             col_options = {f: f.replace('.json', '') for f in self.state['available_collections']}
-            async def on_col_change(e):
-                if e.value:
-                     self.state['reference_collection'] = await run.io_bound(persistence.load_collection, e.value)
-                     self.refresh_deck_area()
+            col_options[None] = 'None (All Owned)' # Add None option
 
-            curr_col_file = None # We don't track filename in state easily right now, but we can default
-            ui.select(col_options, label='Reference Collection', on_change=on_col_change).classes('min-w-[200px]')
+            async def on_col_change(e):
+                val = e.value
+                # Update Session
+                persistence.save_ui_state({'deck_builder_last_collection': val})
+
+                self.state['reference_collection_name'] = val
+
+                if val:
+                     self.state['reference_collection'] = await run.io_bound(persistence.load_collection, val)
+                else:
+                     self.state['reference_collection'] = None
+
+                await self.apply_filters() # Re-apply filters (for owned check)
+                self.refresh_deck_area()
+
+            curr_col_file = self.state.get('reference_collection_name')
+            # If current is not in options (e.g. deleted), default to None
+            if curr_col_file and curr_col_file not in col_options:
+                 curr_col_file = None
+
+            ui.select(col_options, value=curr_col_file, label='Reference Collection', on_change=on_col_change).classes('min-w-[200px]')
 
             ui.space()
 
@@ -376,7 +434,16 @@ class DeckBuilderPage:
             async def on_search(e):
                 self.state['search_text'] = e.value
                 await self.apply_filters()
-            ui.input(placeholder='Search cards...', on_change=on_search).props('debounce=300 icon=search').classes('w-64')
+
+            # Bind value to state to prevent clearing
+            ui.input(placeholder='Search cards...', value=self.state['search_text'], on_change=on_search).props('debounce=300 icon=search').classes('w-64')
+
+            # Owned Toggle
+            async def on_owned_toggle(e):
+                self.state['only_owned'] = e.value
+                await self.apply_filters()
+
+            ui.switch('Owned Only', value=self.state['only_owned'], on_change=on_owned_toggle).classes('text-white')
 
             with ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary'):
                 ui.tooltip('Filters')
@@ -416,15 +483,38 @@ class DeckBuilderPage:
                          img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
 
                          # Draggable using props and server-side state
+                         # Updated Styling as requested: line-clamp-2, Card Type instead of ATK/DEF
                          with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
                             .props('draggable') \
                             .on('dragstart', lambda c=card: self.handle_drag_start(c, 'gallery')) \
-                            .on('click', lambda c=card: self.single_card_view.open_deck_builder(c, self.add_card_to_deck)):
+                            .on('click', lambda c=card: self.open_deck_builder_wrapper(c)): # Use wrapper
                              ui.image(img_src).classes('w-full aspect-[2/3] object-cover')
-                             with ui.column().classes('p-1 gap-0'):
-                                 ui.label(card.name).classes('text-[10px] font-bold truncate w-full leading-tight')
-                                 ui.label(f"{card.atk or '-'}/{getattr(card, 'def_', '-') or '-'}").classes('text-[9px] text-gray-400')
+                             with ui.column().classes('p-1 gap-0 w-full'):
+                                 # Title with line-clamp-2, fixed height to avoid layout shift
+                                 ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
+                                 # Card Type instead of ATK/DEF
+                                 ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
 
+    def open_deck_builder_wrapper(self, card):
+        # Calculate owned stats
+        owned_count = 0
+        owned_breakdown = {}
+        if self.state['reference_collection']:
+             for c in self.state['reference_collection'].cards:
+                 if c.card_id == card.id:
+                     for v in c.variants:
+                         for e in v.entries:
+                             owned_breakdown[e.language] = owned_breakdown.get(e.language, 0) + e.quantity
+                             owned_count += e.quantity
+                     break
+        else:
+             # If no ref collection, maybe assume owned?
+             # For "Collection Status" view, if ref is None, we show "0" or "N/A"?
+             # User said "None option where every card ... highlighted like its in collection".
+             # But for specific stats, we don't have them.
+             pass
+
+        self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
 
     def refresh_deck_area(self):
         if not self.deck_area_container: return
@@ -455,10 +545,10 @@ class DeckBuilderPage:
                 for c in ref_col.cards:
                     owned_map[c.card_id] = c.total_quantity
 
-            # Calculate usage for ownership indication
-            deck_usage = {}
-            for cid in deck.main + deck.extra + deck.side:
-                deck_usage[cid] = deck_usage.get(cid, 0) + 1
+            # If ref_col is None, we treat everything as owned infinite.
+
+            # We need to track "used so far" for each card ID to determine if *this specific copy* is owned
+            usage_counter = {} # card_id -> count seen so far
 
             async def handle_drop_event(e, target):
                  await self.handle_card_drop(e, target)
@@ -488,28 +578,47 @@ class DeckBuilderPage:
                         if not cards:
                             ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50')
 
-                        with ui.grid(columns='repeat(auto-fill, minmax(60px, 1fr))').classes('w-full gap-2'):
+                        # Increased Min Size to 100px
+                        with ui.grid(columns='repeat(auto-fill, minmax(100px, 1fr))').classes('w-full gap-2'):
                             for i, card in enumerate(cards):
                                  img_id = card.card_images[0].id if card.card_images else card.id
                                  img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
 
-                                 # Ownership check
-                                 owned = owned_map.get(card.id, 0)
-                                 needed = deck_usage.get(card.id, 0) # This is global needed, but maybe we should warn if *this* copy exceeds?
-                                 # Simple logic: If we need more than we have, all copies get red border
-                                 is_missing = owned < needed
+                                 # Ownership check logic
+                                 is_owned_copy = True
+                                 if ref_col:
+                                    owned_total = owned_map.get(card.id, 0)
+                                    used_so_far = usage_counter.get(card.id, 0)
+                                    if used_so_far >= owned_total:
+                                        is_owned_copy = False
+                                    usage_counter[card.id] = used_so_far + 1
 
-                                 border = 'border-red-500 border-2' if is_missing else 'border-transparent'
-                                 opacity = 'opacity-50 grayscale' if (is_missing and owned == 0) else 'opacity-100'
+                                 # Visuals
+                                 # Removed red border for owned.
+                                 border = 'border-transparent' # Always transparent unless maybe missing? User said remove red border for owned.
+                                 # Keep highlighted (normal opacity) if owned.
+                                 # Grey out if missing.
 
-                                 with ui.card().classes(f'p-0 cursor-pointer w-full aspect-[2/3] {border} {opacity} hover:scale-105 transition-transform relative group') \
+                                 classes = f'p-0 cursor-pointer w-full aspect-[2/3] {border} hover:scale-105 transition-transform relative group border border-gray-800'
+                                 if not is_owned_copy:
+                                     classes += ' opacity-50 grayscale'
+                                 else:
+                                     classes += ' opacity-100'
+
+                                 with ui.card().classes(classes) \
                                    .props('draggable') \
                                    .on('dragstart', lambda c=card, t=target: self.handle_drag_start(c, t)) \
                                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
                                      ui.image(img_src).classes('w-full h-full object-cover rounded')
+
                                      # Hover remove
                                      with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
                                          ui.icon('remove', color='white').classes('text-lg')
+
+                                     # Card Info Overlay (Name/Type) - New
+                                     with ui.column().classes('p-1 gap-0 w-full bg-gray-900/80 absolute bottom-0 left-0 right-0'):
+                                         ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6 text-white')
+                                         ui.label(card.type).classes('text-[9px] text-gray-300 truncate w-full')
 
             # Render zones directly into the container
             render_zone('Main Deck', main_cards, 'main', flex_grow=True)

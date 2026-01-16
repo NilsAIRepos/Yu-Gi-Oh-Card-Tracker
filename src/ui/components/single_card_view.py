@@ -634,7 +634,9 @@ class SingleCardView:
     async def open_deck_builder(
         self,
         card: ApiCard,
-        on_add_callback: Callable[[int, int, str], Any]
+        on_add_callback: Callable[[int, int, str], Any],
+        owned_count: int = 0,
+        owned_breakdown: Dict[str, int] = None
     ):
         try:
              with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
@@ -652,7 +654,11 @@ class SingleCardView:
 
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
                          # Basic Info
-                         ui.label(card.name).classes('text-4xl font-bold text-white')
+                         with ui.row().classes('w-full items-center justify-between'):
+                             ui.label(card.name).classes('text-4xl font-bold text-white')
+                             if owned_count > 0:
+                                 with ui.label(str(owned_count)).classes('text-2xl font-bold text-accent'):
+                                     ui.tooltip('Total Owned')
 
                          with ui.grid(columns=4).classes('w-full gap-4 text-lg q-my-md'):
                              def stat(label, value):
@@ -671,6 +677,15 @@ class SingleCardView:
                                  stat('Race', card.race)
 
                          ui.markdown(card.desc).classes('text-gray-300 leading-relaxed text-lg q-mb-md')
+
+                         if owned_breakdown:
+                             ui.separator().classes('q-my-md bg-gray-700')
+                             ui.label('Collection Status').classes('text-h6 q-mb-sm text-accent')
+                             with ui.row().classes('gap-2'):
+                                 for lang, count in owned_breakdown.items():
+                                     with ui.chip(icon='layers').props('color=secondary text-color=white'):
+                                         ui.label(f"{lang}: {count}")
+
                          ui.separator().classes('q-my-md bg-gray-700')
 
                          # Add to Deck Section

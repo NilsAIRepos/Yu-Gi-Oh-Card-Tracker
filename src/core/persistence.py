@@ -138,5 +138,30 @@ class PersistenceManager:
             logger.error(f"Error saving deck {filename}: {e}")
             raise
 
+    # --- UI State Persistence ---
+
+    def load_ui_state(self) -> dict:
+        """Loads UI state from data/ui_state.json."""
+        filepath = os.path.join(self.data_dir, "ui_state.json")
+        if not os.path.exists(filepath):
+            return {}
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading UI state: {e}")
+            return {}
+
+    def save_ui_state(self, state: dict):
+        """Saves UI state to data/ui_state.json. Merges with existing state."""
+        filepath = os.path.join(self.data_dir, "ui_state.json")
+        try:
+            current = self.load_ui_state()
+            current.update(state)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(current, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving UI state: {e}")
+
 # Global instance
 persistence = PersistenceManager()
