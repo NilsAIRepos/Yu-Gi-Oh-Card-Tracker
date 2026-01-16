@@ -6,10 +6,11 @@ from typing import List, Optional
 from src.core.models import Collection
 
 DATA_DIR = "data"
+COLLECTIONS_DIR = os.path.join(DATA_DIR, "collections")
 logger = logging.getLogger(__name__)
 
 class PersistenceManager:
-    def __init__(self, data_dir: str = DATA_DIR):
+    def __init__(self, data_dir: str = COLLECTIONS_DIR):
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 

@@ -636,6 +636,44 @@ class CollectionPage:
             logger.error(f"Error saving collection: {e}")
             ui.notify(f"Error saving: {e}", type='negative')
 
+    def setup_high_res_image_logic(self, img_id: int, high_res_remote_url: str, low_res_url: str, image_element: ui.image, current_id_check: Callable[[], bool] = None):
+        """
+        Sets the source of the image element.
+        Prioritizes local high-res > local low-res > remote low-res.
+        If local high-res is missing but remote high-res is available, downloads it in background.
+        """
+        if not img_id:
+             image_element.source = low_res_url
+             return
+
+        # Check local high-res
+        if image_manager.image_exists(img_id, high_res=True):
+             image_element.source = f"/images/{img_id}_high.jpg"
+             image_element.update()
+             return
+
+        # Fallback to low-res (local or remote)
+        # Note: image_manager.image_exists defaults to False for high_res argument, so check normal
+        if image_manager.image_exists(img_id, high_res=False):
+             image_element.source = f"/images/{img_id}.jpg"
+        else:
+             image_element.source = low_res_url
+
+        image_element.update()
+
+        # Background download high-res
+        if high_res_remote_url:
+             async def download_task():
+                 path = await image_manager.ensure_image(img_id, high_res_remote_url, high_res=True)
+                 if path:
+                      # If the user hasn't switched images in the meantime
+                      if current_id_check is None or current_id_check():
+                          image_element.source = f"/images/{img_id}_high.jpg"
+                          image_element.update()
+
+             # Run in background
+             asyncio.create_task(download_task())
+
     def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, condition: str = "Near Mint", first_edition: bool = False, image_url: str = None, image_id: int = None, set_price: float = 0.0):
         if self.state['view_scope'] == 'consolidated':
             owned_breakdown = {}
