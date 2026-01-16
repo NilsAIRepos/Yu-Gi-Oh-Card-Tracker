@@ -104,24 +104,52 @@ class FilterPane:
                 min_input.value = val['min']
                 max_input.value = val['max']
 
-            async def on_slider_update(e):
+            def _get_event_val(e):
                 val = getattr(e, 'value', None)
-                if val is None and hasattr(e, 'args') and e.args:
-                    val = e.args[0]
+                if val is not None:
+                    return val
+
+                # Check args
+                args = getattr(e, 'args', None)
+                if not args:
+                    return None
+
+                # If args is a dictionary (NiceGUI sometimes returns the value directly in args for certain elements)
+                if isinstance(args, dict):
+                    return args
+
+                # If args is a list/tuple
+                if isinstance(args, (list, tuple)) and len(args) > 0:
+                    return args[0]
+
+                # Fallback: return args itself (e.g. if it's a single primitive value not wrapped in list)
+                return args
+
+            async def on_slider_update(e):
+                val = _get_event_val(e)
                 if isinstance(val, dict):
                     update_from_val(val)
 
             async def on_slider_change(e):
-                val = getattr(e, 'value', None)
-                if val is None and hasattr(e, 'args') and e.args:
-                    val = e.args[0]
+                val = _get_event_val(e)
                 if isinstance(val, dict):
                     update_from_val(val)
                     if self.on_change: await self.on_change()
 
             async def on_min_input_change(e):
                 try:
-                    val = float(e.value) if e.value is not None else min_limit
+                    # e.value might be missing on GenericEventArguments, prioritize sender.value
+                    raw_val = None
+                    if hasattr(e, 'sender') and hasattr(e.sender, 'value'):
+                        raw_val = e.sender.value
+                    elif hasattr(e, 'value'): # Standard ValueChangeEventArguments
+                        raw_val = e.value
+
+                    if raw_val is None:
+                        # Fallback to args if sender.value is not set/reliable
+                        raw_val = _get_event_val(e)
+
+                    val = float(raw_val) if raw_val is not None else min_limit
                 except: val = min_limit
                 self.state[min_key] = val
                 slider.value = {'min': val, 'max': self.state[max_key]}
@@ -129,7 +157,16 @@ class FilterPane:
 
             async def on_max_input_change(e):
                 try:
-                    val = float(e.value) if e.value is not None else max_limit
+                    raw_val = None
+                    if hasattr(e, 'sender') and hasattr(e.sender, 'value'):
+                        raw_val = e.sender.value
+                    elif hasattr(e, 'value'):
+                        raw_val = e.value
+
+                    if raw_val is None:
+                        raw_val = _get_event_val(e)
+
+                    val = float(raw_val) if raw_val is not None else max_limit
                 except: val = max_limit
                 self.state[max_key] = val
                 slider.value = {'min': self.state[min_key], 'max': val}
