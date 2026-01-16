@@ -195,7 +195,8 @@ class SingleCardView:
                         with ui.row().classes('w-full items-center justify-between'):
                             ui.label(card.name).classes('text-4xl font-bold text-white select-text')
                         if total_owned > 0:
-                            ui.badge(f"Total Owned: {total_owned}", color='accent').classes('text-lg')
+                            with ui.label(str(total_owned)).classes('text-2xl font-bold text-accent'):
+                                ui.tooltip('Total Owned')
 
                         ui.separator().classes('q-my-md bg-gray-700')
 
@@ -323,6 +324,33 @@ class SingleCardView:
                                 default_set_base_code=default_set_code
                             )
 
+                        ui.separator().classes('q-my-md')
+                        ui.label('Available Sets').classes('text-h6 q-mb-sm select-none text-accent')
+
+                        if card.card_sets:
+                             with ui.grid(columns=4).classes('w-full gap-2 text-sm'):
+                                 # Header
+                                 ui.label('Set Code').classes('font-bold text-gray-400')
+                                 ui.label('Set Name').classes('font-bold text-gray-400')
+                                 ui.label('Rarity').classes('font-bold text-gray-400')
+                                 ui.label('Price').classes('font-bold text-gray-400')
+
+                                 for s in card.card_sets:
+                                     ui.label(s.set_code).classes('font-mono font-bold text-yellow-500')
+                                     ui.label(s.set_name).classes('truncate')
+                                     ui.label(s.set_rarity)
+                                     price = s.set_price
+                                     if price:
+                                         try:
+                                              price_str = f"${float(price):.2f}"
+                                         except:
+                                              price_str = str(price)
+                                     else:
+                                         price_str = "-"
+                                     ui.label(price_str).classes('text-green-400')
+                        else:
+                             ui.label('No set information available.').classes('text-gray-500 italic')
+
         except Exception as e:
             logger.error(f"ERROR in render_consolidated_single_view: {e}", exc_info=True)
 
@@ -439,9 +467,12 @@ class SingleCardView:
                         with ui.row().classes('w-full items-center justify-between'):
                             ui.label(card.name).classes('text-h3 font-bold text-white select-text')
 
-                        owned_badge = ui.badge(f"Owned: {owned_count}", color='accent').classes('text-lg')
+                        owned_label = ui.label(str(owned_count)).classes('text-2xl font-bold text-accent')
+                        with owned_label:
+                            ui.tooltip('Owned Count')
+
                         if owned_count == 0:
-                            owned_badge.set_visibility(False)
+                            owned_label.set_visibility(False)
 
                         ui.separator().classes('q-my-md bg-gray-700')
 
@@ -523,8 +554,8 @@ class SingleCardView:
                                             break
                                             break
 
-                            owned_badge.text = f"Owned: {cur_owned}"
-                            owned_badge.set_visibility(cur_owned > 0)
+                            owned_label.text = str(cur_owned)
+                            owned_label.set_visibility(cur_owned > 0)
 
                             update_image()
 

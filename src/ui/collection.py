@@ -255,6 +255,10 @@ class CollectionPage:
         self.filter_pane: Optional[FilterPane] = None
         self.single_card_view = SingleCardView()
 
+        # UI Element references for pagination updates
+        self.pagination_showing_label = None
+        self.pagination_total_label = None
+
     async def load_data(self):
         logger.info(f"Loading data... (Language: {self.state['language']})")
 
@@ -394,7 +398,8 @@ class CollectionPage:
 
         if not source:
             self.state['filtered_items'] = []
-            if hasattr(self, 'content_area'): self.content_area.refresh()
+            if hasattr(self, 'render_card_display'): self.render_card_display.refresh()
+            self.update_pagination_labels()
             return
 
         res = list(source)
@@ -539,11 +544,21 @@ class CollectionPage:
         self.update_pagination()
 
         await self.prepare_current_page_images()
-        if hasattr(self, 'content_area'): self.content_area.refresh()
+        if hasattr(self, 'render_card_display'): self.render_card_display.refresh()
+        self.update_pagination_labels()
 
     def update_pagination(self):
         count = len(self.state['filtered_items'])
         self.state['total_pages'] = (count + self.state['page_size'] - 1) // self.state['page_size']
+
+    def update_pagination_labels(self):
+        if self.pagination_showing_label:
+            start = (self.state['page'] - 1) * self.state['page_size']
+            end = min(start + self.state['page_size'], len(self.state['filtered_items']))
+            self.pagination_showing_label.text = f"Showing {start+1}-{end} of {len(self.state['filtered_items'])}"
+
+        if self.pagination_total_label:
+            self.pagination_total_label.text = f"/ {max(1, self.state['total_pages'])}"
 
     async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET'):
         if not self.state['current_collection']:
@@ -713,10 +728,12 @@ class CollectionPage:
                             ui.label(f"Lv {card.level}").classes('text-[10px] text-gray-500')
                     ui.label(card.race).classes('text-xs text-gray-400')
                     ui.label(card.type).classes('text-xs text-gray-400')
-                    if vm.is_owned:
-                         ui.badge(str(vm.owned_quantity), color='accent').classes('text-dark')
-                    else:
-                         ui.label('-').classes('text-gray-600')
+
+                    with ui.row().classes('w-full justify-center'):
+                         if vm.is_owned:
+                              ui.label(str(vm.owned_quantity)).classes('font-bold text-accent text-lg')
+                         else:
+                              ui.label('-').classes('text-gray-600')
 
     def render_collectors_list(self, items: List[CollectorRow]):
         flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷', 'CN': '🇨🇳'}
@@ -751,10 +768,12 @@ class CollectionPage:
                     ui.label(flag_map.get(item.language, item.language)).classes('text-lg')
 
                     ui.label(f"${item.price:.2f}").classes('text-sm text-green-400')
-                    if item.is_owned:
-                         ui.badge(str(item.owned_count), color='accent').classes('text-dark')
-                    else:
-                         ui.label('-').classes('text-gray-600')
+
+                    with ui.row().classes('w-full justify-center'):
+                         if item.is_owned:
+                              ui.label(str(item.owned_count)).classes('font-bold text-accent text-lg')
+                         else:
+                              ui.label('-').classes('text-gray-600')
 
     def render_collectors_grid(self, items: List[CollectorRow]):
         flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷', 'CN': '🇨🇳'}
@@ -931,10 +950,10 @@ class CollectionPage:
 
             with ui.button_group():
                 is_grid = self.state['view_mode'] == 'grid'
-                with ui.button(icon='grid_view', on_click=lambda: [self.state.update({'view_mode': 'grid'}), self.content_area.refresh(), self.render_header.refresh()]) \
+                with ui.button(icon='grid_view', on_click=lambda: [self.state.update({'view_mode': 'grid'}), self.render_card_display.refresh(), self.render_header.refresh()]) \
                     .props(f'flat={not is_grid} color=accent'):
                     ui.tooltip('Show cards in a grid layout')
-                with ui.button(icon='list', on_click=lambda: [self.state.update({'view_mode': 'list'}), self.content_area.refresh(), self.render_header.refresh()]) \
+                with ui.button(icon='list', on_click=lambda: [self.state.update({'view_mode': 'list'}), self.render_card_display.refresh(), self.render_header.refresh()]) \
                     .props(f'flat={is_grid} color=accent'):
                     ui.tooltip('Show cards in a list layout')
 
@@ -943,35 +962,10 @@ class CollectionPage:
                 ui.tooltip('Open advanced filters')
 
     @ui.refreshable
-    def content_area(self):
+    def render_card_display(self):
         start = (self.state['page'] - 1) * self.state['page_size']
         end = min(start + self.state['page_size'], len(self.state['filtered_items']))
         page_items = self.state['filtered_items'][start:end]
-
-        with ui.row().classes('w-full items-center justify-between q-mb-sm px-4'):
-            ui.label(f"Showing {start+1}-{end} of {len(self.state['filtered_items'])}").classes('text-grey')
-
-            with ui.row().classes('items-center gap-2'):
-                async def set_page(p):
-                    self.state['page'] = int(p) if p else 1
-                    await self.prepare_current_page_images()
-                    self.content_area.refresh()
-
-                async def change_page(delta):
-                    new_p = max(1, min(self.state['total_pages'], self.state['page'] + delta))
-                    if new_p != self.state['page']:
-                        self.state['page'] = new_p
-                        await self.prepare_current_page_images()
-                        self.content_area.refresh()
-
-                with ui.button(icon='chevron_left', on_click=lambda: change_page(-1)).props('flat dense'):
-                    ui.tooltip('Go to previous page')
-                with ui.number(value=self.state['page'], min=1, max=self.state['total_pages'],
-                          on_change=lambda e: set_page(e.value)).classes('w-20').props('dense borderless input-class="text-center"'):
-                    ui.tooltip('Current page number')
-                ui.label(f"/ {max(1, self.state['total_pages'])}")
-                with ui.button(icon='chevron_right', on_click=lambda: change_page(1)).props('flat dense'):
-                    ui.tooltip('Go to next page')
 
         if not page_items:
             ui.label('No items found.').classes('w-full text-center text-xl text-grey italic q-mt-xl')
@@ -987,6 +981,50 @@ class CollectionPage:
                 self.render_collectors_grid(page_items)
             else:
                 self.render_collectors_list(page_items)
+
+    def content_area(self):
+        # Pagination controls - static
+        with ui.row().classes('w-full items-center justify-between q-mb-sm px-4'):
+            self.pagination_showing_label = ui.label("Loading...").classes('text-grey')
+
+            with ui.row().classes('items-center gap-2'):
+                async def set_page(p):
+                    new_val = int(p) if p else 1
+                    self.state['page'] = new_val
+                    await self.prepare_current_page_images()
+                    self.render_card_display.refresh()
+                    self.update_pagination_labels()
+
+                async def change_page(delta):
+                    new_p = max(1, min(self.state['total_pages'], self.state['page'] + delta))
+                    if new_p != self.state['page']:
+                        self.state['page'] = new_p
+                        await self.prepare_current_page_images()
+                        self.render_card_display.refresh()
+                        self.update_pagination_labels()
+
+                with ui.button(icon='chevron_left', on_click=lambda: change_page(-1)).props('flat dense'):
+                    ui.tooltip('Go to previous page')
+
+                # Bind value to state, but handle on_change for actions
+                # Important: on_change fires on every keystroke usually unless debounced, or lazy.
+                # For page numbers, enter or blur is better, but NiceGUI number input usually updates on change.
+                # To prevent focus loss, this element is NOT rebuilt.
+
+                n_input = ui.number(min=1).bind_value(self.state, 'page').props('dense borderless input-class="text-center"').classes('w-20')
+                n_input.on('change', lambda e: set_page(e.value))
+                n_input.on('keydown.enter', lambda: set_page(self.state['page']))
+
+                self.pagination_total_label = ui.label("/ 1")
+
+                with ui.button(icon='chevron_right', on_click=lambda: change_page(1)).props('flat dense'):
+                    ui.tooltip('Go to next page')
+
+        # Render the refreshable card display
+        self.render_card_display()
+
+        # Initial label update
+        self.update_pagination_labels()
 
     def build_ui(self):
         self.filter_dialog = ui.dialog().props('position=right')
