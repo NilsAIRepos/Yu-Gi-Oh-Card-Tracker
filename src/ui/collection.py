@@ -639,11 +639,11 @@ class CollectionPage:
     def setup_high_res_image_logic(self, img_id: int, high_res_remote_url: str, low_res_url: str, image_element: ui.image, current_id_check: Callable[[], bool] = None):
         """
         Sets the source of the image element.
-        Prioritizes local high-res > local low-res > remote low-res.
+        Prioritizes local high-res > remote high-res.
         If local high-res is missing but remote high-res is available, downloads it in background.
         """
         if not img_id:
-             image_element.source = low_res_url
+             image_element.source = high_res_remote_url or low_res_url
              return
 
         # Check local high-res
@@ -652,24 +652,14 @@ class CollectionPage:
              image_element.update()
              return
 
-        # Fallback to low-res (local or remote)
-        # Note: image_manager.image_exists defaults to False for high_res argument, so check normal
-        if image_manager.image_exists(img_id, high_res=False):
-             image_element.source = f"/images/{img_id}.jpg"
-        else:
-             image_element.source = low_res_url
-
+        # Use remote high-res directly, fallback to low-res only if high-res is missing
+        image_element.source = high_res_remote_url if high_res_remote_url else low_res_url
         image_element.update()
 
         # Background download high-res
         if high_res_remote_url:
              async def download_task():
-                 path = await image_manager.ensure_image(img_id, high_res_remote_url, high_res=True)
-                 if path:
-                      # If the user hasn't switched images in the meantime
-                      if current_id_check is None or current_id_check():
-                          image_element.source = f"/images/{img_id}_high.jpg"
-                          image_element.update()
+                 await image_manager.ensure_image(img_id, high_res_remote_url, high_res=True)
 
              # Run in background
              asyncio.create_task(download_task())
