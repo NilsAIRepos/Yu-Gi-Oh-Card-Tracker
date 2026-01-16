@@ -2,7 +2,7 @@ from nicegui import ui
 from src.core.models import ApiCardSet
 from src.services.ygo_api import ApiCard, ygo_service
 from src.services.image_manager import image_manager
-from src.core.utils import transform_set_code, generate_variant_id
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code
 from typing import List, Optional, Dict, Set, Callable, Any
 import logging
 import asyncio
@@ -411,6 +411,15 @@ class SingleCardView:
                         initial_base_code = base
                         found = True
                         break
+
+                if not found:
+                    # Try normalized matching (ignore region code differences)
+                    norm_target = normalize_set_code(set_code)
+                    for base in set_options.keys():
+                        if normalize_set_code(base) == norm_target:
+                            initial_base_code = base
+                            found = True
+                            break
 
                 if not found:
                     # Fallback: Attempt to resolve set name from global DB
