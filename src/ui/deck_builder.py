@@ -46,6 +46,9 @@ class DeckBuilderPage:
                     ghostClass: 'opacity-50',
                     forceFallback: true,
                     fallbackTolerance: 3,
+                    onClone: function (evt) {
+                         evt.clone.removeAttribute('id');
+                    },
                     onEnd: function (evt) {
                         var toIds = Array.from(evt.to.children).map(c => c.getAttribute('data-id')).filter(id => id);
                         var fromIds = Array.from(evt.from.children).map(c => c.getAttribute('data-id')).filter(id => id);
