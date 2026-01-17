@@ -4,11 +4,12 @@ import os
 import asyncio
 import uuid
 import logging
-from typing import List, Optional, Callable, Dict
+from typing import List, Optional, Callable, Dict, Any, Tuple
 from src.core.models import ApiCard, ApiCardSet
 from src.services.image_manager import image_manager
 from src.core.persistence import persistence
 from src.core.utils import generate_variant_id
+from src.core.constants import RARITY_RANKING
 from nicegui import run
 
 API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -25,7 +26,7 @@ def parse_cards_data(data: List[dict]) -> List[ApiCard]:
 class YugiohService:
     def __init__(self):
         self._cards_cache: Dict[str, List[ApiCard]] = {}
-        self._sets_cache: Dict[str, str] = {} # set_code_prefix -> set_name
+        self._sets_cache: Dict[str, Dict[str, Any]] = {} # set_code_prefix -> {name, code, image, date, count}
         self._migrate_old_db_files()
 
     def _migrate_old_db_files(self):
@@ -375,19 +376,25 @@ class YugiohService:
 
     # --- Global Sets Logic ---
 
-    async def fetch_all_sets(self):
+    async def fetch_all_sets(self, force_refresh=False):
         """Fetches the global set list from the API and caches it."""
-        if self._sets_cache:
+        if self._sets_cache and not force_refresh:
             return
 
-        # Try load from disk
-        if os.path.exists(SETS_FILE):
+        # Try load from disk if not forcing refresh
+        if not force_refresh and os.path.exists(SETS_FILE):
              try:
                  with open(SETS_FILE, 'r', encoding='utf-8') as f:
                      data = json.load(f)
                      if data:
-                        self._sets_cache = data
-                        return
+                         # Validate structure - check if values are strings (old format) or dicts (new format)
+                         first_val = next(iter(data.values())) if data else None
+                         if isinstance(first_val, str):
+                             logger.info("Old sets cache format detected. Migrating...")
+                             force_refresh = True # Force fetch to update
+                         else:
+                            self._sets_cache = data
+                            return
              except Exception as e:
                  logger.error(f"Error reading sets file: {e}")
 
@@ -399,29 +406,40 @@ class YugiohService:
 
         if response.status_code == 200:
             sets_data = response.json()
-            # Map set_code -> set_name
-            # sets_data is a list of dicts: {"set_name": "...", "set_code": "..."}
-            cache = {}
-            # We track num_of_cards to prioritize larger sets when codes collide (e.g. SDY)
-            # We store (name, count) temporarily
+            # Map set_code_prefix -> {name, code, image, date, count}
+            # We track num_of_cards to prioritize larger sets when prefixes collide (e.g. SDY)
             temp_cache = {}
 
             for s in sets_data:
                 code = s.get("set_code")
                 name = s.get("set_name")
                 count = s.get("num_of_cards", 0)
+                image = s.get("set_image")
+                date = s.get("tcg_date")
 
                 if code and name:
+                    # Logic to handle prefixes. Note that set_code might be full code (unlikely in this API) or prefix.
+                    # This API usually returns prefixes like "SDY", "LOB", "MP19".
+                    # However, local cards might reference "MP19-EN001".
+                    # We store by the prefix provided by the API.
+
+                    entry = {
+                        "name": name,
+                        "code": code,
+                        "image": image,
+                        "date": date,
+                        "count": count
+                    }
+
                     if code not in temp_cache:
-                        temp_cache[code] = (name, count)
+                        temp_cache[code] = entry
                     else:
                         # Overwrite if current set has more cards
-                        existing_name, existing_count = temp_cache[code]
-                        if count > existing_count:
-                            temp_cache[code] = (name, count)
+                        if count > temp_cache[code]["count"]:
+                            temp_cache[code] = entry
 
             # Finalize cache
-            self._sets_cache = {k: v[0] for k, v in temp_cache.items()}
+            self._sets_cache = temp_cache
 
             # Save to disk
             try:
@@ -441,14 +459,70 @@ class YugiohService:
         await self.fetch_all_sets()
 
         # Extract prefix
-        # Logic:
-        # BP02-DE137 -> BP02
-        # SDY-006 -> SDY
-        # MOV-EN001 -> MOV
-        # If no hyphen, assume it is the prefix (e.g. "BP02")
-
         prefix = set_code.split('-')[0]
-        return self._sets_cache.get(prefix)
+        entry = self._sets_cache.get(prefix)
+        if isinstance(entry, dict):
+            return entry.get("name")
+        elif isinstance(entry, str): # Fallback/Legacy
+            return entry
+        return None
 
+    async def get_set_info(self, set_code: str) -> Optional[Dict[str, Any]]:
+        """Retrieves full metadata for a set by code prefix."""
+        await self.fetch_all_sets()
+        prefix = set_code.split('-')[0]
+        entry = self._sets_cache.get(prefix)
+        if isinstance(entry, dict):
+            return entry
+        return None
+
+    async def get_all_sets_info(self) -> List[Dict[str, Any]]:
+        """Returns list of all set metadatas."""
+        await self.fetch_all_sets()
+        return list(self._sets_cache.values())
+
+    async def get_set_cards(self, set_code: str, language: str = "en") -> List[ApiCard]:
+        """
+        Returns a list of ApiCard objects that belong to the specified set code/prefix.
+        Cards are sorted by highest rarity using the global RARITY_RANKING.
+        """
+        cards = await self.load_card_database(language)
+        matching_cards = []
+
+        prefix = set_code.split('-')[0].lower()
+
+        for card in cards:
+            if not card.card_sets:
+                continue
+
+            # Check if any set in card.card_sets matches
+            belongs = False
+            best_rarity_index = 999
+
+            for cs in card.card_sets:
+                cs_prefix = cs.set_code.split('-')[0].lower()
+                if cs_prefix == prefix:
+                    belongs = True
+                    # Determine rarity priority
+                    r = cs.set_rarity
+                    try:
+                        idx = RARITY_RANKING.index(r)
+                    except ValueError:
+                        idx = 999
+                    if idx < best_rarity_index:
+                        best_rarity_index = idx
+
+            if belongs:
+                # Store tuple for sorting
+                matching_cards.append((card, best_rarity_index))
+
+        # Sort by best rarity index
+        matching_cards.sort(key=lambda x: x[1])
+
+        return [x[0] for x in matching_cards]
+
+    async def download_set_image(self, set_code: str, url: str) -> Optional[str]:
+        """Downloads/Caches set image."""
+        return await image_manager.ensure_set_image(set_code, url)
 
 ygo_service = YugiohService()

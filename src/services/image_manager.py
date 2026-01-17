@@ -7,12 +7,46 @@ from typing import Dict, List, Optional, Callable
 
 DATA_DIR = "data"
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
+SETS_DIR = os.path.join(DATA_DIR, "sets")
 
 class ImageManager:
     def __init__(self, images_dir: str = IMAGES_DIR):
         self.images_dir = images_dir
+        self.sets_dir = SETS_DIR
         os.makedirs(self.images_dir, exist_ok=True)
+        os.makedirs(self.sets_dir, exist_ok=True)
         self.logger = logging.getLogger(__name__)
+
+    def get_set_image_path(self, set_code: str) -> str:
+        """Returns the local file path for a set image."""
+        # Sanitize set code for filename
+        safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
+        return os.path.join(self.sets_dir, f"{safe_code}.jpg")
+
+    def set_image_exists(self, set_code: str) -> bool:
+        return os.path.exists(self.get_set_image_path(set_code))
+
+    async def ensure_set_image(self, set_code: str, url: str) -> Optional[str]:
+        """Ensures the set image exists locally."""
+        if not url: return None
+        local_path = self.get_set_image_path(set_code)
+        if os.path.exists(local_path):
+            return local_path
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Reuse the internal downloader logic but with string ID
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.read()
+                        await run.io_bound(self._write_file, local_path, data)
+                        return local_path
+                    else:
+                        self.logger.warning(f"Failed to download set image {set_code}: {response.status}")
+                        return None
+        except Exception as e:
+            self.logger.error(f"Error downloading set image {set_code}: {e}")
+            return None
 
     def get_local_path(self, card_id: int, high_res: bool = False) -> str:
         """Returns the local file path for a card image."""

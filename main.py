@@ -13,6 +13,7 @@ from src.ui.dashboard import dashboard_page
 from src.ui.collection import collection_page
 from src.ui.deck_builder import deck_builder_page
 from src.ui.import_tools import import_tools_page
+from src.ui.browse_sets import browse_sets_page
 
 @ui.page('/')
 def home():
@@ -21,6 +22,10 @@ def home():
 @ui.page('/collection')
 def collection():
     create_layout(collection_page)
+
+@ui.page('/sets')
+def sets():
+    create_layout(browse_sets_page)
 
 @ui.page('/decks')
 def decks():

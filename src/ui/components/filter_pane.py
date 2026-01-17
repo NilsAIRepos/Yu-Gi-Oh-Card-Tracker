@@ -2,22 +2,24 @@ from nicegui import ui
 from typing import Callable, Dict, Any, List
 
 class FilterPane:
-    def __init__(self, state: Dict[str, Any], on_change: Callable, on_reset: Callable):
+    def __init__(self, state: Dict[str, Any], on_change: Callable, on_reset: Callable, show_set_selector: bool = True):
         self.state = state
         self.on_change = on_change
         self.on_reset = on_reset
+        self.show_set_selector = show_set_selector
         self.filter_inputs = {}
 
     def build(self):
         with ui.column().classes('w-full p-4 gap-4'):
             ui.label('Filters').classes('text-h6')
 
-            # Set Selector
-            self.set_selector = ui.select(
-                self.state.get('available_sets', []),
-                label='Set', with_input=True, clearable=True,
-                on_change=self.on_change
-            ).bind_value(self.state, 'filter_set').classes('w-full').props('use-input fill-input input-debounce=0')
+            if self.show_set_selector:
+                # Set Selector
+                self.set_selector = ui.select(
+                    self.state.get('available_sets', []),
+                    label='Set', with_input=True, clearable=True,
+                    on_change=self.on_change
+                ).bind_value(self.state, 'filter_set').classes('w-full').props('use-input fill-input input-debounce=0')
 
             # Rarity
             common_rarities = [
