@@ -392,8 +392,17 @@ class DeckBuilderPage:
                                          if hasattr(e, 'content'): f_obj = e.content
                                          elif hasattr(e, 'file'): f_obj = e.file
                                          if not f_obj: raise Exception("Could not find file content")
+
                                          content = (await f_obj.read()).decode('utf-8')
-                                         name = os.path.basename(e.name).replace('.ydk', '')
+
+                                         raw_name = None
+                                         if hasattr(e, 'name'): raw_name = e.name
+                                         elif hasattr(f_obj, 'name'): raw_name = f_obj.name
+                                         elif hasattr(f_obj, 'filename'): raw_name = f_obj.filename
+
+                                         if not raw_name: raise Exception("Could not determine filename")
+
+                                         name = os.path.basename(raw_name).replace('.ydk', '')
                                          filename = f"{name}.ydk"
                                          filepath = f"data/decks/{filename}"
                                          with open(filepath, 'w', encoding='utf-8') as f: f.write(content)
