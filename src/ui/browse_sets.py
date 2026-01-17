@@ -4,7 +4,7 @@ from src.services.image_manager import image_manager
 from src.core.constants import RARITY_RANKING
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
-from src.ui.collection import build_collector_rows, CollectorRow
+from src.ui.collection import build_collector_rows, CollectorRow, CardViewModel
 from src.core.persistence import persistence
 from src.core.utils import transform_set_code, normalize_set_code
 import asyncio
@@ -37,7 +37,10 @@ def build_set_rows(api_cards, collection, target_set_code):
             owned_count = 0
             is_owned = False
 
-            if card.id in owned_map:
+            if collection is None:
+                is_owned = True
+                owned_count = 0
+            elif card.id in owned_map:
                 c_card = owned_map[card.id]
                 # Find matching variant
                 for v in c_card.variants:
@@ -46,7 +49,7 @@ def build_set_rows(api_cards, collection, target_set_code):
                     if normalize_set_code(v.set_code) == normalize_set_code(s.set_code) and v.rarity == s.set_rarity:
                          owned_count += v.total_quantity
 
-            is_owned = owned_count > 0
+                is_owned = owned_count > 0
 
             # Construct Row
             img_url = card.card_images[0].image_url_small if card.card_images else None
@@ -74,6 +77,54 @@ def build_set_rows(api_cards, collection, target_set_code):
 
     return rows
 
+def build_consolidated_rows(api_cards, collection):
+    rows = []
+    owned_map = {}
+    if collection:
+        for c in collection.cards:
+            owned_map[c.card_id] = c
+
+    for card in api_cards:
+        is_owned = False
+        qty = 0
+        owned_langs = set()
+        owned_conds = set()
+
+        if collection is None:
+            # All Owned Mode
+            is_owned = True
+            qty = 0 # Visuals should handle is_owned=True with qty=0 correctly (opaque but no badge)
+        else:
+            c_card = owned_map.get(card.id)
+            if c_card:
+                qty = c_card.total_quantity
+                is_owned = qty > 0
+                for v in c_card.variants:
+                    for e in v.entries:
+                        owned_langs.add(e.language)
+                        owned_conds.add(e.condition)
+
+        # Calculate lowest price
+        lowest = 0.0
+        prices = []
+        if card.card_prices:
+            p = card.card_prices[0]
+            for val in [p.cardmarket_price, p.tcgplayer_price, p.coolstuffinc_price]:
+                 if val:
+                     try: prices.append(float(val))
+                     except: pass
+        if prices: lowest = min(prices)
+
+        rows.append(CardViewModel(
+            api_card=card,
+            owned_quantity=qty,
+            is_owned=is_owned,
+            lowest_price=lowest,
+            owned_languages=owned_langs,
+            owned_conditions=owned_conds
+        ))
+    return rows
+
 class BrowseSetsPage:
     def __init__(self):
         self.state = {
@@ -94,9 +145,16 @@ class BrowseSetsPage:
             'selected_collection_file': None,
 
             # Detail View State
+            'view_scope': 'collectors', # collectors, consolidated
             'detail_cards': [], # Raw ApiCards
-            'detail_rows': [], # CollectorRows
+            'detail_rows': [], # Legacy reference, will point to collectors
+            'detail_rows_collectors': [],
+            'detail_rows_consolidated': [],
             'detail_filtered_rows': [],
+            'detail_page': 1,
+            'detail_page_size': 48,
+            'detail_total_pages': 1,
+
             'detail_search': '',
             'detail_sort': 'Name',
             'detail_sort_desc': False,
@@ -291,7 +349,11 @@ class BrowseSetsPage:
 
         # Build Rows
         rows = await run.io_bound(build_set_rows, cards, self.state['current_collection'], set_code)
-        self.state['detail_rows'] = rows
+        self.state['detail_rows_collectors'] = rows
+        self.state['detail_rows'] = rows # Keep legacy ref just in case
+
+        con_rows = await run.io_bound(build_consolidated_rows, cards, self.state['current_collection'])
+        self.state['detail_rows_consolidated'] = con_rows
 
         # Populate Filters
         m_races = set()
@@ -315,9 +377,11 @@ class BrowseSetsPage:
         await self.apply_detail_filters()
 
     async def apply_detail_filters(self):
-        res = list(self.state['detail_rows'])
+        is_cons = self.state['view_scope'] == 'consolidated'
+        source = self.state['detail_rows_consolidated'] if is_cons else self.state['detail_rows_collectors']
+        res = list(source)
 
-        # Filter Logic (Subset of CollectionPage logic)
+        # Filter Logic
         txt = self.state['detail_search'].lower()
         if txt:
              res = [r for r in res if txt in r.api_card.name.lower()]
@@ -325,12 +389,10 @@ class BrowseSetsPage:
         # Reuse state filters
         if self.state['filter_rarity']:
              r = self.state['filter_rarity'].lower()
-             res = [c for c in res if r == c.rarity.lower()]
-
-        # ... Other filters ...
-        # (Simplified implementation reusing logic structure)
-        # Condition, Attr, Type, etc.
-        # Since 'r' is CollectorRow, we use r.api_card for card props.
+             if is_cons:
+                 res = [c for c in res if c.api_card.card_sets and any(r == cs.set_rarity.lower() for cs in c.api_card.card_sets)]
+             else:
+                 res = [c for c in res if r == c.rarity.lower()]
 
         if self.state['filter_attr']:
             res = [c for c in res if c.api_card.attribute == self.state['filter_attr']]
@@ -368,19 +430,33 @@ class BrowseSetsPage:
         # Ownership & Price
         min_q = self.state['filter_ownership_min']
         max_q = self.state['filter_ownership_max']
-        res = [c for c in res if min_q <= c.owned_count <= max_q]
+
+        def get_qty(c):
+            return c.owned_quantity if hasattr(c, 'owned_quantity') else c.owned_count
+
+        res = [c for c in res if min_q <= get_qty(c) <= max_q]
 
         p_min = self.state['filter_price_min']
         p_max = self.state['filter_price_max']
-        res = [c for c in res if p_min <= c.price <= p_max]
+
+        def get_price(c):
+            return c.lowest_price if hasattr(c, 'lowest_price') else c.price
+
+        res = [c for c in res if p_min <= get_price(c) <= p_max]
 
         if self.state['filter_condition']:
             conds = self.state['filter_condition']
-            res = [c for c in res if c.condition in conds]
+            if is_cons:
+                 res = [c for c in res if any(cond in c.owned_conditions for cond in conds)]
+            else:
+                 res = [c for c in res if c.condition in conds]
 
         if self.state['filter_owned_lang']:
             target_lang = self.state['filter_owned_lang']
-            res = [c for c in res if c.language == target_lang]
+            if is_cons:
+                 res = [c for c in res if target_lang in c.owned_languages]
+            else:
+                 res = [c for c in res if c.language == target_lang]
 
         # Sort
         key = self.state['detail_sort']
@@ -391,15 +467,37 @@ class BrowseSetsPage:
         elif key == 'Rarity':
             # Use RARITY_RANKING index
             def rarity_rank(x):
-                try: return RARITY_RANKING.index(x.rarity)
+                if hasattr(x, 'rarity'):
+                     r = x.rarity
+                else:
+                     # For consolidated, use lowest rarity index found? or highest?
+                     # Let's say we sort by "best" rarity available in the set if possible?
+                     # Actually consolidated rows don't have a single rarity.
+                     # We can sort by best rarity index of any set in the card?
+                     r = "Common" # Fallback
+                     if x.api_card.card_sets:
+                         # Find best rarity
+                         best_idx = 999
+                         for cs in x.api_card.card_sets:
+                             try: idx = RARITY_RANKING.index(cs.set_rarity)
+                             except: idx = 999
+                             if idx < best_idx:
+                                 best_idx = idx
+                                 r = cs.set_rarity
+                try: return RARITY_RANKING.index(r)
                 except: return 999
-            res.sort(key=rarity_rank, reverse=not desc) # Higher rank (lower index) usually top
+            res.sort(key=rarity_rank, reverse=not desc)
         elif key == 'Price':
-             res.sort(key=lambda x: x.price, reverse=desc)
+             res.sort(key=lambda x: get_price(x), reverse=desc)
         elif key == 'Owned':
-             res.sort(key=lambda x: x.owned_count, reverse=desc)
+             res.sort(key=lambda x: get_qty(x), reverse=desc)
 
         self.state['detail_filtered_rows'] = res
+        self.state['detail_page'] = 1
+
+        count = len(res)
+        self.state['detail_total_pages'] = (count + self.state['detail_page_size'] - 1) // self.state['detail_page_size']
+
         if hasattr(self, 'render_detail_grid'): self.render_detail_grid.refresh()
 
     async def reset_filters(self):
@@ -434,6 +532,47 @@ class BrowseSetsPage:
         self.render_content.refresh()
 
     # --- Renderers ---
+
+    def _setup_card_tooltip(self, card: ApiCard, specific_image_id: int = None):
+        if not card: return
+
+        # Default to first image
+        target_img = card.card_images[0] if card.card_images else None
+
+        # If specific ID provided, try to find it
+        if specific_image_id and card.card_images:
+            for img in card.card_images:
+                if img.id == specific_image_id:
+                    target_img = img
+                    break
+
+        if not target_img:
+             return
+
+        img_id = target_img.id
+        high_res_url = target_img.image_url
+        low_res_url = target_img.image_url_small
+
+        # Check local high-res existence immediately
+        is_local = image_manager.image_exists(img_id, high_res=True)
+        initial_src = f"/images/{img_id}_high.jpg" if is_local else (high_res_url or low_res_url)
+
+        # Create tooltip with transparent background and no padding
+        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none') \
+                         .props('style="max-width: none" delay=1050') as tooltip:
+            # Image at 65vh height and 1000px min width for readability
+            if initial_src:
+                ui.image(initial_src).classes('w-auto h-[65vh] min-w-[1000px] object-contain rounded-lg shadow-2xl') \
+                                     .props('fit=contain')
+
+            # Trigger download on show if needed
+            if not is_local and high_res_url:
+                async def ensure_high():
+                    # Check again to avoid redundant downloads
+                    if not image_manager.image_exists(img_id, high_res=True):
+                         await image_manager.ensure_image(img_id, high_res_url, high_res=True)
+
+                tooltip.on('show', ensure_high)
 
     def render_set_visual(self, container: ui.element, set_code: str, image_url: str):
         """
@@ -756,6 +895,7 @@ class BrowseSetsPage:
             with ui.column().classes('items-end'):
                  files = persistence.list_collections()
                  file_options = {f: (f[:-5] if f.endswith('.json') else f) for f in files}
+                 file_options[None] = 'None (All Owned)'
 
                  async def change_col(e):
                      self.state['selected_collection_file'] = e.value
@@ -763,88 +903,205 @@ class BrowseSetsPage:
                      # Need to reload rows too
                      await self.load_set_details(self.state['selected_set'])
 
-                 ui.select(file_options, label='Collection', value=self.state['selected_collection_file'], on_change=change_col).classes('w-40').props('dark')
+                 ui.select(file_options, label='Collection', value=self.state['selected_collection_file'], on_change=change_col).classes('min-w-[200px]').props('dark')
 
         # Controls & Grid
         with ui.row().classes('w-full gap-4'):
-             # Left Filter Pane (if implemented) or Button
-             # Reusing FilterPane logic requires a container
-
              with ui.column().classes('w-full'):
-                  # Filter/Sort Bar
-                  with ui.row().classes('w-full items-center gap-4 bg-gray-800 p-2 rounded mb-4'):
-                       async def on_detail_search(e):
-                           self.state['detail_search'] = e.value
-                           await self.apply_detail_filters()
-
-                       ui.input(placeholder='Filter cards...', on_change=on_detail_search).props('dark icon=search debounce=300').classes('w-64')
-
-                       async def on_detail_sort(e):
-                           self.state['detail_sort'] = e.value
-                           await self.apply_detail_filters()
-
-                       ui.select(['Name', 'Rarity', 'Price', 'Owned'], label='Sort', value=self.state['detail_sort'], on_change=on_detail_sort).props('dark').classes('w-40')
-
-                       async def toggle_detail_sort():
-                           self.state['detail_sort_desc'] = not self.state['detail_sort_desc']
-                           await self.apply_detail_filters()
-
-                       ui.button(icon='arrow_downward', on_click=toggle_detail_sort).bind_icon_from(self.state, 'detail_sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward').props('flat round dense color=white')
-
-                       ui.space()
-                       ui.button('Filters', icon='filter_list', on_click=self.filter_dialog.open).props('color=primary')
-
+                  self.render_detail_controls()
                   self.render_detail_grid()
+
+                  # Bottom Pagination
+                  with ui.row().classes('w-full justify-center mt-4'):
+                       self.render_detail_pagination_controls()
+
+    async def switch_view_scope(self, scope):
+        if self.state['view_scope'] == scope: return
+        self.state['view_scope'] = scope
+        await self.apply_detail_filters()
+        self.render_detail_controls.refresh()
+        # Grid refresh handled by apply_detail_filters
+
+    @ui.refreshable
+    def render_detail_pagination_controls(self):
+        if self.state['detail_total_pages'] <= 1: return
+
+        async def change_p(delta):
+            p = self.state['detail_page'] + delta
+            p = max(1, min(p, self.state['detail_total_pages']))
+            if p != self.state['detail_page']:
+                self.state['detail_page'] = p
+                self.render_detail_grid.refresh()
+                self.render_detail_controls.refresh()
+                self.render_detail_pagination_controls.refresh()
+
+        with ui.row().classes('items-center gap-2'):
+            ui.button(icon='chevron_left', on_click=lambda: change_p(-1)).props('flat dense color=white').set_enabled(self.state['detail_page'] > 1)
+            ui.label(f"{self.state['detail_page']} / {self.state['detail_total_pages']}").classes('text-white text-sm font-bold')
+            ui.button(icon='chevron_right', on_click=lambda: change_p(1)).props('flat dense color=white').set_enabled(self.state['detail_page'] < self.state['detail_total_pages'])
+
+    @ui.refreshable
+    def render_detail_controls(self):
+        with ui.row().classes('w-full items-center gap-4 bg-gray-800 p-2 rounded mb-4'):
+            async def on_detail_search(e):
+                self.state['detail_search'] = e.value
+                await self.apply_detail_filters()
+
+            ui.input(placeholder='Filter cards...', on_change=on_detail_search) \
+                .bind_value(self.state, 'detail_search') \
+                .props('dark icon=search debounce=300').classes('w-64')
+
+            async def on_detail_sort(e):
+                self.state['detail_sort'] = e.value
+                await self.apply_detail_filters()
+
+            ui.select(['Name', 'Rarity', 'Price', 'Owned'], label='Sort', value=self.state['detail_sort'], on_change=on_detail_sort).props('dark').classes('w-40')
+
+            async def toggle_detail_sort():
+                self.state['detail_sort_desc'] = not self.state['detail_sort_desc']
+                await self.apply_detail_filters()
+
+            ui.button(icon='arrow_downward', on_click=toggle_detail_sort).bind_icon_from(self.state, 'detail_sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward').props('flat round dense color=white')
+
+            ui.separator().props('vertical')
+
+            # View Toggle
+            is_cons = self.state['view_scope'] == 'consolidated'
+            with ui.button_group():
+                with ui.button('Collectors', on_click=lambda: self.switch_view_scope('collectors')).props(f'flat={is_cons} color=accent'):
+                    ui.tooltip('View all printings separately')
+                with ui.button('Consolidated', on_click=lambda: self.switch_view_scope('consolidated')).props(f'flat={not is_cons} color=accent'):
+                    ui.tooltip('View unique cards only')
+
+            ui.separator().props('vertical')
+
+            self.render_detail_pagination_controls()
+
+            ui.space()
+            ui.button('Filters', icon='filter_list', on_click=self.filter_dialog.open).props('color=primary')
+
+    async def open_consolidated_view(self, vm: CardViewModel):
+         async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
+             if not self.state['current_collection']:
+                 ui.notify("Cannot edit 'All Owned' view.", type='warning')
+                 return
+
+             col = self.state['current_collection']
+             from src.services.collection_editor import CollectionEditor
+             CollectionEditor.apply_change(col, c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode)
+             await run.io_bound(persistence.save_collection, col, self.state['selected_collection_file'])
+
+             await self.load_set_details(self.state['selected_set'])
+             self.render_detail_grid.refresh()
+             ui.notify('Collection Updated', type='positive')
+
+         owned_breakdown = {}
+         if self.state['current_collection']:
+             for c in self.state['current_collection'].cards:
+                 if c.card_id == vm.api_card.id:
+                     for v in c.variants:
+                         for e in v.entries:
+                             owned_breakdown[e.language] = owned_breakdown.get(e.language, 0) + e.quantity
+                     break
+
+         await self.single_card_view.open_consolidated(
+             card=vm.api_card,
+             total_owned=vm.owned_quantity,
+             owned_breakdown=owned_breakdown,
+             save_callback=on_save
+         )
 
     @ui.refreshable
     def render_detail_grid(self):
-        rows = self.state['detail_filtered_rows']
+        all_rows = self.state['detail_filtered_rows']
 
-        # Trigger background download for these cards (Fire and forget)
-        # This ensures images are cached for next visit while current view uses remote/lazy if needed
+        # Pagination Slice
+        start = (self.state['detail_page'] - 1) * self.state['detail_page_size']
+        end = min(start + self.state['detail_page_size'], len(all_rows))
+        rows = all_rows[start:end]
+
         if rows:
-            to_download = {r.image_id: r.image_url for r in rows if r.image_id and r.image_url}
-            # Use create_task to run in background without blocking render
-            asyncio.create_task(image_manager.download_batch(to_download, high_res=False))
+            to_download = {}
+            for r in rows:
+                if isinstance(r, CollectorRow):
+                    if r.image_id and r.image_url: to_download[r.image_id] = r.image_url
+                elif isinstance(r, CardViewModel):
+                     c = r.api_card
+                     img = c.card_images[0] if c.card_images else None
+                     if img: to_download[img.id] = img.image_url_small
 
-        # Reuse CollectorRow Grid Logic (Copy of render_collectors_grid)
-        flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷', 'CN': '🇨🇳'}
-        cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
+            if to_download:
+                asyncio.create_task(image_manager.download_batch(to_download, high_res=False))
+
+        is_cons = self.state['view_scope'] == 'consolidated'
 
         with ui.grid(columns='repeat(auto-fill, minmax(160px, 1fr))').classes('w-full gap-4'):
             for item in rows:
-                opacity = "opacity-100" if item.is_owned else "opacity-60 grayscale"
-                border = "border-accent" if item.is_owned else "border-gray-700"
+                if is_cons:
+                     # Consolidated Rendering
+                     card = item.api_card
+                     opacity = "opacity-100" if item.is_owned else "opacity-60 grayscale"
+                     border = "border-accent" if item.is_owned else "border-gray-700"
 
-                img_src = item.image_url
-                # Simplified check as image_manager handles id check internally usually but here we have URL
-                # Use local path if possible
-                if item.image_id and image_manager.image_exists(item.image_id):
-                    img_src = f"/images/{item.image_id}.jpg"
+                     img_src = card.card_images[0].image_url_small if card.card_images else None
+                     img_id = card.card_images[0].id if card.card_images else card.id
+                     if image_manager.image_exists(img_id):
+                         img_src = f"/images/{img_id}.jpg"
 
-                with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
-                        .on('click', lambda c=item: self.open_single_view(c)):
+                     with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
+                            .on('click', lambda c=item: self.open_consolidated_view(c)):
 
-                    with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
-                        if img_src: ui.image(img_src).classes('w-full h-full object-cover').props('loading="lazy"')
+                         with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
+                             if img_src: ui.image(img_src).classes('w-full h-full object-cover').props('loading="lazy"')
 
-                        if item.is_owned:
-                             ui.label(f"{item.owned_count}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
+                             if item.owned_quantity > 0:
+                                 ui.label(f"{item.owned_quantity}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
 
-                        with ui.row().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[10px] px-1 gap-1 items-center rounded-tr'):
-                            ui.label(item.rarity).classes('font-bold text-yellow-500 truncate max-w-[100px]')
+                             if card.level:
+                                  ui.label(f"Lv {card.level}").classes('absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1 rounded')
 
-                        ui.label(item.set_code).classes('absolute bottom-0 right-0 bg-black/80 text-white text-[10px] px-1 font-mono rounded-tl')
+                         with ui.column().classes('p-2 gap-0 w-full'):
+                            ui.label(card.name).classes('text-xs font-bold truncate w-full')
+                            ui.label(card.type).classes('text-[10px] text-gray-400 truncate w-full')
 
-                    with ui.column().classes('p-2 gap-0 w-full'):
-                        ui.label(item.api_card.name).classes('text-xs font-bold truncate w-full')
-                        ui.label(f"${item.price:.2f}").classes('text-xs text-green-400')
+                         self._setup_card_tooltip(card)
+
+                else:
+                    # Collectors Rendering
+                    opacity = "opacity-100" if item.is_owned else "opacity-60 grayscale"
+                    border = "border-accent" if item.is_owned else "border-gray-700"
+
+                    img_src = item.image_url
+                    if item.image_id and image_manager.image_exists(item.image_id):
+                        img_src = f"/images/{item.image_id}.jpg"
+
+                    with ui.card().classes(f'collection-card w-full p-0 cursor-pointer {opacity} border {border} hover:scale-105 transition-transform') \
+                            .on('click', lambda c=item: self.open_single_view(c)):
+
+                        with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
+                            if img_src: ui.image(img_src).classes('w-full h-full object-cover').props('loading="lazy"')
+
+                            if item.is_owned and item.owned_count > 0:
+                                 ui.label(f"{item.owned_count}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
+
+                            with ui.row().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[10px] px-1 gap-1 items-center rounded-tr'):
+                                ui.label(item.rarity).classes('font-bold text-yellow-500 truncate max-w-[100px]')
+
+                            ui.label(item.set_code).classes('absolute bottom-0 right-0 bg-black/80 text-white text-[10px] px-1 font-mono rounded-tl')
+
+                        with ui.column().classes('p-2 gap-0 w-full'):
+                            ui.label(item.api_card.name).classes('text-xs font-bold truncate w-full')
+                            ui.label(f"${item.price:.2f}").classes('text-xs text-green-400')
+
+                        self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
 
     async def open_single_view(self, row: CollectorRow):
         # Wrapper for SingleCardView
         async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
              # Save to collection
-             if not self.state['current_collection']: return
+             if not self.state['current_collection']:
+                 ui.notify("Cannot edit 'All Owned' view.", type='warning')
+                 return
 
              col = self.state['current_collection']
              from src.services.collection_editor import CollectionEditor
