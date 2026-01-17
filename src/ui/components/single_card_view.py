@@ -55,7 +55,8 @@ class SingleCardView:
         on_change_callback: Callable[[], None],
         on_save_callback: Callable[[str], Any],
         default_set_base_code: str = None,
-        original_variant_id: str = None
+        original_variant_id: str = None,
+        show_remove_button: bool = True
     ):
         """
         Renders the inventory management section (Language, Set, Rarity, etc.).
@@ -188,19 +189,20 @@ class SingleCardView:
                 ui.button('SET', on_click=do_set).props('color=warning text-color=dark')
                 ui.button('ADD', on_click=do_add).props('color=secondary')
 
-                async def confirm_remove():
-                    with ui.dialog() as d, ui.card():
-                        ui.label("Are you sure you want to remove this card variant from your collection?").classes('text-lg')
-                        with ui.row().classes('w-full justify-end'):
-                            ui.button('Cancel', on_click=d.close).props('flat')
-                            async def do_remove():
-                                d.close()
-                                input_state['quantity'] = 0
-                                await handle_update('SET')
-                            ui.button('Remove', on_click=do_remove).props('color=negative')
-                    d.open()
+                if show_remove_button:
+                    async def confirm_remove():
+                        with ui.dialog() as d, ui.card():
+                            ui.label("Are you sure you want to remove this card variant from your collection?").classes('text-lg')
+                            with ui.row().classes('w-full justify-end'):
+                                ui.button('Cancel', on_click=d.close).props('flat')
+                                async def do_remove():
+                                    d.close()
+                                    input_state['quantity'] = 0
+                                    await handle_update('SET')
+                                ui.button('Remove', on_click=do_remove).props('color=negative')
+                        d.open()
 
-                ui.button('REMOVE', on_click=confirm_remove).props('color=negative')
+                    ui.button('REMOVE', on_click=confirm_remove).props('color=negative')
 
     def _render_available_sets(self, card: ApiCard):
         ui.separator().classes('q-my-md')
@@ -400,7 +402,8 @@ class SingleCardView:
                                 set_info_map=set_info_map,
                                 on_change_callback=on_change,
                                 on_save_callback=on_save_wrapper,
-                                default_set_base_code=default_set_code
+                                default_set_base_code=default_set_code,
+                                show_remove_button=False
                             )
 
                         self._render_available_sets(card)
