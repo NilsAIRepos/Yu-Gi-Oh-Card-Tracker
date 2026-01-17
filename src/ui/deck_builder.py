@@ -472,6 +472,8 @@ class DeckBuilderPage:
         if not self.search_results_container: return
         self.search_results_container.clear()
         with self.search_results_container:
+            ui.label('Library').classes('text-h6 text-white px-2 py-1 font-bold')
+
             start = (self.state['page'] - 1) * self.state['page_size']
             end = min(start + self.state['page_size'], len(self.state['filtered_items']))
             items = self.state['filtered_items'][start:end]
@@ -485,8 +487,8 @@ class DeckBuilderPage:
                              self.state['page'] = new_p
                              await self.prepare_current_page_images()
                              self.refresh_search_results()
-                     ui.button(icon='chevron_left', on_click=lambda: change_page(-1)).props('flat dense size=sm')
-                     ui.button(icon='chevron_right', on_click=lambda: change_page(1)).props('flat dense size=sm')
+                     ui.button(icon='chevron_left', on_click=lambda: change_page(-1)).props('flat dense color=white')
+                     ui.button(icon='chevron_right', on_click=lambda: change_page(1)).props('flat dense color=white')
 
             with ui.scroll_area().classes('w-full flex-grow border border-gray-800 rounded p-2'):
                 if not items:
@@ -612,7 +614,7 @@ class DeckBuilderPage:
                 if not hasattr(self, 'header_count_labels'): self.header_count_labels = {}
                 self.header_count_labels[target] = lbl
 
-            with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
+            with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm color=white'):
                  ui.tooltip(f'Sort {title}')
 
     def update_zone_headers(self):
