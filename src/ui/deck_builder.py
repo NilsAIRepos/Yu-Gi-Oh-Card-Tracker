@@ -715,24 +715,22 @@ class DeckBuilderPage:
 
                          owned_qty = owned_map.get(card.id, 0)
 
-                         with ui.element('div').classes('p-0 cursor-pointer w-full h-full relative') \
+                         with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
                             .props(f'data-id="{card.id}"') \
                             .on('click', lambda c=card: self.open_deck_builder_wrapper(c)):
 
-                             with ui.card().classes('p-0 border border-gray-800 w-full h-full hover:scale-105 transition-transform origin-center'):
+                             with ui.element('div').classes('relative w-full aspect-[2/3]'):
+                                 ui.image(img_src).classes('w-full h-full object-cover')
+                                 if owned_qty > 0:
+                                     ui.label(f"{owned_qty}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
 
-                                 with ui.element('div').classes('relative w-full aspect-[2/3]'):
-                                     ui.image(img_src).classes('w-full h-full object-cover')
-                                     if owned_qty > 0:
-                                         ui.label(f"{owned_qty}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
+                                 self._render_ban_icon(card.id)
 
-                                     self._render_ban_icon(card.id)
+                             with ui.column().classes('p-1 gap-0 w-full'):
+                                 ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
+                                 ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
 
-                                 with ui.column().classes('p-1 gap-0 w-full'):
-                                     ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
-                                     ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
-
-                                 self._setup_card_tooltip(card)
+                             self._setup_card_tooltip(card)
 
                 ui.run_javascript('initSortable("gallery-list", "deck", "clone", false)')
 
