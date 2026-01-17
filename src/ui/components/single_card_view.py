@@ -751,5 +751,7 @@ class SingleCardView:
                              ui.button('Add to Side', on_click=add_side).props('color=warning text-color=dark icon=add')
                              ui.button('Add to Extra', on_click=add_extra).props('color=purple icon=add')
 
+                         self._render_available_sets(card)
+
         except Exception as e:
             logger.error(f"Error opening deck builder view: {e}", exc_info=True)

@@ -702,7 +702,8 @@ class DeckBuilderPage:
 
             self._setup_card_tooltip(card)
 
-        card_el.on('click', lambda _, c=card, t=target, el=card_el, u=uid: self.remove_card_from_deck(c.id, t, el, u))
+        card_el.on('click', lambda: self.open_deck_builder_wrapper(card))
+        card_el.on('contextmenu.prevent', lambda _, c=card, t=target, el=card_el, u=uid: self.remove_card_from_deck(c.id, t, el, u))
         return card_el
 
     def _refresh_zone_content(self, target):
