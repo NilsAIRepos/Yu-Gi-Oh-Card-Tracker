@@ -12,6 +12,7 @@ import logging
 import asyncio
 import copy
 import os
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -260,11 +261,23 @@ class DeckBuilderPage:
         self.refresh_zone(target)
         self.update_zone_headers()
 
-    async def remove_card_from_deck(self, card_id: int, target: str, card_element: ui.card = None):
+    async def remove_card_from_deck(self, card_id: int, target: str, card_element: ui.card = None, card_uid: str = None):
         if not self.state['current_deck']: return
 
+        real_target = target
+        if card_uid:
+            try:
+                # Find which deck-zone contains this card element (in case it was moved via drag-and-drop)
+                zone_id = await ui.run_javascript(f"return document.getElementById('{card_uid}')?.closest('[id^=deck-]')?.id", timeout=1.0)
+                if zone_id:
+                    real_target = zone_id.replace('deck-', '')
+            except Exception as e:
+                logger.warning(f"Failed to detect card zone via JS: {e}")
+
         deck = self.state['current_deck']
-        target_list = getattr(deck, target)
+        if not hasattr(deck, real_target): return
+
+        target_list = getattr(deck, real_target)
 
         if card_id in target_list:
             target_list.remove(card_id)
@@ -273,7 +286,7 @@ class DeckBuilderPage:
             if card_element:
                 card_element.delete()
             else:
-                self.refresh_zone(target)
+                self.refresh_zone(real_target)
 
             self.update_zone_headers()
 
@@ -566,7 +579,8 @@ class DeckBuilderPage:
                     classes += ' opacity-100'
 
                 # Render Card
-                card_el = ui.card().classes(classes).props(f'data-id="{cid}"')
+                uid = f"card-{uuid.uuid4()}"
+                card_el = ui.card().classes(classes).props(f'data-id="{cid}" id="{uid}"')
                 with card_el:
                     ui.image(img_src).classes('w-full h-full object-cover rounded')
 
@@ -574,7 +588,7 @@ class DeckBuilderPage:
                         ui.icon('remove', color='white').classes('text-lg')
                     ui.tooltip(card.name)
 
-                card_el.on('click', lambda _, c=card, t=target, el=card_el: self.remove_card_from_deck(c.id, t, el))
+                card_el.on('click', lambda _, c=card, t=target, el=card_el, u=uid: self.remove_card_from_deck(c.id, t, el, u))
 
         ui.run_javascript(f'initSortable("deck-{target}", "deck", true, true)')
 
@@ -584,45 +598,46 @@ class DeckBuilderPage:
         self.render_side_deck_grid.refresh()
         self.update_zone_headers()
 
-    @ui.refreshable
-    def render_header_main(self): self._render_zone_header_content('Main Deck', 'main')
-    @ui.refreshable
-    def render_header_extra(self): self._render_zone_header_content('Extra Deck', 'extra')
-    @ui.refreshable
-    def render_header_side(self): self._render_zone_header_content('Side Deck', 'side')
-
-    def _render_zone_header_content(self, title, target):
-        deck = self.state['current_deck']
-        count = 0
-        if deck: count = len(getattr(deck, target))
-
-        is_invalid = False
-        if target == 'main':
-             if count < 40 or count > 60: is_invalid = True
-        elif target in ['extra', 'side']:
-             if count > 15: is_invalid = True
-
-        count_color = 'text-red-400' if is_invalid else 'text-white'
-
+    def setup_header(self, title, target):
         with ui.row().classes('w-full items-center justify-between q-mb-sm'):
             with ui.row().classes('gap-1 items-center'):
                 ui.label(title).classes('font-bold text-white text-xs uppercase tracking-wider')
-                ui.label(f"({count})").classes(f'font-bold {count_color} text-xs uppercase tracking-wider')
+                # Initialize label with placeholder
+                lbl = ui.label('(0)').classes('font-bold text-white text-xs uppercase tracking-wider')
+                if not hasattr(self, 'header_count_labels'): self.header_count_labels = {}
+                self.header_count_labels[target] = lbl
 
             with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
                  ui.tooltip(f'Sort {title}')
 
     def update_zone_headers(self):
-        self.render_header_main.refresh()
-        self.render_header_extra.refresh()
-        self.render_header_side.refresh()
+        if not hasattr(self, 'header_count_labels'): return
+
+        deck = self.state['current_deck']
+        for target in ['main', 'extra', 'side']:
+            if target not in self.header_count_labels: continue
+
+            lbl = self.header_count_labels[target]
+            count = 0
+            if deck: count = len(getattr(deck, target))
+
+            is_invalid = False
+            if target == 'main':
+                 if count < 40 or count > 60: is_invalid = True
+            elif target in ['extra', 'side']:
+                 if count > 15: is_invalid = True
+
+            lbl.text = f"({count})"
+            if is_invalid:
+                lbl.classes(remove='text-white', add='text-red-400')
+            else:
+                lbl.classes(remove='text-red-400', add='text-white')
 
     def setup_zone(self, title, target, flex_grow=False):
-        height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[220px]'
+        # Main Deck takes available space. Extra/Side take what they need but cap at ~30% each to prevent overflow.
+        height_class = 'flex-grow min-h-0' if flex_grow else 'h-auto max-h-[30%] flex-shrink-0 min-h-[220px]'
         with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
-            if target == 'main': self.render_header_main()
-            elif target == 'extra': self.render_header_extra()
-            elif target == 'side': self.render_header_side()
+            self.setup_header(title, target)
 
             # The container handles drops on empty space (appending)
             with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors'):
@@ -685,9 +700,17 @@ class DeckBuilderPage:
         await self.save_current_deck()
 
         # Refresh UI
-        zones_to_refresh = {to_zone}
-        if from_zone in valid_zones:
-             zones_to_refresh.add(from_zone)
+        zones_to_refresh = set()
+
+        # If adding from gallery, we MUST refresh the target zone to convert the card element
+        # from a "Gallery Card" (add handler) to a "Deck Card" (remove handler).
+        if from_zone == 'gallery':
+             zones_to_refresh.add(to_zone)
+
+        # If moving between deck zones or reordering, we skip refreshing the zones to ensure
+        # a smooth transition (no "jarring refresh").
+        # The backend state is updated, and `remove_card_from_deck` handles the "stale handler" issue via JS zone detection.
+        # We only update the headers to reflect count changes.
 
         for z in zones_to_refresh:
             if z in valid_zones:
