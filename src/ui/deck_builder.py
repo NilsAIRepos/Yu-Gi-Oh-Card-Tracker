@@ -58,7 +58,8 @@ class DeckBuilderPage:
                                     to_zone: toZone,
                                     to_ids: toIds,
                                     from_zone: fromZone,
-                                    from_ids: fromIds
+                                    from_ids: fromIds,
+                                    new_index: evt.newIndex
                                 },
                                 bubbles: true
                             }));
@@ -524,78 +525,73 @@ class DeckBuilderPage:
                      break
         await self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
 
-    @ui.refreshable
-    def render_main_deck_grid(self):
-        self._render_deck_grid_content('main')
+    def _render_deck_card(self, card_id: int, target: str, usage_counter: Dict[int, int] = None, owned_map: Dict[int, int] = None):
+        if not usage_counter: usage_counter = {}
+        if not owned_map: owned_map = {}
 
-    @ui.refreshable
-    def render_extra_deck_grid(self):
-        self._render_deck_grid_content('extra')
+        card = self.api_card_map.get(card_id)
+        if not card: return None
 
-    @ui.refreshable
-    def render_side_deck_grid(self):
-        self._render_deck_grid_content('side')
+        img_id = card.card_images[0].id if card.card_images else card.id
+        img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
 
-    def _render_deck_grid_content(self, target):
+        # Ownership
+        is_owned_copy = True
+        if self.state['reference_collection']:
+            owned_total = owned_map.get(card_id, 0)
+            used_so_far = usage_counter.get(card_id, 0)
+            if used_so_far >= owned_total:
+                is_owned_copy = False
+            usage_counter[card_id] = used_so_far + 1
+
+        classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800'
+        if not is_owned_copy:
+            classes += ' opacity-50 grayscale'
+        else:
+            classes += ' opacity-100'
+
+        uid = f"card-{uuid.uuid4()}"
+        card_el = ui.card().classes(classes).props(f'data-id="{card_id}" id="{uid}"')
+        with card_el:
+            ui.image(img_src).classes('w-full h-full object-cover rounded')
+            with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
+                ui.icon('remove', color='white').classes('text-lg')
+            ui.tooltip(card.name)
+
+        card_el.on('click', lambda _, c=card, t=target, el=card_el, u=uid: self.remove_card_from_deck(c.id, t, el, u))
+        return card_el
+
+    def _refresh_zone_content(self, target):
+        if not hasattr(self, 'deck_grids') or target not in self.deck_grids: return
+        grid = self.deck_grids[target]
+        grid.clear()
+
         deck = self.state['current_deck']
         if not deck: return
 
         real_card_ids = getattr(deck, target)
 
-        # Check Ownership (for coloring)
+        # Prepare ownership maps
         ref_col = self.state['reference_collection']
         owned_map = {}
         if ref_col:
             for c in ref_col.cards:
                 owned_map[c.card_id] = c.total_quantity
-
         usage_counter = {}
 
-        # Always render the grid to ensure Sortable can attach, even if empty.
-        # min-h ensures drop target exists.
-        with ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))').classes('w-full gap-2 min-h-[100px]').props(f'id="deck-{target}"'):
-            for i, cid in enumerate(real_card_ids):
-                # Fetch API Data
-                card = self.api_card_map.get(cid)
-                if not card: continue # Should not happen
-
-                img_id = card.card_images[0].id if card.card_images else card.id
-                img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
-
-                # Ownership
-                is_owned_copy = True
-                if ref_col:
-                    owned_total = owned_map.get(cid, 0)
-                    used_so_far = usage_counter.get(cid, 0)
-                    if used_so_far >= owned_total:
-                        is_owned_copy = False
-                    usage_counter[cid] = used_so_far + 1
-
-                classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800'
-
-                if not is_owned_copy:
-                    classes += ' opacity-50 grayscale'
-                else:
-                    classes += ' opacity-100'
-
-                # Render Card
-                uid = f"card-{uuid.uuid4()}"
-                card_el = ui.card().classes(classes).props(f'data-id="{cid}" id="{uid}"')
-                with card_el:
-                    ui.image(img_src).classes('w-full h-full object-cover rounded')
-
-                    with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
-                        ui.icon('remove', color='white').classes('text-lg')
-                    ui.tooltip(card.name)
-
-                card_el.on('click', lambda _, c=card, t=target, el=card_el, u=uid: self.remove_card_from_deck(c.id, t, el, u))
+        with grid:
+            for cid in real_card_ids:
+                self._render_deck_card(cid, target, usage_counter, owned_map)
 
         ui.run_javascript(f'initSortable("deck-{target}", "deck", true, true)')
 
+    def refresh_zone(self, zone):
+        self._refresh_zone_content(zone)
+
     def refresh_deck_area(self):
-        self.render_main_deck_grid.refresh()
-        self.render_extra_deck_grid.refresh()
-        self.render_side_deck_grid.refresh()
+        self.refresh_zone('main')
+        self.refresh_zone('extra')
+        self.refresh_zone('side')
         self.update_zone_headers()
 
     def setup_header(self, title, target):
@@ -641,10 +637,14 @@ class DeckBuilderPage:
 
             # The container handles drops on empty space (appending)
             with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors'):
+                if not hasattr(self, 'deck_grids'): self.deck_grids = {}
 
-                if target == 'main': self.render_main_deck_grid()
-                elif target == 'extra': self.render_extra_deck_grid()
-                elif target == 'side': self.render_side_deck_grid()
+                # Use standard ui.grid instead of refreshable
+                self.deck_grids[target] = ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))') \
+                    .classes('w-full gap-2 min-h-[100px]') \
+                    .props(f'id="deck-{target}"')
+
+                # Initial render handled by load_initial_data -> refresh_deck_area
 
     async def sort_deck(self, zone):
         if not self.state['current_deck']: return
@@ -702,15 +702,31 @@ class DeckBuilderPage:
         # Refresh UI
         zones_to_refresh = set()
 
-        # If adding from gallery, we MUST refresh the target zone to convert the card element
-        # from a "Gallery Card" (add handler) to a "Deck Card" (remove handler).
         if from_zone == 'gallery':
-             zones_to_refresh.add(to_zone)
+            # Optimize Gallery -> Deck addition to prevent flashing.
+            # Instead of refreshing the whole zone, we replace the SortableJS clone with a real deck card.
+            new_index = args.get('new_index')
+            if new_index is not None and to_zone in self.deck_grids:
+                 # 1. Identify the new card ID (it's the one in to_ids that wasn't there before, or we just trust the index)
+                 if new_index < len(to_ids):
+                     new_card_id = to_ids[new_index]
 
-        # If moving between deck zones or reordering, we skip refreshing the zones to ensure
-        # a smooth transition (no "jarring refresh").
-        # The backend state is updated, and `remove_card_from_deck` handles the "stale handler" issue via JS zone detection.
-        # We only update the headers to reflect count changes.
+                     # 2. Remove the "dumb clone" dropped by SortableJS
+                     await ui.run_javascript(f"var p = document.getElementById('deck-{to_zone}'); if(p && p.children[{new_index}]) p.children[{new_index}].remove();")
+
+                     # 3. Render the new real card (appends to end)
+                     grid = self.deck_grids[to_zone]
+                     with grid:
+                         new_card = self._render_deck_card(new_card_id, to_zone)
+
+                     # 4. Move to correct index
+                     if new_card:
+                         new_card.move(grid, new_index)
+
+            # No full refresh needed!
+        else:
+             # Intra-deck moves logic remains same (skip refresh)
+             pass
 
         for z in zones_to_refresh:
             if z in valid_zones:
