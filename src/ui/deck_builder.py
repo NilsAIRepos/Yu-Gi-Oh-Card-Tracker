@@ -481,10 +481,10 @@ class DeckBuilderPage:
 
         # Create tooltip with transparent background and no padding
         # anchor/self props can be adjusted if needed, but default behavior is usually acceptable
-        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible') as tooltip:
+        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999]') as tooltip:
             # Image at 40vh height
             if initial_src:
-                ui.image(initial_src).classes('w-auto h-[40vh] object-contain rounded-lg shadow-2xl')
+                ui.image(initial_src).classes('w-auto h-[40vh] min-w-[200px] object-contain rounded-lg shadow-2xl')
 
             # Trigger download on show if needed
             if not is_local and high_res_url:
