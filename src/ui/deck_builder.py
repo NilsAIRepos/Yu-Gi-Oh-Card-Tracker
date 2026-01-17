@@ -43,6 +43,7 @@ class DeckBuilderPage:
                     },
                     animation: 150,
                     ghostClass: 'opacity-50',
+                    forceFallback: true,
                     onEnd: function (evt) {
                         var toIds = Array.from(evt.to.children).map(c => c.getAttribute('data-id')).filter(id => id);
                         var fromIds = Array.from(evt.from.children).map(c => c.getAttribute('data-id')).filter(id => id);
@@ -259,7 +260,7 @@ class DeckBuilderPage:
         self.refresh_zone(target)
         self.update_zone_headers()
 
-    async def remove_card_from_deck(self, card_id: int, target: str):
+    async def remove_card_from_deck(self, card_id: int, target: str, card_element: ui.card = None):
         if not self.state['current_deck']: return
 
         deck = self.state['current_deck']
@@ -268,7 +269,12 @@ class DeckBuilderPage:
         if card_id in target_list:
             target_list.remove(card_id)
             await self.save_current_deck()
-            self.refresh_zone(target)
+
+            if card_element:
+                card_element.delete()
+            else:
+                self.refresh_zone(target)
+
             self.update_zone_headers()
 
     async def apply_filters(self):
@@ -386,7 +392,7 @@ class DeckBuilderPage:
                                          if hasattr(e, 'content'): f_obj = e.content
                                          elif hasattr(e, 'file'): f_obj = e.file
                                          if not f_obj: raise Exception("Could not find file content")
-                                         content = f_obj.read().decode('utf-8')
+                                         content = (await f_obj.read()).decode('utf-8')
                                          name = os.path.basename(e.name).replace('.ydk', '')
                                          filename = f"{name}.ydk"
                                          filepath = f"data/decks/{filename}"
@@ -560,15 +566,15 @@ class DeckBuilderPage:
                     classes += ' opacity-100'
 
                 # Render Card
-                with ui.card().classes(classes) \
-                    .props(f'data-id="{cid}"') \
-                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
-
+                card_el = ui.card().classes(classes).props(f'data-id="{cid}"')
+                with card_el:
                     ui.image(img_src).classes('w-full h-full object-cover rounded')
 
                     with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
                         ui.icon('remove', color='white').classes('text-lg')
                     ui.tooltip(card.name)
+
+                card_el.on('click', lambda _, c=card, t=target, el=card_el: self.remove_card_from_deck(c.id, t, el))
 
         ui.run_javascript(f'initSortable("deck-{target}", "deck", true, true)')
 
