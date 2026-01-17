@@ -638,14 +638,14 @@ class DeckBuilderPage:
             else:
                 lbl.classes(remove='text-red-400', add='text-white')
 
-    def setup_zone(self, title, target, flex_grow=False):
-        # Main Deck takes available space. Extra/Side take what they need but cap at ~30% each to prevent overflow.
-        height_class = 'flex-grow min-h-0' if flex_grow else 'h-auto max-h-[30%] flex-shrink-0 min-h-[220px]'
+    def setup_zone(self, title, target):
+        # Zones expand dynamically based on content
+        height_class = 'h-auto min-h-[220px]'
         with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
             self.setup_header(title, target)
 
             # The container handles drops on empty space (appending)
-            with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors'):
+            with ui.column().classes('w-full bg-black/20 rounded p-2 block relative transition-colors'):
                 if not hasattr(self, 'deck_grids'): self.deck_grids = {}
 
                 # Use standard ui.grid instead of refreshable
@@ -751,13 +751,17 @@ class DeckBuilderPage:
                  self.filter_pane.build()
 
         self.render_header()
-        with ui.row().classes('w-full h-[calc(100vh-140px)] gap-4 flex-nowrap') \
+        # Removed fixed height to allow page scrolling
+        with ui.row().classes('w-full gap-4 flex-nowrap items-start') \
             .props('id="deck-builder-container"') \
             .on('deck_change', self.handle_deck_change):
 
-            self.search_results_container = ui.column().classes('w-1/4 h-full bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results relative overflow-hidden')
-            with ui.column().classes('flex-grow h-full relative deck-builder-deck-area overflow-hidden gap-2'):
-                 self.setup_zone('Main Deck', 'main', flex_grow=True)
+            # Gallery is sticky so it stays visible while scrolling decks
+            self.search_results_container = ui.column().classes('w-1/4 h-[calc(100vh-140px)] sticky top-4 bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results relative overflow-hidden')
+
+            # Deck area grows with content
+            with ui.column().classes('flex-grow relative deck-builder-deck-area gap-2'):
+                 self.setup_zone('Main Deck', 'main')
                  self.setup_zone('Extra Deck', 'extra')
                  self.setup_zone('Side Deck', 'side')
 
