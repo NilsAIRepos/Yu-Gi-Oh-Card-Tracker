@@ -630,7 +630,7 @@ class CollectionPage:
             logger.error(f"Error saving collection: {e}", exc_info=True)
             ui.notify(f"Error saving: {e}", type='negative')
 
-    async def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, condition: str = "Near Mint", first_edition: bool = False, image_url: str = None, image_id: int = None, set_price: float = 0.0):
+    async def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, condition: str = "Near Mint", first_edition: bool = False, image_url: str = None, image_id: int = None, set_price: float = 0.0, variant_id: str = None):
         async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
             await self.save_card_change(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode)
 
