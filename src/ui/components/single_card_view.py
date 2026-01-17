@@ -2,7 +2,7 @@ from nicegui import ui
 from src.core.models import ApiCardSet
 from src.services.ygo_api import ApiCard, ygo_service
 from src.services.image_manager import image_manager
-from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, extract_language_code
 from typing import List, Optional, Dict, Set, Callable, Any
 import logging
 import asyncio
@@ -80,7 +80,7 @@ class SingleCardView:
 
         with ui.card().classes('w-full bg-transparent p-4 gap-4'):
             with ui.row().classes('w-full gap-4'):
-                ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
+                lang_select = ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
                             on_change=lambda e: [input_state.update({'language': e.value}), on_change_callback()]).classes('w-1/3')
 
                 set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-grow')
@@ -104,6 +104,12 @@ class SingleCardView:
                         if s_info.set_rarity:
                             input_state['rarity'] = s_info.set_rarity
                             rarity_select.value = s_info.set_rarity
+
+                    # Update language based on set code
+                    extracted_lang = extract_language_code(new_code)
+                    if extracted_lang in SUPPORTED_LANGUAGES:
+                        input_state['language'] = extracted_lang
+                        lang_select.value = extracted_lang
 
                     on_change_callback()
 
@@ -275,9 +281,6 @@ class SingleCardView:
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
                         with ui.row().classes('w-full items-center justify-between'):
                             ui.label(card.name).classes('text-4xl font-bold text-white select-text')
-                        if total_owned > 0:
-                            with ui.label(str(total_owned)).classes('text-2xl font-bold text-accent'):
-                                ui.tooltip('Total Owned')
 
                         ui.separator().classes('q-my-md bg-gray-700')
 
@@ -317,13 +320,16 @@ class SingleCardView:
                         ui.separator().classes('q-my-md')
 
                         ui.label('Collection Status').classes('text-h6 q-mb-sm select-none text-accent')
-                        if owned_breakdown:
-                            with ui.row().classes('gap-2'):
+                        with ui.row().classes('gap-2 items-center'):
+                            with ui.chip(icon='format_list_numbered').props('color=primary text-color=white'):
+                                ui.label(f"Total: {total_owned}").classes('select-text')
+
+                            if owned_breakdown:
                                 for lang, count in owned_breakdown.items():
                                     with ui.chip(icon='layers').props('color=secondary text-color=white'):
                                         ui.label(f"{lang}: {count}").classes('select-text')
-                        else:
-                            ui.label('Not in collection').classes('text-gray-500 italic')
+                            elif total_owned == 0:
+                                ui.label('Not in collection').classes('text-gray-500 italic')
 
                         ui.separator().classes('q-my-md')
 
@@ -692,9 +698,6 @@ class SingleCardView:
                          # Basic Info
                          with ui.row().classes('w-full items-center justify-between'):
                              ui.label(card.name).classes('text-4xl font-bold text-white')
-                             if owned_count > 0:
-                                 with ui.label(str(owned_count)).classes('text-2xl font-bold text-accent'):
-                                     ui.tooltip('Total Owned')
 
                          with ui.grid(columns=4).classes('w-full gap-4 text-lg q-my-md'):
                              def stat(label, value):
@@ -714,13 +717,18 @@ class SingleCardView:
 
                          ui.markdown(card.desc).classes('text-gray-300 leading-relaxed text-lg q-mb-md')
 
-                         if owned_breakdown:
-                             ui.separator().classes('q-my-md bg-gray-700')
-                             ui.label('Collection Status').classes('text-h6 q-mb-sm text-accent')
-                             with ui.row().classes('gap-2'):
+                         ui.separator().classes('q-my-md bg-gray-700')
+                         ui.label('Collection Status').classes('text-h6 q-mb-sm text-accent')
+                         with ui.row().classes('gap-2 items-center'):
+                             with ui.chip(icon='format_list_numbered').props('color=primary text-color=white'):
+                                 ui.label(f"Total: {owned_count}").classes('select-text')
+
+                             if owned_breakdown:
                                  for lang, count in owned_breakdown.items():
                                      with ui.chip(icon='layers').props('color=secondary text-color=white'):
                                          ui.label(f"{lang}: {count}")
+                             elif owned_count == 0:
+                                 ui.label('Not in collection').classes('text-gray-500 italic')
 
                          ui.separator().classes('q-my-md bg-gray-700')
 

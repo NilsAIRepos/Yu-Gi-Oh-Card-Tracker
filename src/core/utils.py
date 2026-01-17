@@ -46,6 +46,46 @@ def normalize_set_code(set_code: str) -> str:
 
     return set_code
 
+def extract_language_code(set_code: str) -> str:
+    """
+    Extracts the language code from a set code.
+    Returns a standard language code (e.g., 'EN', 'DE').
+    Defaults to 'EN' if no specific region is found or if it maps to English.
+    """
+    # Regex to find region code: Code-RegionNumber (e.g. MRD-DE001, LOB-E001)
+    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
+    if match:
+        region = match.group(2).upper()
+
+        # Legacy/Region Mapping
+        mapping = {
+            'E': 'EN',
+            'G': 'DE',
+            'F': 'FR',
+            'I': 'IT',
+            'S': 'ES',
+            'P': 'PT',
+            'J': 'JP',
+            'K': 'KR',
+            'AE': 'EN', # Asian English
+            'TC': 'ZH',
+            'SC': 'ZH',
+            # Standard codes map to themselves
+            'EN': 'EN',
+            'DE': 'DE',
+            'FR': 'FR',
+            'IT': 'IT',
+            'ES': 'ES',
+            'PT': 'PT',
+            'JP': 'JP',
+            'KR': 'KR'
+        }
+
+        return mapping.get(region, 'EN') # Default to EN if unknown region or unmapped
+
+    # Case 2: No region code (e.g. SDY-006) -> Usually EN (NA print)
+    return 'EN'
+
 def generate_variant_id(card_id: int, set_code: str, rarity: str, image_id: Optional[int] = None) -> str:
     """
     Generates a deterministic unique ID for a card variant using MD5.
