@@ -119,7 +119,7 @@ class DeckBuilderPage:
             'filtered_items': [], # List[ApiCard] for search results
 
             'page': 1,
-            'page_size': 9,
+            'page_size': config_manager.get_deck_builder_page_size(),
             'total_pages': 1,
 
             'loading': False
@@ -482,8 +482,18 @@ class DeckBuilderPage:
             'filter_rarity': '',
             'filter_attr': '',
             'filter_card_type': ['Monster', 'Spell', 'Trap'],
+            'filter_condition': [],
+            'filter_monster_race': '',
+            'filter_st_race': '',
+            'filter_archetype': '',
+            'filter_monster_category': [],
             'filter_level': None,
             'filter_atk_min': 0, 'filter_atk_max': 5000,
+            'filter_def_min': 0, 'filter_def_max': 5000,
+            'filter_ownership_min': 0, 'filter_ownership_max': 100,
+            'filter_price_min': 0.0, 'filter_price_max': 1000.0,
+            'filter_owned_lang': '',
+            'only_owned': False
         })
         if self.filter_pane: self.filter_pane.reset_ui_elements()
         await self.apply_filters()

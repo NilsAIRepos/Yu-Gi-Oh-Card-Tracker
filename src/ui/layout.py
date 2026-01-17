@@ -28,6 +28,20 @@ def create_layout(content_function):
                       value=config_manager.get_language(),
                       on_change=change_lang).classes('w-full')
 
+            def change_page_size(e):
+                try:
+                    val = int(e.value)
+                    if val > 0:
+                        config_manager.set_deck_builder_page_size(val)
+                        ui.notify('Page size saved.')
+                except (ValueError, TypeError):
+                    pass
+
+            ui.number('Cards Per Page (Library)',
+                      value=config_manager.get_deck_builder_page_size(),
+                      min=1, max=100,
+                      on_change=change_page_size).classes('w-full')
+
             ui.separator().classes('q-my-md')
             ui.label('Data Management').classes('text-subtitle2 text-grey')
 

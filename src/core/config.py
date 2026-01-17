@@ -22,7 +22,8 @@ class ConfigManager:
     def _default_config(self) -> Dict[str, Any]:
         return {
             "language": "en",
-            "theme": "dark"
+            "theme": "dark",
+            "deck_builder_page_size": 9
         }
 
     def save_config(self):
@@ -34,6 +35,13 @@ class ConfigManager:
 
     def set_language(self, language: str):
         self.config["language"] = language
+        self.save_config()
+
+    def get_deck_builder_page_size(self) -> int:
+        return self.config.get("deck_builder_page_size", 9)
+
+    def set_deck_builder_page_size(self, size: int):
+        self.config["deck_builder_page_size"] = size
         self.save_config()
 
 config_manager = ConfigManager()
