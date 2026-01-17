@@ -136,6 +136,7 @@ def create_layout(content_function):
 
             nav_button('Dashboard', 'dashboard', '/')
             nav_button('Collection', 'style', '/collection')
+            nav_button('Browse Sets', 'library_books', '/sets')
             nav_button('Deck Builder', 'construction', '/decks')
             nav_button('Import/Scan', 'qr_code_scanner', '/import')
 
