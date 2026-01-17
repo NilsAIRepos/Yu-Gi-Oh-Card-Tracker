@@ -27,6 +27,46 @@ class DeckCardViewModel:
 
 class DeckBuilderPage:
     def __init__(self):
+        ui.add_head_html('<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>')
+        ui.add_body_html('''
+            <script>
+            window.initSortable = function(elementId, groupName, pullMode, putMode) {
+                var el = document.getElementById(elementId);
+                if (!el) return;
+                if (el._sortable) el._sortable.destroy();
+
+                el._sortable = new Sortable(el, {
+                    group: {
+                        name: groupName,
+                        pull: pullMode,
+                        put: putMode
+                    },
+                    animation: 150,
+                    ghostClass: 'opacity-50',
+                    onEnd: function (evt) {
+                        var toIds = Array.from(evt.to.children).map(c => c.getAttribute('data-id')).filter(id => id);
+                        var fromIds = Array.from(evt.from.children).map(c => c.getAttribute('data-id')).filter(id => id);
+                        var toZone = evt.to.id.replace('deck-', '').replace('gallery-list', 'gallery');
+                        var fromZone = evt.from.id.replace('deck-', '').replace('gallery-list', 'gallery');
+
+                        var container = document.getElementById('deck-builder-container');
+                        if (container) {
+                            container.dispatchEvent(new CustomEvent('deck_change', {
+                                detail: {
+                                    to_zone: toZone,
+                                    to_ids: toIds,
+                                    from_zone: fromZone,
+                                    from_ids: fromIds
+                                },
+                                bubbles: true
+                            }));
+                        }
+                    }
+                });
+            }
+            </script>
+        ''')
+
         # Load persisted UI state
         ui_state = persistence.load_ui_state()
         last_deck = ui_state.get('deck_builder_last_deck')
@@ -85,96 +125,10 @@ class DeckBuilderPage:
         self.search_results_container = None
         self.deck_area_container = None
 
-    def handle_drag_start(self, card, source_zone, index=None):
-        self.dragged_item = {'id': card.id, 'from': source_zone, 'index': index}
-
-    def handle_drag_end(self):
-        """Called when drag operation ends (success or cancelled). Cleans up state."""
-        self.dragged_item = None
-        self.refresh_deck_area() # Ensure visual state is clean (e.g. remove opacity)
-
     def refresh_zone(self, zone):
         if zone == 'main': self.render_main_deck_grid.refresh()
         elif zone == 'extra': self.render_extra_deck_grid.refresh()
         elif zone == 'side': self.render_side_deck_grid.refresh()
-
-    async def handle_drop(self, e, target_zone, target_index=None):
-        """
-        Handles dropping a card into a zone.
-        target_index: If provided, insert BEFORE this index. If None, append to end.
-        """
-        if not self.dragged_item: return
-
-        # Extract source info
-        card_id = self.dragged_item.get('id')
-        src_zone = self.dragged_item.get('from')
-        src_index = self.dragged_item.get('index')
-
-        if not card_id or not src_zone: return
-
-        deck = self.state['current_deck']
-        if not deck: return
-
-        # Get Target List
-        target_list = getattr(deck, target_zone)
-
-        # Logic 1: Dragging from Gallery (New Card)
-        if src_zone == 'gallery':
-            if target_index is None: target_index = len(target_list)
-            # Add 1 copy
-            target_list.insert(target_index, card_id)
-
-        # Logic 2: Moving/Reordering within Zones
-        elif src_zone in ['main', 'extra', 'side']:
-            src_list = getattr(deck, src_zone)
-
-            # Remove from source
-            # We must be careful to remove the specific instance if we have the index
-            removed = False
-            if src_index is not None and 0 <= src_index < len(src_list) and src_list[src_index] == card_id:
-                src_list.pop(src_index)
-                removed = True
-            elif card_id in src_list:
-                # Fallback if index missing or mismatch (shouldn't happen with correct usage)
-                src_list.remove(card_id)
-                removed = True
-
-            if not removed:
-                logger.warning("Could not find source card to move")
-                return
-
-            # Adjust target index if reordering within same zone
-            if src_zone == target_zone:
-                if target_index is None:
-                    target_index = len(target_list) # Append
-                else:
-                    # If we moved an item from BEFORE the target, the indices shifted down by 1
-                    if src_index is not None and src_index < target_index:
-                        target_index -= 1
-            else:
-                 # Moving between zones, just normal insert
-                 if target_index is None: target_index = len(target_list)
-
-            # Insert into target
-            # Clamp index just in case
-            if target_index > len(target_list): target_index = len(target_list)
-            if target_index < 0: target_index = 0
-
-            target_list.insert(target_index, card_id)
-
-        # Save and Refresh
-        await self.save_current_deck()
-        self.dragged_item = None # Clear drag state
-
-        # Refresh zones involved
-        zones_to_refresh = {target_zone}
-        if src_zone in ['main', 'extra', 'side']:
-            zones_to_refresh.add(src_zone)
-
-        for z in zones_to_refresh:
-            self.refresh_zone(z)
-
-        self.update_zone_headers()
 
 
     async def load_initial_data(self):
@@ -516,7 +470,7 @@ class DeckBuilderPage:
                     for c in self.state['reference_collection'].cards:
                         owned_map[c.card_id] = c.total_quantity
 
-                with ui.grid(columns='repeat(auto-fill, minmax(100px, 1fr))').classes('w-full gap-2'):
+                with ui.grid(columns='repeat(auto-fill, minmax(120px, 1fr))').classes('w-full gap-2').props('id="gallery-list"'):
                     for card in items:
                          img_id = card.card_images[0].id if card.card_images else card.id
                          img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
@@ -524,11 +478,7 @@ class DeckBuilderPage:
                          owned_qty = owned_map.get(card.id, 0)
 
                          with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
-                            .props('draggable') \
-                            .on('dragstart', lambda c=card: self.handle_drag_start(c, 'gallery')) \
-                            .on('dragstart.once', 'event.target.classList.add("opacity-50")') \
-                            .on('dragend.once', 'event.target.classList.remove("opacity-50")') \
-                            .on('dragend', self.handle_drag_end) \
+                            .props(f'data-id="{card.id}"') \
                             .on('click', lambda c=card: self.open_deck_builder_wrapper(c)):
 
                              with ui.element('div').classes('relative w-full aspect-[2/3]'):
@@ -539,6 +489,8 @@ class DeckBuilderPage:
                              with ui.column().classes('p-1 gap-0 w-full'):
                                  ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
                                  ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
+
+                ui.run_javascript('initSortable("gallery-list", "deck", "clone", false)')
 
     async def open_deck_builder_wrapper(self, card):
         owned_count = 0
@@ -580,20 +532,10 @@ class DeckBuilderPage:
 
         usage_counter = {}
 
-        if not real_card_ids:
-            # Render empty state but ensure grid exists to accept drops (though parent container handles empty drops usually)
-             with ui.grid(columns='repeat(auto-fill, minmax(140px, 1fr))').classes('w-full gap-2 min-h-[50px]'):
-                  ui.label('Drag cards here').classes('text-grey italic text-xs w-full text-center q-mt-md opacity-50 col-span-full')
-             return
-
-        with ui.grid(columns='repeat(auto-fill, minmax(140px, 1fr))').classes('w-full gap-2'):
+        # Always render the grid to ensure Sortable can attach, even if empty.
+        # min-h ensures drop target exists.
+        with ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))').classes('w-full gap-2 min-h-[100px]').props(f'id="deck-{target}"'):
             for i, cid in enumerate(real_card_ids):
-                # Is this the item currently being dragged?
-                is_drag_source = (self.dragged_item and
-                                  self.dragged_item.get('id') == cid and
-                                  self.dragged_item.get('from') == target and
-                                  self.dragged_item.get('index') == i)
-
                 # Fetch API Data
                 card = self.api_card_map.get(cid)
                 if not card: continue # Should not happen
@@ -612,30 +554,23 @@ class DeckBuilderPage:
 
                 classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800'
 
-                if is_drag_source:
-                    classes += ' opacity-40' # Visual feedback for source
-                elif not is_owned_copy:
+                if not is_owned_copy:
                     classes += ' opacity-50 grayscale'
                 else:
                     classes += ' opacity-100'
 
                 # Render Card
                 with ui.card().classes(classes) \
-                    .props('draggable') \
-                    .on('dragstart', lambda c=card, idx=i, t=target: self.handle_drag_start(c, t, idx)) \
-                    .on('dragstart.once', 'event.target.classList.add("opacity-40")') \
-                    .on('dragend.once', 'event.target.classList.remove("opacity-40")') \
-                    .on('dragend', self.handle_drag_end) \
-                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)) \
-                    .on('dragover.prevent.stop', lambda: None) \
-                    .on('drop.prevent.stop', lambda e, idx=i, t=target: self.handle_drop(e, t, idx)):
+                    .props(f'data-id="{cid}"') \
+                    .on('click', lambda c=card, t=target: self.remove_card_from_deck(c.id, t)):
 
                     ui.image(img_src).classes('w-full h-full object-cover rounded')
-                    # Only show hover actions for normal cards
-                    if not is_drag_source:
-                        with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
-                            ui.icon('remove', color='white').classes('text-lg')
-                        ui.tooltip(card.name)
+
+                    with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
+                        ui.icon('remove', color='white').classes('text-lg')
+                    ui.tooltip(card.name)
+
+        ui.run_javascript(f'initSortable("deck-{target}", "deck", true, true)')
 
     def refresh_deck_area(self):
         self.render_main_deck_grid.refresh()
@@ -654,13 +589,20 @@ class DeckBuilderPage:
         deck = self.state['current_deck']
         count = 0
         if deck: count = len(getattr(deck, target))
-        color = 'text-white'
+
+        is_invalid = False
         if target == 'main':
-             if count < 40 or count > 60: color = 'text-red-400'
+             if count < 40 or count > 60: is_invalid = True
         elif target in ['extra', 'side']:
-             if count > 15: color = 'text-red-400'
+             if count > 15: is_invalid = True
+
+        count_color = 'text-red-400' if is_invalid else 'text-white'
+
         with ui.row().classes('w-full items-center justify-between q-mb-sm'):
-            ui.label(f"{title} ({count})").classes(f'font-bold {color} text-xs uppercase tracking-wider')
+            with ui.row().classes('gap-1 items-center'):
+                ui.label(title).classes('font-bold text-white text-xs uppercase tracking-wider')
+                ui.label(f"({count})").classes(f'font-bold {count_color} text-xs uppercase tracking-wider')
+
             with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm'):
                  ui.tooltip(f'Sort {title}')
 
@@ -670,16 +612,14 @@ class DeckBuilderPage:
         self.render_header_side.refresh()
 
     def setup_zone(self, title, target, flex_grow=False):
-        height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[160px]'
+        height_class = 'flex-grow' if flex_grow else 'h-auto min-h-[220px]'
         with ui.column().classes(f'w-full {height_class} bg-dark border border-gray-700 p-2 rounded flex flex-col relative'):
             if target == 'main': self.render_header_main()
             elif target == 'extra': self.render_header_extra()
             elif target == 'side': self.render_header_side()
 
             # The container handles drops on empty space (appending)
-            with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors') \
-                .on('dragover.prevent', lambda: None) \
-                .on('drop', lambda e: self.handle_drop(e, target)):
+            with ui.column().classes('w-full flex-grow bg-black/20 rounded p-2 overflow-y-auto block relative transition-colors'):
 
                 if target == 'main': self.render_main_deck_grid()
                 elif target == 'extra': self.render_extra_deck_grid()
@@ -708,6 +648,47 @@ class DeckBuilderPage:
         self.refresh_zone(zone)
         ui.notify(f"Sorted {zone} deck.", type='positive')
 
+    async def handle_deck_change(self, e):
+        args = e.args.get('detail', {})
+        to_zone = args.get('to_zone')
+        to_ids_str = args.get('to_ids')
+        from_zone = args.get('from_zone')
+        from_ids_str = args.get('from_ids')
+
+        # Convert strings to ints
+        try:
+            to_ids = [int(x) for x in to_ids_str] if to_ids_str else []
+            from_ids = [int(x) for x in from_ids_str] if from_ids_str else []
+        except ValueError:
+            return
+
+        deck = self.state['current_deck']
+        if not deck: return
+
+        # Validate zones
+        valid_zones = ['main', 'extra', 'side']
+
+        # Update 'to' zone
+        if to_zone in valid_zones:
+            setattr(deck, to_zone, to_ids)
+
+        # Update 'from' zone if it's a valid deck zone and different from 'to'
+        if from_zone in valid_zones and from_zone != to_zone:
+             setattr(deck, from_zone, from_ids)
+
+        await self.save_current_deck()
+
+        # Refresh UI
+        zones_to_refresh = {to_zone}
+        if from_zone in valid_zones:
+             zones_to_refresh.add(from_zone)
+
+        for z in zones_to_refresh:
+            if z in valid_zones:
+                self.refresh_zone(z)
+
+        self.update_zone_headers()
+
     def build_ui(self):
         self.filter_dialog = ui.dialog().props('position=right')
         with self.filter_dialog, ui.card().classes('h-full w-96 bg-gray-900 border-l border-gray-700 p-0 flex flex-col'):
@@ -716,7 +697,10 @@ class DeckBuilderPage:
                  self.filter_pane.build()
 
         self.render_header()
-        with ui.row().classes('w-full h-[calc(100vh-140px)] gap-4 flex-nowrap'):
+        with ui.row().classes('w-full h-[calc(100vh-140px)] gap-4 flex-nowrap') \
+            .props('id="deck-builder-container"') \
+            .on('deck_change', self.handle_deck_change):
+
             self.search_results_container = ui.column().classes('w-1/4 h-full bg-dark border border-gray-800 rounded flex flex-col deck-builder-search-results relative overflow-hidden')
             with ui.column().classes('flex-grow h-full relative deck-builder-deck-area overflow-hidden gap-2'):
                  self.setup_zone('Main Deck', 'main', flex_grow=True)
