@@ -4,6 +4,7 @@ import asyncio
 from nicegui import run
 import logging
 from typing import Dict, List, Optional, Callable
+from PIL import Image
 
 DATA_DIR = "data"
 IMAGES_DIR = os.path.join(DATA_DIR, "images")
@@ -24,15 +25,41 @@ class ImageManager:
         return os.path.join(self.sets_dir, f"{safe_code}.jpg")
 
     def set_image_exists(self, set_code: str) -> bool:
+        """Checks if the set image exists locally. Note: Does not verify resolution."""
         return os.path.exists(self.get_set_image_path(set_code))
 
+    def check_image_resolution(self, path: str, min_height: int = 240) -> bool:
+        """Checks if the image at path meets the minimum resolution requirement."""
+        try:
+            with Image.open(path) as img:
+                width, height = img.size
+                # If height is less than min_height, consider it low res
+                if height < min_height:
+                    return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Error checking resolution for {path}: {e}")
+            return False
+
     async def ensure_set_image(self, set_code: str, url: str) -> Optional[str]:
-        """Ensures the set image exists locally."""
+        """Ensures the set image exists locally and meets resolution requirements."""
         if not url: return None
         local_path = self.get_set_image_path(set_code)
-        if os.path.exists(local_path):
-            return local_path
 
+        # Check existing
+        if os.path.exists(local_path):
+             # Verify resolution of existing file
+             is_good = await run.io_bound(self.check_image_resolution, local_path)
+             if is_good:
+                 return local_path
+             else:
+                 self.logger.info(f"Existing image for {set_code} is low resolution (<240p). Deleting.")
+                 try:
+                    os.remove(local_path)
+                 except OSError:
+                    pass
+
+        # Download
         try:
             async with aiohttp.ClientSession() as session:
                 # Reuse the internal downloader logic but with string ID
@@ -40,6 +67,17 @@ class ImageManager:
                     if response.status == 200:
                         data = await response.read()
                         await run.io_bound(self._write_file, local_path, data)
+
+                        # Check resolution of new file
+                        is_good = await run.io_bound(self.check_image_resolution, local_path)
+                        if not is_good:
+                            self.logger.warning(f"Downloaded image for {set_code} is low resolution (<240p). Deleting.")
+                            try:
+                                os.remove(local_path)
+                            except OSError:
+                                pass
+                            return None
+
                         return local_path
                     else:
                         self.logger.warning(f"Failed to download set image {set_code}: {response.status}")

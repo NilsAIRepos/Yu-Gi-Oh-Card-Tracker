@@ -133,6 +133,10 @@ class BrowseSetsPage:
             # Set Date Filter
             'filter_date_start': None,
             'filter_date_end': None,
+
+            # Set Count Filter
+            'filter_count_min': 20,
+            'filter_count_max': None,
         }
 
         # Load initial collection
@@ -170,6 +174,14 @@ class BrowseSetsPage:
         if self.state['filter_date_end']:
              res = [s for s in res if s['date'] and s['date'] <= self.state['filter_date_end']]
 
+        # Count Filter
+        min_c = self.state['filter_count_min']
+        max_c = self.state['filter_count_max']
+        if min_c is not None:
+             res = [s for s in res if int(s.get('count', 0)) >= int(min_c)]
+        if max_c is not None:
+             res = [s for s in res if int(s.get('count', 0)) <= int(max_c)]
+
         # Sort
         key = self.state['sort_by']
         desc = self.state['sort_desc']
@@ -195,12 +207,17 @@ class BrowseSetsPage:
             self.state['page'] = 1
 
     async def open_set_detail(self, set_code):
-        self.state['selected_set'] = set_code
-        self.state['view'] = 'detail'
-        self.state['selected_set_info'] = await ygo_service.get_set_info(set_code)
+        try:
+            self.state['selected_set'] = set_code
+            self.state['view'] = 'detail'
+            # Check if we already have the info in the filtered list to save a call, though get_set_info is fast
+            self.state['selected_set_info'] = await ygo_service.get_set_info(set_code)
 
-        await self.load_set_details(set_code)
-        self.render_content.refresh()
+            await self.load_set_details(set_code)
+            self.render_content.refresh()
+        except Exception as e:
+            logger.error(f"Error opening set detail for {set_code}: {e}")
+            ui.notify(f"Error opening set: {e}", type='negative')
 
     async def load_set_details(self, set_code):
         # Load Cards
@@ -353,79 +370,90 @@ class BrowseSetsPage:
 
     # --- Renderers ---
 
-    def render_set_card(self, set_info):
-        with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-900') \
-                .on('click', lambda: self.open_set_detail(set_info['code'])):
+    def render_set_visual(self, container: ui.element, set_code: str, image_url: str):
+        """
+        Renders the set image or fallback fan into the provided container.
+        Validates local image resolution.
+        """
 
-            # Image Area wrapper
-            with ui.element('div').classes('relative w-full aspect-[3/2] bg-black overflow-hidden'):
+        def render_fan_spinner():
+            container.clear()
+            with container:
+                ui.spinner('dots', size='lg').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-gray-600')
 
-                # Content Container (Image or Fan)
-                content_container = ui.element('div').classes('w-full h-full')
+        async def load_fan():
+             try:
+                cards = await ygo_service.get_set_cards(set_code)
+                container.clear()
+                with container:
+                     fan_div = ui.element('div').classes('relative w-full h-full bg-gray-800 overflow-hidden')
+                     with fan_div:
+                        if not cards:
+                            ui.icon('image_not_supported', size='xl', color='grey').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2')
+                            return
 
-                set_code = set_info['code']
-                remote_url = set_info.get('image')
+                        # Take top 3
+                        top_3 = cards[:3]
 
-                def render_fan():
-                    # Fallback Composite - 3 Card Fan
-                    with content_container:
-                        ui.spinner('dots', size='lg').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-gray-600')
+                        # 3rd Card (Left Back)
+                        if len(top_3) > 2:
+                            img = top_3[2].card_images[0].image_url_small
+                            ui.image(img).classes('absolute w-[45%] top-4 left-4 opacity-60 rotate-[-15deg] shadow-lg border border-white/10 rounded')
 
-                    async def load_fallback():
-                        try:
-                            cards = await ygo_service.get_set_cards(set_code)
-                            content_container.clear()
-                            with content_container:
-                                 # Re-create container div for fan
-                                 fan_div = ui.element('div').classes('relative w-full h-full bg-gray-800 overflow-hidden')
-                                 with fan_div:
-                                     if not cards:
-                                         ui.icon('image_not_supported', size='xl', color='grey').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2')
-                                         return
+                        # 2nd Card (Right Back)
+                        if len(top_3) > 1:
+                            img = top_3[1].card_images[0].image_url_small
+                            ui.image(img).classes('absolute w-[45%] top-2 right-4 opacity-80 rotate-[15deg] shadow-lg border border-white/10 rounded')
 
-                                     # Take top 3
-                                     top_3 = cards[:3]
+                        # 1st Card (Center Front)
+                        if len(top_3) > 0:
+                            img = top_3[0].card_images[0].image_url_small
+                            ui.image(img).classes('absolute w-[50%] left-1/2 transform -translate-x-1/2 -bottom-8 z-10 shadow-xl border border-white/20 rounded')
+             except Exception as e:
+                logger.error(f"Error loading fallback for set {set_code}: {e}")
+                container.clear()
 
-                                     # 3rd Card (Left Back)
-                                     if len(top_3) > 2:
-                                         img = top_3[2].card_images[0].image_url_small
-                                         ui.image(img).classes('absolute w-[45%] top-4 left-4 opacity-60 rotate-[-15deg] shadow-lg border border-white/10 rounded')
+        # Check Local existence AND resolution
+        # We check resolution synchronously here because checking ~24 files (one page) is fast enough
+        # and ensures we never show a bad cached image.
+        path = image_manager.get_set_image_path(set_code)
+        if image_manager.set_image_exists(set_code) and image_manager.check_image_resolution(path):
+             safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
+             with container:
+                container.clear()
+                ui.image(f"/sets/{safe_code}.jpg").classes('w-full h-full object-contain')
+        elif image_url:
+             # Spinner
+             render_fan_spinner()
 
-                                     # 2nd Card (Right Back)
-                                     if len(top_3) > 1:
-                                         img = top_3[1].card_images[0].image_url_small
-                                         ui.image(img).classes('absolute w-[45%] top-2 right-4 opacity-80 rotate-[15deg] shadow-lg border border-white/10 rounded')
-
-                                     # 1st Card (Center Front)
-                                     if len(top_3) > 0:
-                                         img = top_3[0].card_images[0].image_url_small
-                                         ui.image(img).classes('absolute w-[50%] left-1/2 transform -translate-x-1/2 -bottom-8 z-10 shadow-xl border border-white/20 rounded')
-                        except Exception as e:
-                            logger.error(f"Error loading fallback for set {set_code}: {e}")
-                            content_container.clear()
-
-                    ui.timer(0.0, load_fallback, once=True)
-
-                # Determine content
-                if image_manager.set_image_exists(set_code):
+             async def download_and_update():
+                 # ensure_set_image checks resolution
+                 path = await image_manager.ensure_set_image(set_code, image_url)
+                 if path:
                      safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
-                     with content_container:
-                        ui.image(f"/sets/{safe_code}.jpg").classes('w-full h-full object-cover')
-                elif remote_url:
-                     # Render fan as placeholder
-                     render_fan()
-                     # Background download
-                     async def download_set_img():
-                         path = await image_manager.ensure_set_image(set_code, remote_url)
-                         if path:
-                             content_container.clear()
-                             safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
-                             with content_container:
-                                 ui.image(f"/sets/{safe_code}.jpg").classes('w-full h-full object-cover')
+                     container.clear()
+                     with container:
+                         ui.image(f"/sets/{safe_code}.jpg").classes('w-full h-full object-contain')
+                 else:
+                     # Download failed or Low Res -> Fan
+                     await load_fan()
 
-                     ui.timer(0.1, download_set_img, once=True)
-                else:
-                    render_fan()
+             ui.timer(0.1, download_and_update, once=True)
+        else:
+            render_fan_spinner()
+            ui.timer(0.1, load_fan, once=True)
+
+    def render_set_card(self, set_info):
+        from functools import partial
+
+        with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-900') \
+                .on('click', partial(self.open_set_detail, set_info['code'])):
+
+            # Image Area wrapper - Removed fixed aspect ratio, increased height to allow full image
+            with ui.element('div').classes('relative w-full h-48 bg-black overflow-hidden'):
+                # Content Container
+                content_container = ui.element('div').classes('w-full h-full')
+                self.render_set_visual(content_container, set_info['code'], set_info.get('image'))
 
                 # Overlay Info
                 with ui.row().classes('absolute bottom-0 w-full bg-black/80 p-1 justify-between items-center z-20'):
@@ -476,13 +504,35 @@ class BrowseSetsPage:
 
             ui.space()
 
+        # Filter Section
+        with ui.expansion('Filters', icon='filter_list').classes('w-full bg-gray-900 border border-gray-800 rounded mb-4'):
+            with ui.row().classes('w-full gap-4 p-4 items-end'):
+                 # Count Filters
+                with ui.column().classes('gap-1'):
+                    ui.label('Card Count').classes('text-sm text-gray-400')
+                    with ui.row().classes('gap-2'):
+                        ui.number(label='Min', value=20, on_change=lambda e: self.update_filter('filter_count_min', e.value)) \
+                            .bind_value(self.state, 'filter_count_min').props('dark dense outlined').classes('w-24')
+                        ui.number(label='Max', on_change=lambda e: self.update_filter('filter_count_max', e.value)) \
+                            .bind_value(self.state, 'filter_count_max').props('dark dense outlined').classes('w-24')
+
+                # Date Filters
+                with ui.column().classes('gap-1'):
+                    ui.label('Release Date').classes('text-sm text-gray-400')
+                    with ui.row().classes('gap-2'):
+                        ui.input('Start Date').props('type=date dark dense outlined') \
+                            .bind_value(self.state, 'filter_date_start').on('change', self.apply_set_filters).classes('w-40')
+                        ui.input('End Date').props('type=date dark dense outlined') \
+                            .bind_value(self.state, 'filter_date_end').on('change', self.apply_set_filters).classes('w-40')
+
         self.render_pagination()
 
         start = (self.state['page'] - 1) * self.state['page_size']
         end = start + self.state['page_size']
         visible_sets = self.state['filtered_sets'][start:end]
 
-        with ui.grid(columns='repeat(auto-fill, minmax(200px, 1fr))').classes('w-full gap-4'):
+        # Increased grid size as requested (300px min)
+        with ui.grid(columns='repeat(auto-fill, minmax(300px, 1fr))').classes('w-full gap-4'):
             for s in visible_sets:
                 self.render_set_card(s)
 
@@ -511,11 +561,9 @@ class BrowseSetsPage:
         # Header
         with ui.row().classes('w-full items-start gap-6 mb-6 p-6 bg-gray-900 rounded-lg border border-gray-800'):
             # Image
-            if info.get('image'):
-                ui.image(info['image']).classes('w-48 h-auto rounded shadow-lg')
-            else:
-                 with ui.column().classes('w-48 aspect-[3/2] items-center justify-center bg-gray-800 rounded'):
-                        ui.icon('image_not_supported', size='xl', color='grey')
+            with ui.element('div').classes('w-64 h-48 relative bg-black rounded shadow-lg overflow-hidden'):
+                 container = ui.element('div').classes('w-full h-full')
+                 self.render_set_visual(container, info['code'], info.get('image'))
 
             # Info
             with ui.column().classes('gap-2'):
@@ -578,6 +626,13 @@ class BrowseSetsPage:
     def render_detail_grid(self):
         rows = self.state['detail_filtered_rows']
 
+        # Trigger background download for these cards (Fire and forget)
+        # This ensures images are cached for next visit while current view uses remote/lazy if needed
+        if rows:
+            to_download = {r.image_id: r.image_url for r in rows if r.image_id and r.image_url}
+            # Use create_task to run in background without blocking render
+            asyncio.create_task(image_manager.download_batch(to_download, high_res=False))
+
         # Reuse CollectorRow Grid Logic (Copy of render_collectors_grid)
         flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷', 'CN': '🇨🇳'}
         cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
@@ -597,7 +652,7 @@ class BrowseSetsPage:
                         .on('click', lambda c=item: self.open_single_view(c)):
 
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
-                        if img_src: ui.image(img_src).classes('w-full h-full object-cover')
+                        if img_src: ui.image(img_src).classes('w-full h-full object-cover').props('loading="lazy"')
 
                         if item.is_owned:
                              ui.label(f"{item.owned_count}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
@@ -645,6 +700,7 @@ class BrowseSetsPage:
         )
 
     def build_ui(self):
+        # Detail Filter Dialog
         self.filter_dialog = ui.dialog().props('position=right')
         with self.filter_dialog, ui.card().classes('h-full w-96 bg-gray-900 border-l border-gray-700 p-0 flex flex-col'):
              with ui.scroll_area().classes('flex-grow w-full'):
@@ -654,6 +710,10 @@ class BrowseSetsPage:
 
         self.render_content()
         ui.timer(0.1, self.load_data, once=True)
+
+    async def update_filter(self, key, value):
+        self.state[key] = value
+        await self.apply_set_filters()
 
 def browse_sets_page():
     page = BrowseSetsPage()
