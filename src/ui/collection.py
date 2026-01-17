@@ -655,6 +655,47 @@ class CollectionPage:
 
         # Fallback removed
 
+    def _setup_card_tooltip(self, card: ApiCard, specific_image_id: int = None):
+        if not card: return
+
+        # Default to first image
+        target_img = card.card_images[0] if card.card_images else None
+
+        # If specific ID provided, try to find it
+        if specific_image_id and card.card_images:
+            for img in card.card_images:
+                if img.id == specific_image_id:
+                    target_img = img
+                    break
+
+        if not target_img:
+             return
+
+        img_id = target_img.id
+        high_res_url = target_img.image_url
+        low_res_url = target_img.image_url_small
+
+        # Check local high-res existence immediately
+        is_local = image_manager.image_exists(img_id, high_res=True)
+        initial_src = f"/images/{img_id}_high.jpg" if is_local else (high_res_url or low_res_url)
+
+        # Create tooltip with transparent background and no padding
+        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none') \
+                         .props('style="max-width: none" delay=1050') as tooltip:
+            # Image at 65vh height and 1000px min width for readability
+            if initial_src:
+                ui.image(initial_src).classes('w-auto h-[65vh] min-w-[1000px] object-contain rounded-lg shadow-2xl') \
+                                     .props('fit=contain')
+
+            # Trigger download on show if needed
+            if not is_local and high_res_url:
+                async def ensure_high():
+                    # Check again to avoid redundant downloads
+                    if not image_manager.image_exists(img_id, high_res=True):
+                         await image_manager.ensure_image(img_id, high_res_url, high_res=True)
+
+                tooltip.on('show', ensure_high)
+
     # --- Renderers ---
 
     def render_consolidated_grid(self, items: List[CardViewModel]):
@@ -684,6 +725,8 @@ class CollectionPage:
                         ui.label(card.name).classes('text-xs font-bold truncate w-full')
                         ui.label(card.type).classes('text-[10px] text-gray-400 truncate w-full')
 
+                    self._setup_card_tooltip(card)
+
     def render_consolidated_list(self, items: List[CardViewModel]):
          headers = ['Image', 'Name', 'Type', 'Card Type', 'Owned']
          cols = '60px 4fr 2fr 2fr 1fr'
@@ -701,7 +744,8 @@ class CollectionPage:
 
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
                         .on('click', lambda c=vm: self.open_single_view(c.api_card, c.is_owned, c.owned_quantity, owned_languages=c.owned_languages)):
-                    ui.image(img_src).classes('h-10 w-8 object-cover')
+                    with ui.image(img_src).classes('h-10 w-8 object-cover'):
+                         self._setup_card_tooltip(card)
                     with ui.column().classes('gap-0'):
                         ui.label(card.name).classes('truncate text-sm font-bold')
                         if card.level:
@@ -736,7 +780,8 @@ class CollectionPage:
 
                 with ui.grid(columns=cols).classes(f'w-full {bg} p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
                         .on('click', lambda c=item: self.open_single_view(c.api_card, c.is_owned, c.owned_count, initial_set=c.set_code, rarity=c.rarity, set_name=c.set_name, language=c.language, condition=c.condition, first_edition=c.first_edition, image_url=c.image_url, image_id=c.image_id, set_price=c.price, variant_id=c.variant_id)):
-                    ui.image(img_src).classes('h-10 w-8 object-cover')
+                    with ui.image(img_src).classes('h-10 w-8 object-cover'):
+                         self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
                     ui.label(item.api_card.name).classes('truncate text-sm font-bold')
                     with ui.column().classes('gap-0'):
                         ui.label(item.set_code).classes('text-xs font-mono font-bold text-yellow-500')
@@ -795,6 +840,8 @@ class CollectionPage:
                         ui.label(item.api_card.name).classes('text-xs font-bold truncate w-full')
                         ui.label(f"{item.rarity}").classes('text-[10px] text-gray-400')
                         ui.label(f"${item.price:.2f}").classes('text-xs text-green-400')
+
+                    self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
 
     async def switch_scope(self, scope):
         self.state['view_scope'] = scope
