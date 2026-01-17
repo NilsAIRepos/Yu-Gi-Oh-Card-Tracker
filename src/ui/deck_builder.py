@@ -772,12 +772,25 @@ class DeckBuilderPage:
                      # 2. Remove the "dumb clone" dropped by SortableJS
                      await ui.run_javascript(f"var p = document.getElementById('deck-{to_zone}'); if(p && p.children[{new_index}]) p.children[{new_index}].remove();")
 
-                     # 3. Render the new real card (appends to end)
+                     # 3. Prepare ownership data for rendering
+                     ref_col = self.state['reference_collection']
+                     owned_map = {}
+                     if ref_col:
+                         for c in ref_col.cards:
+                             owned_map[c.card_id] = c.total_quantity
+
+                     # Calculate usage count up to the insertion point
+                     # We need to know how many copies of this card are ALREADY in the deck before this index
+                     preceding_ids = to_ids[:new_index]
+                     used_so_far = preceding_ids.count(new_card_id)
+                     usage_counter = {new_card_id: used_so_far}
+
+                     # 4. Render the new real card (appends to end)
                      grid = self.deck_grids[to_zone]
                      with grid:
-                         new_card = self._render_deck_card(new_card_id, to_zone)
+                         new_card = self._render_deck_card(new_card_id, to_zone, usage_counter, owned_map)
 
-                     # 4. Move to correct index
+                     # 5. Move to correct index
                      if new_card:
                          new_card.move(grid, new_index)
 
