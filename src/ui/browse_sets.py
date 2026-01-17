@@ -618,23 +618,63 @@ class BrowseSetsPage:
                             ui.icon('image_not_supported', size='xl', color='grey').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2')
                             return
 
-                        # Take top 3
-                        top_3 = cards[:3]
+                        # Sort by rarity (rarest first)
+                        def get_card_rarity_index(c):
+                             target_prefix = set_code.split('-')[0].lower()
+                             best_idx = 999
+                             if c.card_sets:
+                                 for s in c.card_sets:
+                                     if s.set_code.split('-')[0].lower() == target_prefix:
+                                         try:
+                                             idx = RARITY_RANKING.index(s.set_rarity)
+                                         except ValueError:
+                                             idx = 999
+                                         if idx < best_idx:
+                                             best_idx = idx
+                             return best_idx
 
-                        # 3rd Card (Left Back)
-                        if len(top_3) > 2:
-                            img = top_3[2].card_images[0].image_url_small
-                            ui.image(img).classes('absolute w-[45%] top-4 left-4 opacity-60 rotate-[-15deg] shadow-lg border border-white/10 rounded')
+                        sorted_cards = sorted(cards, key=get_card_rarity_index)
 
-                        # 2nd Card (Right Back)
-                        if len(top_3) > 1:
-                            img = top_3[1].card_images[0].image_url_small
-                            ui.image(img).classes('absolute w-[45%] top-2 right-4 opacity-80 rotate-[15deg] shadow-lg border border-white/10 rounded')
+                        # Take top 7 (rarest)
+                        top_cards = sorted_cards[:7]
+                        # Reverse so the rarest (first in sorted list) ends up last in rendering order (on top)
+                        top_cards.reverse()
 
-                        # 1st Card (Center Front)
-                        if len(top_3) > 0:
-                            img = top_3[0].card_images[0].image_url_small
-                            ui.image(img).classes('absolute w-[50%] left-1/2 transform -translate-x-1/2 -bottom-8 z-10 shadow-xl border border-white/20 rounded')
+                        # Scattered pile positions
+                        positions = [
+                            {'left': '10%', 'top': '20%', 'rotate': '-20deg'},
+                            {'left': '45%', 'top': '10%', 'rotate': '20deg'},
+                            {'left': '15%', 'top': '40%', 'rotate': '-10deg'},
+                            {'left': '50%', 'top': '50%', 'rotate': '10deg'},
+                            {'left': '25%', 'top': '15%', 'rotate': '5deg'},
+                            {'left': '40%', 'top': '35%', 'rotate': '-5deg'},
+                            {'left': '28%', 'top': '25%', 'rotate': '0deg'}, # Center-ish top
+                        ]
+
+                        # Adjust positions if we have fewer cards to ensure the last one (rarest) is somewhat central
+                        # But simpler to just fill from the start.
+                        # If we have 1 card -> index 0 (was rarest) -> Pos 0.
+                        # Wait, if we have 1 card, top_cards has 1. reversed -> same.
+                        # It will use position 0 which is Left/Top. Not ideal.
+                        # If we have 1 card, we want it center.
+                        # Let's map based on how many we have.
+
+                        # Actually, if we use the last N positions for N cards, the "top" card always lands on the "Center-ish top" position.
+                        # Let's try that.
+
+                        start_index = len(positions) - len(top_cards)
+                        # e.g. 7 cards: start 0.
+                        # e.g. 1 card: start 6. Pos 6 is center.
+
+                        for i, card in enumerate(top_cards):
+                            pos_idx = start_index + i
+                            if pos_idx < 0: pos_idx = 0 # Should not happen
+                            pos = positions[pos_idx]
+
+                            img_url = card.card_images[0].image_url_small if card.card_images else None
+                            if img_url:
+                                ui.image(img_url).classes('absolute w-[45%] shadow-lg border border-white/10 rounded') \
+                                    .style(f"left: {pos['left']}; top: {pos['top']}; transform: rotate({pos['rotate']});")
              except Exception as e:
                 logger.error(f"Error loading fallback for set {set_code}: {e}")
                 if not container.is_deleted: container.clear()
