@@ -715,7 +715,7 @@ class DeckBuilderPage:
 
                          owned_qty = owned_map.get(card.id, 0)
 
-                         with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full') \
+                         with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full select-none') \
                             .props(f'data-id="{card.id}"') \
                             .on('click', lambda c=card: self.open_deck_builder_wrapper(c)):
 
@@ -727,8 +727,8 @@ class DeckBuilderPage:
                                  self._render_ban_icon(card.id)
 
                              with ui.column().classes('p-1 gap-0 w-full'):
-                                 ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
-                                 ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
+                                 ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6 select-none')
+                                 ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full select-none')
 
                              self._setup_card_tooltip(card)
 
@@ -766,7 +766,7 @@ class DeckBuilderPage:
                 is_owned_copy = False
             usage_counter[card_id] = used_so_far + 1
 
-        classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800'
+        classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800 select-none'
         if not is_owned_copy:
             classes += ' opacity-50 grayscale'
         else:
