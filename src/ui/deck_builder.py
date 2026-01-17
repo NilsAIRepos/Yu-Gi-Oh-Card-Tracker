@@ -488,9 +488,9 @@ class DeckBuilderPage:
         # anchor/self props can be adjusted if needed, but default behavior is usually acceptable
         with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none') \
                          .props('style="max-width: none"') as tooltip:
-            # Image at 40vh height
+            # Image at 65vh height and 1000px min width for readability
             if initial_src:
-                ui.image(initial_src).classes('w-auto h-[40vh] min-w-[200px] object-contain rounded-lg shadow-2xl') \
+                ui.image(initial_src).classes('w-auto h-[65vh] min-w-[1000px] object-contain rounded-lg shadow-2xl') \
                                      .props('fit=contain')
 
             # Trigger download on show if needed
