@@ -45,6 +45,7 @@ class DeckBuilderPage:
                     animation: 150,
                     ghostClass: 'opacity-50',
                     forceFallback: true,
+                    fallbackTolerance: 3,
                     onEnd: function (evt) {
                         var toIds = Array.from(evt.to.children).map(c => c.getAttribute('data-id')).filter(id => id);
                         var fromIds = Array.from(evt.from.children).map(c => c.getAttribute('data-id')).filter(id => id);
@@ -59,7 +60,8 @@ class DeckBuilderPage:
                                     to_ids: toIds,
                                     from_zone: fromZone,
                                     from_ids: fromIds,
-                                    new_index: evt.newIndex
+                                    new_index: evt.newIndex,
+                                    old_index: evt.oldIndex
                                 },
                                 bubbles: true
                             }));
@@ -720,6 +722,18 @@ class DeckBuilderPage:
             to_ids = [int(x) for x in to_ids_str] if to_ids_str else []
             from_ids = [int(x) for x in from_ids_str] if from_ids_str else []
         except ValueError:
+            return
+
+        # Check for no-op moves to prevent unnecessary saves
+        new_index = args.get('new_index')
+        old_index = args.get('old_index')
+
+        # 1. Gallery to Gallery (micro-drag in gallery)
+        if from_zone == 'gallery' and to_zone == 'gallery':
+            return
+
+        # 2. Same zone, same index (drop in place)
+        if from_zone == to_zone and new_index == old_index:
             return
 
         deck = self.state['current_deck']
