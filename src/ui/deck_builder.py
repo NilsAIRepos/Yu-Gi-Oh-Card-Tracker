@@ -133,10 +133,46 @@ class DeckBuilderPage:
         self.search_results_container = None
         self.deck_area_container = None
 
+    def calculate_hierarchical_usage(self, target_zone: str) -> Dict[int, int]:
+        """
+        Calculates usage from zones with strictly higher priority (Main > Extra > Side).
+        Used for full zone refreshes (e.g., page load) to ensure deterministic coloring.
+        """
+        deck = self.state['current_deck']
+        if not deck: return {}
+
+        base_usage = {}
+        zones_order = ['main', 'extra', 'side']
+
+        try:
+            target_idx = zones_order.index(target_zone)
+        except ValueError:
+            return {}
+
+        for i in range(target_idx):
+            zone_name = zones_order[i]
+            zone_ids = getattr(deck, zone_name, [])
+            for cid in zone_ids:
+                base_usage[cid] = base_usage.get(cid, 0) + 1
+
+        return base_usage
+
+    def calculate_global_usage(self) -> Dict[int, int]:
+        """
+        Calculates total usage across ALL zones.
+        Used for dynamic surgical updates to treat the new card as the 'last' one.
+        """
+        deck = self.state['current_deck']
+        if not deck: return {}
+
+        usage = {}
+        for zone in ['main', 'extra', 'side']:
+            for cid in getattr(deck, zone, []):
+                usage[cid] = usage.get(cid, 0) + 1
+        return usage
+
     def refresh_zone(self, zone):
-        if zone == 'main': self.render_main_deck_grid.refresh()
-        elif zone == 'extra': self.render_extra_deck_grid.refresh()
-        elif zone == 'side': self.render_side_deck_grid.refresh()
+        self._refresh_zone_content(zone)
 
 
     async def load_initial_data(self):
@@ -573,8 +609,8 @@ class DeckBuilderPage:
         await self.single_card_view.open_deck_builder(card, self.add_card_to_deck, owned_count, owned_breakdown)
 
     def _render_deck_card(self, card_id: int, target: str, usage_counter: Dict[int, int] = None, owned_map: Dict[int, int] = None):
-        if not usage_counter: usage_counter = {}
-        if not owned_map: owned_map = {}
+        if usage_counter is None: usage_counter = {}
+        if owned_map is None: owned_map = {}
 
         card = self.api_card_map.get(card_id)
         if not card: return None
@@ -625,7 +661,9 @@ class DeckBuilderPage:
         if ref_col:
             for c in ref_col.cards:
                 owned_map[c.card_id] = c.total_quantity
-        usage_counter = {}
+
+        # Initialize usage counter with hierarchical usage (Main > Extra > Side)
+        usage_counter = self.calculate_hierarchical_usage(target)
 
         with grid:
             for cid in real_card_ids:
@@ -781,10 +819,18 @@ class DeckBuilderPage:
                          for c in ref_col.cards:
                              owned_map[c.card_id] = c.total_quantity
 
-                     # Calculate usage count up to the insertion point
-                     # We need to know how many copies of this card are ALREADY in the deck before this index
-                     preceding_ids = to_ids[:new_index]
-                     used_so_far = preceding_ids.count(new_card_id)
+                     # Dynamic Update Strategy: "Last Arrived = Lowest Priority"
+                     # We calculate the TOTAL count of this card in the entire deck (including the new one).
+                     # We treat this new specific card instance as the Nth copy, where N is the total count.
+                     # This ensures that if we have enough Owned copies, this one is colored.
+                     # If we exceeded Owned copies, this NEW one becomes Grayscale, preserving the others.
+
+                     global_usage = self.calculate_global_usage()
+                     total_copies = global_usage.get(new_card_id, 0)
+
+                     # The 'usage_so_far' passed to _render_deck_card is the count of *previous* copies.
+                     # Since we want this card to be the Last one, we say there are (Total - 1) copies before it.
+                     used_so_far = max(0, total_copies - 1)
                      usage_counter = {new_card_id: used_so_far}
 
                      # 4. Render the new real card (appends to end)
