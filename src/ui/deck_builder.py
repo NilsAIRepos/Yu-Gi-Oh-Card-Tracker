@@ -2,6 +2,7 @@ from nicegui import ui, run
 from src.core.persistence import persistence
 from src.core.models import Deck, Collection
 from src.services.ygo_api import ygo_service, ApiCard
+from src.services.banlist_service import banlist_service
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
 from src.ui.components.filter_pane import FilterPane
@@ -116,6 +117,10 @@ class DeckBuilderPage:
             'available_decks': [],
             'available_collections': [],
 
+            'available_banlists': [],
+            'current_banlist_name': None,
+            'current_banlist_map': {}, # id -> status
+
             'all_api_cards': [], # List[ApiCard]
             'filtered_items': [], # List[ApiCard] for search results
 
@@ -184,6 +189,20 @@ class DeckBuilderPage:
             api_cards = await ygo_service.load_card_database(lang)
             self.state['all_api_cards'] = api_cards
             self.api_card_map = {c.id: c for c in api_cards}
+
+            # Load Banlists
+            await banlist_service.fetch_default_banlists()
+            self.state['available_banlists'] = banlist_service.get_banlists()
+
+            # Load default banlist
+            if not self.state['current_banlist_name'] and self.state['available_banlists']:
+                 if 'TCG' in self.state['available_banlists']:
+                      self.state['current_banlist_name'] = 'TCG'
+                 else:
+                      self.state['current_banlist_name'] = self.state['available_banlists'][0]
+
+            if self.state['current_banlist_name']:
+                 self.state['current_banlist_map'] = await banlist_service.load_banlist(self.state['current_banlist_name'])
 
             # Setup Filters Metadata
             sets = set()
@@ -578,7 +597,54 @@ class DeckBuilderPage:
 
             ui.space()
 
+            # Banlist Selection
+            banlist_options = self.state['available_banlists']
+            async def on_banlist_change(e):
+                val = e.value
+                self.state['current_banlist_name'] = val
+                if val:
+                     self.state['current_banlist_map'] = await banlist_service.load_banlist(val)
+                else:
+                     self.state['current_banlist_map'] = {}
+
+                self.refresh_deck_area()
+                self.refresh_search_results()
+
+            ui.select(banlist_options, value=self.state['current_banlist_name'], label='Banlist', on_change=on_banlist_change).classes('min-w-[150px]')
+
+            async def save_banlist_as():
+                with ui.dialog() as d, ui.card():
+                    ui.label('Save Banlist As').classes('text-h6')
+                    name_input = ui.input('New Name')
+                    async def save():
+                        if not name_input.value: return
+                        await banlist_service.save_banlist(name_input.value, self.state['current_banlist_map'])
+                        self.state['available_banlists'] = banlist_service.get_banlists()
+                        self.state['current_banlist_name'] = name_input.value
+                        self.render_header.refresh()
+                        d.close()
+                        ui.notify(f"Saved banlist: {name_input.value}", type='positive')
+
+                    ui.button('Save', on_click=save).props('color=primary')
+                d.open()
+
+            ui.button(icon='save_as', on_click=save_banlist_as).props('flat round color=white').tooltip('Save Banlist As')
+
             # Search and filters moved to library column
+
+    def _render_ban_icon(self, card_id: int):
+        status = self.state['current_banlist_map'].get(str(card_id))
+        if not status: return
+
+        with ui.element('div').classes('absolute top-1 left-1 z-10 pointer-events-none'):
+             if status in ["Forbidden", "Banned"]:
+                 ui.icon('block', color='red').classes('text-xl bg-white rounded-full shadow-sm')
+             elif status == "Limited":
+                 with ui.element('div').classes('w-5 h-5 rounded-full bg-orange-600 text-white flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
+                     ui.label('1')
+             elif status == "Semi-Limited":
+                 with ui.element('div').classes('w-5 h-5 rounded-full bg-yellow-500 text-black flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
+                     ui.label('2')
 
     def _setup_card_tooltip(self, card: ApiCard):
         if not card: return
@@ -658,6 +724,8 @@ class DeckBuilderPage:
                                  if owned_qty > 0:
                                      ui.label(f"{owned_qty}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
 
+                                 self._render_ban_icon(card.id)
+
                              with ui.column().classes('p-1 gap-0 w-full'):
                                  ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
                                  ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
@@ -711,6 +779,7 @@ class DeckBuilderPage:
             with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
                 ui.icon('remove', color='white').classes('text-lg')
 
+            self._render_ban_icon(card.id)
             self._setup_card_tooltip(card)
 
         card_el.on('click', lambda: self.open_deck_builder_wrapper(card))
