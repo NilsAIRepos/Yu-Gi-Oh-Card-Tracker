@@ -8,6 +8,7 @@ from src.core.persistence import persistence
 from src.core.models import Collection
 from src.services.ygo_api import ygo_service
 from src.services.collection_editor import CollectionEditor
+from src.ui.components.scanner_ui import ScannerUI
 
 logger = logging.getLogger(__name__)
 
@@ -207,18 +208,39 @@ def import_tools_page():
 
                 ui.button('New Collection', on_click=open_new_collection_dialog, icon='add').classes('bg-secondary text-dark')
 
-        # Import Section
-        with ui.card().classes('w-full bg-dark border border-gray-700 p-6'):
-            ui.label('JSON Import').classes('text-xl font-bold q-mb-md')
+        # Tabs
+        with ui.tabs().classes('w-full text-accent') as tabs:
+            ui.tab('File Import')
+            ui.tab('Camera Scan')
 
-            with ui.row().classes('items-center gap-6 q-mb-md'):
-                ui.label('Mode:').classes('text-lg')
-                with ui.row():
-                    ui.radio(['ADD', 'SUBTRACT'], value='ADD', on_change=lambda e: setattr(controller, 'import_mode', e.value)).props('dark inline')
+        with ui.tab_panels(tabs, value='File Import').classes('w-full bg-transparent p-0'):
 
-            ui.upload(label='Drop JSON here', auto_upload=True, on_upload=controller.handle_import).props('dark accept=.json').classes('w-full')
+            # PANEL 1: File Import
+            with ui.tab_panel('File Import').classes('p-0'):
+                with ui.card().classes('w-full bg-dark border border-gray-700 p-6'):
+                    ui.label('JSON Import').classes('text-xl font-bold q-mb-md')
 
-            # Undo Button (Initially Hidden)
-            controller.undo_button = ui.button('Undo Last Import', on_click=controller.undo_last, icon='undo') \
-                .classes('bg-red-500 text-white q-mt-md').props('flat')
-            controller.undo_button.visible = False
+                    with ui.row().classes('items-center gap-6 q-mb-md'):
+                        ui.label('Mode:').classes('text-lg')
+                        with ui.row():
+                            ui.radio(['ADD', 'SUBTRACT'], value='ADD', on_change=lambda e: setattr(controller, 'import_mode', e.value)).props('dark inline')
+
+                    ui.upload(label='Drop JSON here', auto_upload=True, on_upload=controller.handle_import).props('dark accept=.json').classes('w-full')
+
+                    # Undo Button (Initially Hidden)
+                    controller.undo_button = ui.button('Undo Last Import', on_click=controller.undo_last, icon='undo') \
+                        .classes('bg-red-500 text-white q-mt-md').props('flat')
+                    controller.undo_button.visible = False
+
+            # PANEL 2: Camera Scan
+            with ui.tab_panel('Camera Scan').classes('p-0'):
+                 def get_current_collection():
+                     if not controller.selected_collection:
+                         return None
+                     return persistence.load_collection(controller.selected_collection)
+
+                 scanner = ScannerUI(
+                     collection_provider=get_current_collection,
+                     on_collection_update=lambda: None
+                 )
+                 scanner.render()
