@@ -81,9 +81,9 @@ class SingleCardView:
         with ui.card().classes('w-full bg-transparent p-4 gap-4'):
             with ui.row().classes('w-full gap-4'):
                 lang_select = ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
-                            on_change=lambda e: [input_state.update({'language': e.value}), on_change_callback()]).classes('w-1/3')
+                            on_change=lambda e: [input_state.update({'language': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
 
-                set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-grow')
+                set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-grow').props('dark')
 
             with ui.row().classes('w-full gap-4'):
                 # Ensure current rarity is available in options to prevent crash
@@ -92,7 +92,7 @@ class SingleCardView:
                     rarity_options.append(input_state['rarity'])
 
                 rarity_select = ui.select(rarity_options, label='Rarity', value=input_state['rarity'],
-                            on_change=lambda e: [input_state.update({'rarity': e.value}), on_change_callback()]).classes('w-1/3')
+                            on_change=lambda e: [input_state.update({'rarity': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
 
                 def on_set_change(e):
                     new_code = e.value
@@ -115,9 +115,9 @@ class SingleCardView:
 
                 set_select.on_value_change(on_set_change)
                 ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Condition', value=input_state['condition'],
-                            on_change=lambda e: [input_state.update({'condition': e.value}), on_change_callback()]).classes('w-1/3')
+                            on_change=lambda e: [input_state.update({'condition': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
                 ui.checkbox('1st Edition', value=input_state['first_edition'],
-                            on_change=lambda e: [input_state.update({'first_edition': e.value}), on_change_callback()]).classes('my-auto')
+                            on_change=lambda e: [input_state.update({'first_edition': e.value}), on_change_callback()]).classes('my-auto').props('dark')
 
             with ui.row().classes('w-full gap-4 items-center'):
                 if card.card_images and len(card.card_images) > 1:
@@ -125,10 +125,10 @@ class SingleCardView:
                     # Ensure image_id is int for matching
                     current_img_id = int(input_state['image_id']) if input_state['image_id'] is not None else None
                     ui.select(art_options, label='Artwork', value=current_img_id,
-                                on_change=lambda e: [input_state.update({'image_id': e.value}), on_change_callback()]).classes('col-grow')
+                                on_change=lambda e: [input_state.update({'image_id': e.value}), on_change_callback()]).classes('col-grow').props('dark')
 
                 ui.number('Quantity', min=0, value=input_state['quantity'],
-                            on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('w-32')
+                            on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('w-32').props('dark')
 
             with ui.row().classes('w-full gap-4 justify-end q-mt-md'):
                 async def handle_update(mode):
@@ -735,7 +735,7 @@ class SingleCardView:
                          # Add to Deck Section
                          ui.label('Add to Deck').classes('text-h6 q-mb-sm text-accent')
 
-                         qty_input = ui.number('Quantity', value=1, min=1, max=3).classes('w-32')
+                         qty_input = ui.number('Quantity', value=1, min=1, max=3).classes('w-32').props('dark')
 
                          with ui.row().classes('gap-4 q-mt-md'):
                              async def add(target):
