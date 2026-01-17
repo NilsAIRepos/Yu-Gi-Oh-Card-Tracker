@@ -179,6 +179,7 @@ class BrowseSetsPage:
             'filter_price_min': 0.0,
             'filter_price_max': 1000.0,
             'filter_owned_lang': '',
+            'filter_owned_only': False,
             'max_owned_quantity': 100, # Max for sliders
 
             # Options for filters
@@ -209,7 +210,7 @@ class BrowseSetsPage:
 
         # Load initial collection
         files = persistence.list_collections()
-        self.state['selected_collection_file'] = files[0] if files else None
+        self.state['selected_collection_file'] = None
 
         self.single_card_view = SingleCardView()
         self.filter_pane = None # For detail view
@@ -386,6 +387,9 @@ class BrowseSetsPage:
         if txt:
              res = [r for r in res if txt in r.api_card.name.lower()]
 
+        if self.state.get('filter_owned_only'):
+             res = [c for c in res if c.is_owned]
+
         # Reuse state filters
         if self.state['filter_rarity']:
              r = self.state['filter_rarity'].lower()
@@ -499,6 +503,8 @@ class BrowseSetsPage:
         self.state['detail_total_pages'] = (count + self.state['detail_page_size'] - 1) // self.state['detail_page_size']
 
         if hasattr(self, 'render_detail_grid'): self.render_detail_grid.refresh()
+        if hasattr(self, 'render_detail_controls'): self.render_detail_controls.refresh()
+        if hasattr(self, 'render_detail_pagination_controls'): self.render_detail_pagination_controls.refresh()
 
     async def reset_filters(self):
         self.state.update({
@@ -520,6 +526,7 @@ class BrowseSetsPage:
             'filter_price_min': 0.0,
             'filter_price_max': 1000.0,
             'filter_owned_lang': '',
+            'filter_owned_only': False,
             'detail_search': '',
         })
         if self.filter_pane: self.filter_pane.reset_ui_elements()
@@ -864,12 +871,18 @@ class BrowseSetsPage:
         self.state['page'] += delta
         self.render_content.refresh()
 
-    def render_detail_view(self):
-        if not self.state['selected_set_info']:
-            ui.label("Loading...").classes('text-white')
-            return
-
+    @ui.refreshable
+    def render_set_header(self):
         info = self.state['selected_set_info']
+        if not info: return
+
+        # Calculate Stats
+        is_cons = self.state['view_scope'] == 'consolidated'
+        source = self.state['detail_rows_consolidated'] if is_cons else self.state['detail_rows_collectors']
+
+        total = len(source)
+        owned = sum(1 for c in source if c.is_owned)
+        pct = (owned / total * 100) if total > 0 else 0
 
         # Header
         with ui.row().classes('w-full items-start gap-6 mb-6 p-6 bg-gray-900 rounded-lg border border-gray-800'):
@@ -887,6 +900,12 @@ class BrowseSetsPage:
                     if info.get('date'):
                         ui.label(f"Released: {info['date']}").classes('text-lg text-gray-400')
 
+                # Completion Stat
+                with ui.row().classes('items-center gap-2 mt-2'):
+                    color = 'text-green-400' if pct == 100 else ('text-yellow-400' if pct > 50 else 'text-gray-400')
+                    ui.label(f"Completion: {pct:.1f}%").classes(f'text-xl font-bold {color}')
+                    ui.label(f"({owned}/{total})").classes('text-sm text-gray-500')
+
                 ui.button('Back to Sets', icon='arrow_back', on_click=self.back_to_gallery).props('flat color=white').classes('mt-4')
 
             ui.space()
@@ -894,8 +913,9 @@ class BrowseSetsPage:
             # Collection Selector
             with ui.column().classes('items-end'):
                  files = persistence.list_collections()
-                 file_options = {f: (f[:-5] if f.endswith('.json') else f) for f in files}
-                 file_options[None] = 'None (All Owned)'
+                 file_options = {None: 'None (All Owned)'}
+                 for f in files:
+                     file_options[f] = (f[:-5] if f.endswith('.json') else f)
 
                  async def change_col(e):
                      self.state['selected_collection_file'] = e.value
@@ -904,6 +924,13 @@ class BrowseSetsPage:
                      await self.load_set_details(self.state['selected_set'])
 
                  ui.select(file_options, label='Collection', value=self.state['selected_collection_file'], on_change=change_col).classes('min-w-[200px]').props('dark')
+
+    def render_detail_view(self):
+        if not self.state['selected_set_info']:
+            ui.label("Loading...").classes('text-white')
+            return
+
+        self.render_set_header()
 
         # Controls & Grid
         with ui.row().classes('w-full gap-4'):
@@ -919,8 +946,8 @@ class BrowseSetsPage:
         if self.state['view_scope'] == scope: return
         self.state['view_scope'] = scope
         await self.apply_detail_filters()
-        self.render_detail_controls.refresh()
-        # Grid refresh handled by apply_detail_filters
+        self.render_set_header.refresh()
+        # Grid and controls refresh handled by apply_detail_filters
 
     @ui.refreshable
     def render_detail_pagination_controls(self):
@@ -962,6 +989,17 @@ class BrowseSetsPage:
                 await self.apply_detail_filters()
 
             ui.button(icon='arrow_downward', on_click=toggle_detail_sort).bind_icon_from(self.state, 'detail_sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward').props('flat round dense color=white')
+
+            ui.separator().props('vertical')
+
+            # Owned Only Toggle
+            async def toggle_owned_only():
+                 self.state['filter_owned_only'] = not self.state.get('filter_owned_only', False)
+                 await self.apply_detail_filters()
+
+            owned_only = self.state.get('filter_owned_only', False)
+            with ui.button(icon='check_circle' if owned_only else 'radio_button_unchecked', on_click=toggle_owned_only).props(f'flat round dense color={"green" if owned_only else "white"}'):
+                ui.tooltip('Show Owned Only')
 
             ui.separator().props('vertical')
 
