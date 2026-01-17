@@ -137,6 +137,16 @@ class BrowseSetsPage:
             # Set Count Filter
             'filter_count_min': 20,
             'filter_count_max': None,
+
+            # Slider Bounds (Calculated from data)
+            'slider_min_date': 0,
+            'slider_max_date': 300,
+            'slider_min_count': 0,
+            'slider_max_count': 100,
+
+            # Slider Values
+            'filter_date_range': {'min': 0, 'max': 300},
+            'filter_count_range': {'min': 0, 'max': 100},
         }
 
         # Load initial collection
@@ -151,6 +161,9 @@ class BrowseSetsPage:
         # Load Sets
         sets_info = await ygo_service.get_all_sets_info()
         self.state['sets'] = sets_info
+
+        self.calc_filter_ranges()
+
         await self.apply_set_filters()
 
         # Load Collection
@@ -160,6 +173,47 @@ class BrowseSetsPage:
              except Exception as e:
                 logger.error(f"Error loading collection: {e}")
 
+    def date_to_int(self, date_str):
+        # YYYY-MM-DD -> total_months
+        if not date_str: return 0
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            return d.year * 12 + (d.month - 1)
+        except:
+            return 0
+
+    def int_to_date_str(self, val):
+        # total_months -> YYYY-MM
+        year = val // 12
+        month = (val % 12) + 1
+        return f"{year}-{month:02d}"
+
+    def calc_filter_ranges(self):
+        sets = self.state['sets']
+        if not sets: return
+
+        # Count Range
+        counts = [int(s.get('count', 0)) for s in sets]
+        if counts:
+            min_c, max_c = min(counts), max(counts)
+            self.state['slider_min_count'] = min_c
+            self.state['slider_max_count'] = max_c
+            # Reset values if first load or invalid
+            self.state['filter_count_range'] = {'min': min_c, 'max': max_c}
+
+        # Date Range
+        dates = []
+        for s in sets:
+            d_str = s.get('date')
+            if d_str:
+                dates.append(self.date_to_int(d_str))
+
+        if dates:
+            min_d, max_d = min(dates), max(dates)
+            self.state['slider_min_date'] = min_d
+            self.state['slider_max_date'] = max_d
+            self.state['filter_date_range'] = {'min': min_d, 'max': max_d}
+
     async def apply_set_filters(self):
         res = list(self.state['sets'])
 
@@ -168,19 +222,30 @@ class BrowseSetsPage:
         if q:
             res = [s for s in res if q in s['name'].lower() or q in s['code'].lower()]
 
-        # Date Filter
-        if self.state['filter_date_start']:
-             res = [s for s in res if s['date'] and s['date'] >= self.state['filter_date_start']]
-        if self.state['filter_date_end']:
-             res = [s for s in res if s['date'] and s['date'] <= self.state['filter_date_end']]
+        # Date Filter Slider
+        d_range = self.state['filter_date_range']
+        # Convert slider ints to comparable values?
+        # Actually easier to convert set date to int for comparison
+        min_d = d_range['min']
+        max_d = d_range['max']
 
-        # Count Filter
-        min_c = self.state['filter_count_min']
-        max_c = self.state['filter_count_max']
-        if min_c is not None:
-             res = [s for s in res if int(s.get('count', 0)) >= int(min_c)]
-        if max_c is not None:
-             res = [s for s in res if int(s.get('count', 0)) <= int(max_c)]
+        # Optimization: Don't filter if range is full (optional, but good for perf)
+        # But we must be careful if data changed. Just filter.
+
+        def check_date(s):
+            d_str = s.get('date')
+            if not d_str: return False # Exclude unknown dates if filtering? Or include? Usually exclude.
+            d_val = self.date_to_int(d_str)
+            return min_d <= d_val <= max_d
+
+        res = [s for s in res if check_date(s)]
+
+        # Count Filter Slider
+        c_range = self.state['filter_count_range']
+        min_c = c_range['min']
+        max_c = c_range['max']
+
+        res = [s for s in res if min_c <= int(s.get('count', 0)) <= max_c]
 
         # Sort
         key = self.state['sort_by']
@@ -449,8 +514,8 @@ class BrowseSetsPage:
         with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-900') \
                 .on('click', partial(self.open_set_detail, set_info['code'])):
 
-            # Image Area wrapper - Removed fixed aspect ratio, increased height to allow full image
-            with ui.element('div').classes('relative w-full h-48 bg-black overflow-hidden'):
+            # Image Area wrapper - h-64 for better visibility
+            with ui.element('div').classes('relative w-full h-64 bg-black overflow-hidden'):
                 # Content Container
                 content_container = ui.element('div').classes('w-full h-full')
                 self.render_set_visual(content_container, set_info['code'], set_info.get('image'))
@@ -475,55 +540,65 @@ class BrowseSetsPage:
             self.render_detail_view()
 
     def render_gallery_view(self):
-        # Header Controls
-        with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
-            ui.label('Browse Sets').classes('text-h5 text-white')
+        # Header Controls & Filters
+        with ui.column().classes('w-full q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800 gap-6'):
+            # Top Row: Title, Search, Sort
+            with ui.row().classes('w-full items-center gap-4'):
+                ui.label('Browse Sets').classes('text-h5 text-white')
 
-            async def on_search(e):
-                self.state['search_query'] = e.value
-                await self.apply_set_filters()
+                async def on_search(e):
+                    self.state['search_query'] = e.value
+                    await self.apply_set_filters()
 
-            ui.input(placeholder='Search Sets...', on_change=on_search) \
-                .bind_value(self.state, 'search_query').props('debounce=300 icon=search dark').classes('w-64')
+                ui.input(placeholder='Search Sets...', on_change=on_search) \
+                    .bind_value(self.state, 'search_query').props('debounce=300 icon=search dark').classes('w-64')
 
-            async def on_sort(e):
-                self.state['sort_by'] = e.value
-                await self.apply_set_filters()
+                ui.select(['Name', 'Date', 'Card Count'], label='Sort', value=self.state['sort_by'],
+                        on_change=lambda e: self.update_filter('sort_by', e.value)) \
+                        .classes('w-32').props('dark')
 
-            ui.select(['Name', 'Date', 'Card Count'], label='Sort', value=self.state['sort_by'],
-                      on_change=on_sort) \
-                      .classes('w-32').props('dark')
+                async def toggle_sort():
+                    self.state['sort_desc'] = not self.state['sort_desc']
+                    await self.apply_set_filters()
 
-            async def toggle_sort():
-                self.state['sort_desc'] = not self.state['sort_desc']
-                await self.apply_set_filters()
+                ui.button(icon='arrow_downward', on_click=toggle_sort) \
+                    .bind_icon_from(self.state, 'sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward') \
+                    .props('flat round dense color=white')
 
-            ui.button(icon='arrow_downward', on_click=toggle_sort) \
-                .bind_icon_from(self.state, 'sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward') \
-                .props('flat round dense color=white')
+            # Filter Row: Sliders
+            with ui.row().classes('w-full items-start gap-8'):
+                # Date Slider
+                with ui.column().classes('gap-1 flex-grow'):
+                    with ui.row().classes('justify-between w-full'):
+                        ui.label('Release Date').classes('text-xs text-gray-400')
+                        ui.label().bind_text_from(self.state, 'filter_date_range',
+                            lambda x: f"{self.int_to_date_str(x['min'])} - {self.int_to_date_str(x['max'])}") \
+                            .classes('text-xs text-accent font-bold')
 
-            ui.space()
+                    # We bind min/max/value. Note: ui.range uses dictionary for value
+                    ui.range(min=self.state['slider_min_date'],
+                             max=self.state['slider_max_date'],
+                             step=1,
+                             on_change=self.apply_set_filters) \
+                             .bind_value(self.state, 'filter_date_range') \
+                             .props('label=false color=primary') \
+                             .classes('w-full px-2')
 
-        # Filter Section
-        with ui.expansion('Filters', icon='filter_list').classes('w-full bg-gray-900 border border-gray-800 rounded mb-4'):
-            with ui.row().classes('w-full gap-4 p-4 items-end'):
-                 # Count Filters
-                with ui.column().classes('gap-1'):
-                    ui.label('Card Count').classes('text-sm text-gray-400')
-                    with ui.row().classes('gap-2'):
-                        ui.number(label='Min', value=20, on_change=lambda e: self.update_filter('filter_count_min', e.value)) \
-                            .bind_value(self.state, 'filter_count_min').props('dark dense outlined').classes('w-24')
-                        ui.number(label='Max', on_change=lambda e: self.update_filter('filter_count_max', e.value)) \
-                            .bind_value(self.state, 'filter_count_max').props('dark dense outlined').classes('w-24')
+                # Count Slider
+                with ui.column().classes('gap-1 w-1/3'):
+                    with ui.row().classes('justify-between w-full'):
+                        ui.label('Card Count').classes('text-xs text-gray-400')
+                        ui.label().bind_text_from(self.state, 'filter_count_range',
+                            lambda x: f"{x['min']} - {x['max']}") \
+                            .classes('text-xs text-accent font-bold')
 
-                # Date Filters
-                with ui.column().classes('gap-1'):
-                    ui.label('Release Date').classes('text-sm text-gray-400')
-                    with ui.row().classes('gap-2'):
-                        ui.input('Start Date').props('type=date dark dense outlined') \
-                            .bind_value(self.state, 'filter_date_start').on('change', self.apply_set_filters).classes('w-40')
-                        ui.input('End Date').props('type=date dark dense outlined') \
-                            .bind_value(self.state, 'filter_date_end').on('change', self.apply_set_filters).classes('w-40')
+                    ui.range(min=self.state['slider_min_count'],
+                             max=self.state['slider_max_count'],
+                             step=1,
+                             on_change=self.apply_set_filters) \
+                             .bind_value(self.state, 'filter_count_range') \
+                             .props('label-always color=primary') \
+                             .classes('w-full px-2')
 
         self.render_pagination()
 
@@ -544,7 +619,24 @@ class BrowseSetsPage:
 
         with ui.row().classes('w-full justify-center items-center gap-2 q-my-sm'):
             ui.button(icon='chevron_left', on_click=lambda: self.change_page(-1)).props('flat dense color=white').set_enabled(self.state['page'] > 1)
-            ui.label(f"Page {self.state['page']} / {self.state['total_pages']}").classes('text-white')
+
+            async def on_page_change(e):
+                if e.value is None: return
+                try:
+                    p = int(e.value)
+                except:
+                    return
+                p = max(1, min(p, self.state['total_pages']))
+                if p != self.state['page']:
+                    self.state['page'] = p
+                    self.render_content.refresh()
+
+            # Debounce prevents refresh while typing (e.g. typing "12")
+            ui.number(value=self.state['page'], on_change=on_page_change) \
+                .props(f'min=1 max={self.state["total_pages"]} dense dark outlined debounce=800 hide-bottom-space') \
+                .classes('w-20')
+
+            ui.label(f"/ {self.state['total_pages']}").classes('text-white')
             ui.button(icon='chevron_right', on_click=lambda: self.change_page(1)).props('flat dense color=white').set_enabled(self.state['page'] < self.state['total_pages'])
 
     def change_page(self, delta):
@@ -561,7 +653,7 @@ class BrowseSetsPage:
         # Header
         with ui.row().classes('w-full items-start gap-6 mb-6 p-6 bg-gray-900 rounded-lg border border-gray-800'):
             # Image
-            with ui.element('div').classes('w-64 h-48 relative bg-black rounded shadow-lg overflow-hidden'):
+            with ui.element('div').classes('w-64 h-64 relative bg-black rounded shadow-lg overflow-hidden'):
                  container = ui.element('div').classes('w-full h-full')
                  self.render_set_visual(container, info['code'], info.get('image'))
 
