@@ -277,7 +277,7 @@ class BrowseSetsPage:
         res = list(self.state['sets'])
 
         # Search
-        q = self.state['search_query'].lower()
+        q = (self.state['search_query'] or "").lower()
         if q:
             res = [s for s in res if q in s['name'].lower() or q in s['code'].lower()]
 
@@ -676,18 +676,16 @@ class BrowseSetsPage:
                 ui.timer(0.1, load_fan, once=True)
 
     def render_set_card(self, set_info):
-        async def on_click():
+        async def on_click(e):
             logger.info(f"Click detected on set: {set_info['code']}")
             await self.open_set_detail(set_info['code'])
 
         # Use a plain div with q-card class
-        with ui.element('div').classes('q-card w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-900 shadow-2xl relative'):
+        with ui.element('div').classes('q-card w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-900 shadow-2xl relative') \
+                .on('click', on_click):
 
-            # Full cover invisible button to guarantee click capture
-            ui.button().classes('absolute inset-0 opacity-0 z-30 w-full h-full').on('click', on_click)
-
-            # Image Area wrapper - h-[500px] as requested
-            with ui.element('div').classes('relative w-full h-[500px] bg-black overflow-hidden'):
+            # Image Area wrapper - h-[600px] as requested
+            with ui.element('div').classes('relative w-full h-[600px] bg-black overflow-hidden'):
                 # Content Container
                 content_container = ui.element('div').classes('w-full h-full')
                 self.render_set_visual(content_container, set_info['code'], set_info.get('image'))
@@ -719,11 +717,12 @@ class BrowseSetsPage:
                 ui.label('Browse Sets').classes('text-h5 text-white')
 
                 async def on_search(e):
-                    self.state['search_query'] = e.value
+                    val = e.value if e.value is not None else ""
+                    self.state['search_query'] = val
                     await self.apply_set_filters()
 
                 ui.input(placeholder='Search Sets...', on_change=on_search) \
-                    .bind_value(self.state, 'search_query').props('debounce=300 icon=search dark').classes('w-64')
+                    .bind_value(self.state, 'search_query').props('debounce=300 icon=search dark clearable').classes('w-64')
 
                 ui.select(['Name', 'Date', 'Card Count'], label='Sort', value=self.state['sort_by'],
                         on_change=lambda e: self.update_filter('sort_by', e.value)) \
@@ -756,7 +755,7 @@ class BrowseSetsPage:
 
                         # Logic
                         async def on_date_slider_change(e):
-                            val = e.value if e.value else self.state['filter_date_range']
+                            val = e.sender.value if e.sender.value else self.state['filter_date_range']
                             self.state['filter_date_range'] = val
                             date_min_input.value = self.int_to_date_str(val['min'])
                             date_max_input.value = self.int_to_date_str(val['max'])
@@ -822,7 +821,7 @@ class BrowseSetsPage:
 
                         # Logic
                         async def on_count_slider_change(e):
-                            val = e.value if e.value else self.state['filter_count_range']
+                            val = e.sender.value if e.sender.value else self.state['filter_count_range']
                             self.state['filter_count_range'] = val
                             count_min_input.value = val['min']
                             count_max_input.value = val['max']
