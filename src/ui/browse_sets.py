@@ -357,18 +357,78 @@ class BrowseSetsPage:
         with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-900') \
                 .on('click', lambda: self.open_set_detail(set_info['code'])):
 
-            # Image Area
+            # Image Area wrapper
             with ui.element('div').classes('relative w-full aspect-[3/2] bg-black overflow-hidden'):
-                img_url = set_info.get('image')
-                if img_url:
-                     ui.image(img_url).classes('w-full h-full object-cover')
+
+                # Content Container (Image or Fan)
+                content_container = ui.element('div').classes('w-full h-full')
+
+                set_code = set_info['code']
+                remote_url = set_info.get('image')
+
+                def render_fan():
+                    # Fallback Composite - 3 Card Fan
+                    with content_container:
+                        ui.spinner('dots', size='lg').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-gray-600')
+
+                    async def load_fallback():
+                        try:
+                            cards = await ygo_service.get_set_cards(set_code)
+                            content_container.clear()
+                            with content_container:
+                                 # Re-create container div for fan
+                                 fan_div = ui.element('div').classes('relative w-full h-full bg-gray-800 overflow-hidden')
+                                 with fan_div:
+                                     if not cards:
+                                         ui.icon('image_not_supported', size='xl', color='grey').classes('absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2')
+                                         return
+
+                                     # Take top 3
+                                     top_3 = cards[:3]
+
+                                     # 3rd Card (Left Back)
+                                     if len(top_3) > 2:
+                                         img = top_3[2].card_images[0].image_url_small
+                                         ui.image(img).classes('absolute w-[45%] top-4 left-4 opacity-60 rotate-[-15deg] shadow-lg border border-white/10 rounded')
+
+                                     # 2nd Card (Right Back)
+                                     if len(top_3) > 1:
+                                         img = top_3[1].card_images[0].image_url_small
+                                         ui.image(img).classes('absolute w-[45%] top-2 right-4 opacity-80 rotate-[15deg] shadow-lg border border-white/10 rounded')
+
+                                     # 1st Card (Center Front)
+                                     if len(top_3) > 0:
+                                         img = top_3[0].card_images[0].image_url_small
+                                         ui.image(img).classes('absolute w-[50%] left-1/2 transform -translate-x-1/2 -bottom-8 z-10 shadow-xl border border-white/20 rounded')
+                        except Exception as e:
+                            logger.error(f"Error loading fallback for set {set_code}: {e}")
+                            content_container.clear()
+
+                    ui.timer(0.0, load_fallback, once=True)
+
+                # Determine content
+                if image_manager.set_image_exists(set_code):
+                     safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
+                     with content_container:
+                        ui.image(f"/sets/{safe_code}.jpg").classes('w-full h-full object-cover')
+                elif remote_url:
+                     # Render fan as placeholder
+                     render_fan()
+                     # Background download
+                     async def download_set_img():
+                         path = await image_manager.ensure_set_image(set_code, remote_url)
+                         if path:
+                             content_container.clear()
+                             safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
+                             with content_container:
+                                 ui.image(f"/sets/{safe_code}.jpg").classes('w-full h-full object-cover')
+
+                     ui.timer(0.1, download_set_img, once=True)
                 else:
-                    # Fallback Composite
-                    with ui.column().classes('w-full h-full items-center justify-center bg-gray-800'):
-                        ui.icon('image_not_supported', size='xl', color='grey')
+                    render_fan()
 
                 # Overlay Info
-                with ui.row().classes('absolute bottom-0 w-full bg-black/80 p-1 justify-between items-center'):
+                with ui.row().classes('absolute bottom-0 w-full bg-black/80 p-1 justify-between items-center z-20'):
                     ui.label(set_info['code']).classes('text-xs font-mono font-bold text-yellow-500')
                     count = set_info.get('count', 0)
                     ui.label(f"{count} Cards").classes('text-xs text-gray-400')

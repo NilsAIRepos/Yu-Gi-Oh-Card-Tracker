@@ -37,6 +37,7 @@ def import_tools():
 
 # Serve images
 app.add_static_files('/images', 'data/images')
+app.add_static_files('/sets', 'data/sets')
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(title='OpenYuGi', favicon='🃏')
