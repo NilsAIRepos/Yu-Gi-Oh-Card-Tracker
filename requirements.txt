@@ -3,5 +3,3 @@ pydantic
 pyyaml
 requests
 aiohttp
-easyocr
-opencv-python-headless
