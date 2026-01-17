@@ -712,8 +712,10 @@ class SingleCardView:
                                  stat('Level', card.level)
                                  stat('Race', card.race)
                                  stat('Attribute', card.attribute)
+                                 stat('Archetype', card.archetype or '-')
                              else:
                                  stat('Race', card.race)
+                                 stat('Archetype', card.archetype or '-')
 
                          ui.markdown(card.desc).classes('text-gray-300 leading-relaxed text-lg q-mb-md')
 
