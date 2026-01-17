@@ -470,6 +470,12 @@ class DeckBuilderPage:
             with ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary'):
                 ui.tooltip('Filters')
 
+    def _setup_card_tooltip(self, card):
+        img_id = card.card_images[0].id if card.card_images else card.id
+        img_src = f"/images/{img_id}.jpg" if image_manager.image_exists(img_id) else (card.card_images[0].image_url_small if card.card_images else None)
+        with ui.tooltip().classes('bg-transparent shadow-none p-0'):
+             ui.image(img_src).classes('h-[40vh] rounded-lg shadow-xl')
+
     def refresh_search_results(self):
         if not self.search_results_container: return
         self.search_results_container.clear()
@@ -521,6 +527,8 @@ class DeckBuilderPage:
                                  ui.label(card.name).classes('text-[10px] font-bold w-full leading-tight line-clamp-2 text-wrap h-6')
                                  ui.label(card.type).classes('text-[9px] text-gray-400 truncate w-full')
 
+                             self._setup_card_tooltip(card)
+
                 ui.run_javascript('initSortable("gallery-list", "deck", "clone", false, false)')
 
     async def open_deck_builder_wrapper(self, card):
@@ -567,7 +575,8 @@ class DeckBuilderPage:
             ui.image(img_src).classes('w-full h-full object-cover rounded')
             with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
                 ui.icon('remove', color='white').classes('text-lg')
-            ui.tooltip(card.name)
+
+            self._setup_card_tooltip(card)
 
         card_el.on('click', lambda _, c=card, t=target, el=card_el, u=uid: self.remove_card_from_deck(c.id, t, el, u))
         return card_el
