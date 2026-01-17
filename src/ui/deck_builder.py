@@ -486,7 +486,7 @@ class DeckBuilderPage:
 
         # Create tooltip with transparent background and no padding
         # anchor/self props can be adjusted if needed, but default behavior is usually acceptable
-        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999]') as tooltip:
+        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none') as tooltip:
             # Image at 40vh height
             if initial_src:
                 ui.image(initial_src).classes('w-auto h-[40vh] min-w-[200px] object-contain rounded-lg shadow-2xl')
@@ -772,10 +772,25 @@ class DeckBuilderPage:
                      # 2. Remove the "dumb clone" dropped by SortableJS
                      await ui.run_javascript(f"var p = document.getElementById('deck-{to_zone}'); if(p && p.children[{new_index}]) p.children[{new_index}].remove();")
 
+                     # Prepare usage tracking for ownership highlight
+                     owned_map = {}
+                     if self.state['reference_collection']:
+                         for c in self.state['reference_collection'].cards:
+                             owned_map[c.card_id] = c.total_quantity
+
+                     # Count how many of this card are already in the deck BEFORE this new instance
+                     # to_ids contains the state AFTER drop, so we look at indices 0 to new_index-1
+                     usage_count = 0
+                     for i in range(new_index):
+                         if to_ids[i] == new_card_id:
+                             usage_count += 1
+
+                     usage_counter = {new_card_id: usage_count}
+
                      # 3. Render the new real card (appends to end)
                      grid = self.deck_grids[to_zone]
                      with grid:
-                         new_card = self._render_deck_card(new_card_id, to_zone)
+                         new_card = self._render_deck_card(new_card_id, to_zone, usage_counter=usage_counter, owned_map=owned_map)
 
                      # 4. Move to correct index
                      if new_card:
