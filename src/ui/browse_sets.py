@@ -1213,8 +1213,7 @@ class BrowseSetsPage:
                                   ui.label(f"Lv {card.level}").classes('absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1 rounded')
 
                          with ui.column().classes('p-2 gap-0 w-full'):
-                            with ui.element('div').classes('w-full h-8 flex flex-col justify-end'):
-                                ui.label(card.name).classes('text-xs font-bold leading-tight line-clamp-2')
+                            ui.label(card.name).classes('text-xs font-bold truncate w-full')
                             ui.label(card.type).classes('text-[10px] text-gray-400 truncate w-full')
 
                          self._setup_card_tooltip(card)
@@ -1243,8 +1242,7 @@ class BrowseSetsPage:
                             ui.label(item.set_code).classes('absolute bottom-0 right-0 bg-black/80 text-white text-[10px] px-1 font-mono rounded-tl')
 
                         with ui.column().classes('p-2 gap-0 w-full'):
-                            with ui.element('div').classes('w-full h-8 flex flex-col justify-end'):
-                                ui.label(item.api_card.name).classes('text-xs font-bold leading-tight line-clamp-2')
+                            ui.label(item.api_card.name).classes('text-xs font-bold truncate w-full')
                             ui.label(f"${item.price:.2f}").classes('text-xs text-green-400')
 
                         self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
