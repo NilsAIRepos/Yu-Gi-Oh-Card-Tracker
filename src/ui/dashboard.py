@@ -153,15 +153,21 @@ def render_charts_area(stats):
                 'trigger': 'item'
             },
             'legend': {
+                'type': 'scroll',
                 'orient': 'vertical',
                 'left': 'left',
-                'textStyle': {'color': '#999'}
+                'top': 40,
+                'bottom': 20,
+                'textStyle': {'color': '#999'},
+                'pageIconColor': '#fff',
+                'pageTextStyle': {'color': '#fff'}
             },
             'series': [
                 {
                     'name': title,
                     'type': 'pie',
                     'radius': ['40%', '70%'],
+                    'center': ['60%', '50%'],
                     'avoidLabelOverlap': False,
                     'itemStyle': {
                         'borderRadius': 10,
@@ -190,14 +196,14 @@ def render_charts_area(stats):
 
     with ui.row().classes('w-full gap-6'):
         # Rarity
-        with ui.card().classes('flex-1 bg-dark border border-gray-700 h-80 p-4'):
+        with ui.card().classes('flex-1 bg-dark border border-gray-700 h-80 p-4 min-w-0'):
              if r_data:
                 ui.echart(pie_option('Rarity Distribution', r_data)).classes('w-full h-full')
              else:
                  ui.label('No Rarity Data').classes('w-full h-full flex items-center justify-center text-grey')
 
         # Condition
-        with ui.card().classes('flex-1 bg-dark border border-gray-700 h-80 p-4'):
+        with ui.card().classes('flex-1 bg-dark border border-gray-700 h-80 p-4 min-w-0'):
             if c_data:
                 ui.echart(pie_option('Condition Distribution', c_data)).classes('w-full h-full')
             else:
