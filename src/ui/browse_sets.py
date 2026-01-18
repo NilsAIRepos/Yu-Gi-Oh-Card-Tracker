@@ -225,6 +225,9 @@ class BrowseSetsPage:
 
         await self.apply_set_filters()
 
+        # Reset current collection
+        self.state['current_collection'] = None
+
         # Load Collection
         self.state['current_collection'] = None
         if self.state['selected_collection_file']:
@@ -1073,13 +1076,11 @@ class BrowseSetsPage:
             ui.separator().props('vertical')
 
             # Owned Only Toggle
-            async def toggle_owned_only():
-                 self.state['filter_owned_only'] = not self.state.get('filter_owned_only', False)
+            async def on_owned_only_change(e):
+                 self.state['filter_owned_only'] = e.value
                  await self.apply_detail_filters()
 
-            owned_only = self.state.get('filter_owned_only', False)
-            with ui.button(icon='check_circle' if owned_only else 'radio_button_unchecked', on_click=toggle_owned_only).props(f'flat round dense color={"green" if owned_only else "white"}'):
-                ui.tooltip('Show Owned Only')
+            ui.checkbox('Owned Only', value=self.state.get('filter_owned_only', False), on_change=on_owned_only_change).props('dense dark color=green')
 
             ui.separator().props('vertical')
 
