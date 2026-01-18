@@ -333,7 +333,10 @@ class BrowseSetsPage:
 
         self.state['filtered_sets'] = res
         self.update_pagination()
-        if hasattr(self, 'render_content'): self.render_content.refresh()
+        if hasattr(self, 'render_gallery_grid') and self.state['view'] == 'gallery':
+             self.render_gallery_grid.refresh()
+        elif hasattr(self, 'render_content'):
+             self.render_content.refresh()
 
     def update_pagination(self):
         count = len(self.state['filtered_sets'])
@@ -750,6 +753,10 @@ class BrowseSetsPage:
             self.render_detail_view()
 
     def render_gallery_view(self):
+        self.render_gallery_header()
+        self.render_gallery_grid()
+
+    def render_gallery_header(self):
         # Header Controls & Filters
         with ui.column().classes('w-full q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800 gap-6'):
             # Top Row: Title, Search, Sort
@@ -893,6 +900,8 @@ class BrowseSetsPage:
                         count_min_input.on('change', on_count_input_change)
                         count_max_input.on('change', on_count_input_change)
 
+    @ui.refreshable
+    def render_gallery_grid(self):
         self.render_pagination()
 
         start = (self.state['page'] - 1) * self.state['page_size']
