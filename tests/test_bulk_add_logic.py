@@ -30,18 +30,24 @@ def mock_ygo():
         yield y
 
 @pytest.fixture
+def mock_structure_deck_dialog():
+    with patch('src.ui.bulk_add.StructureDeckDialog') as s:
+        s.return_value = MagicMock()
+        yield s
+
+@pytest.fixture
 def mock_ui():
     with patch('src.ui.bulk_add.ui') as u:
         yield u
 
 @pytest.mark.asyncio
-async def test_bulk_add_initialization(mock_persistence, mock_config, mock_ygo):
+async def test_bulk_add_initialization(mock_persistence, mock_config, mock_ygo, mock_structure_deck_dialog):
     page = BulkAddPage()
     assert page.state['selected_collection'] == 'test_collection.json'
     assert page.state['default_language'] == 'EN'
 
 @pytest.mark.asyncio
-async def test_add_card_to_collection(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui):
+async def test_add_card_to_collection(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui, mock_structure_deck_dialog):
     page = BulkAddPage()
     page.current_collection_obj = MagicMock()
     page.current_collection_obj.cards = []
@@ -80,7 +86,7 @@ async def test_add_card_to_collection(mock_persistence, mock_changelog, mock_con
         assert args[3] == 1 # qty
 
 @pytest.mark.asyncio
-async def test_undo_last_action(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui):
+async def test_undo_last_action(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui, mock_structure_deck_dialog):
     page = BulkAddPage()
     page.api_card_map = {1: ApiCard(id=1, name="Test Card", type="Monster", desc="Desc", frameType="normal")}
     page.current_collection_obj = MagicMock()
@@ -113,7 +119,7 @@ async def test_undo_last_action(mock_persistence, mock_changelog, mock_config, m
         assert call_args.kwargs['mode'] == 'ADD'
 
 @pytest.mark.asyncio
-async def test_apply_collection_filters_monster_category(mock_persistence, mock_config, mock_ygo):
+async def test_apply_collection_filters_monster_category(mock_persistence, mock_config, mock_ygo, mock_structure_deck_dialog):
     page = BulkAddPage()
 
     # Mock data
@@ -166,7 +172,7 @@ async def test_apply_collection_filters_monster_category(mock_persistence, mock_
     assert len(res) == 0
 
 @pytest.mark.asyncio
-async def test_bulk_add_loads_persisted_state(mock_persistence, mock_config, mock_ygo):
+async def test_bulk_add_loads_persisted_state(mock_persistence, mock_config, mock_ygo, mock_structure_deck_dialog):
     # Setup persisted state
     mock_persistence.load_ui_state.return_value = {
         'bulk_selected_collection': 'test_collection.json',
@@ -183,7 +189,7 @@ async def test_bulk_add_loads_persisted_state(mock_persistence, mock_config, moc
     assert page.state['default_first_ed'] is True
 
 @pytest.mark.asyncio
-async def test_bulk_add_saves_collection_on_change(mock_persistence, mock_config, mock_ygo):
+async def test_bulk_add_saves_collection_on_change(mock_persistence, mock_config, mock_ygo, mock_structure_deck_dialog):
     page = BulkAddPage()
     # Mock render_header refresh and load_collection_data
     page.render_header = MagicMock()

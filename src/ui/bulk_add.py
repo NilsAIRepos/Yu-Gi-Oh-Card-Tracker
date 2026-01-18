@@ -154,6 +154,12 @@ class BulkAddPage:
         self.state['default_condition'] = ui_state.get('bulk_default_cond', self.state['default_condition'])
         self.state['default_first_ed'] = ui_state.get('bulk_default_first', self.state['default_first_ed'])
 
+        # Load sort preferences
+        self.state['library_sort_by'] = ui_state.get('bulk_library_sort_by', self.state['library_sort_by'])
+        self.state['library_sort_desc'] = ui_state.get('bulk_library_sort_desc', self.state['library_sort_desc'])
+        self.col_state['sort_by'] = ui_state.get('bulk_collection_sort_by', self.col_state['sort_by'])
+        self.col_state['sort_desc'] = ui_state.get('bulk_collection_sort_desc', self.col_state['sort_desc'])
+
     async def _update_collection(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, mode='ADD', variant_id=None):
         if not self.current_collection_obj or not self.state['selected_collection']:
             return False
@@ -1072,6 +1078,14 @@ class BulkAddPage:
                     forceFallback: true,
                     fallbackTolerance: 3,
                     onClone: function (evt) { evt.clone.removeAttribute('id'); },
+                    onEnd: function (evt) {
+                        // Fix for context menu not working after drag (restore original element with events to source)
+                        if (pullMode === 'clone' && evt.item && evt.clone) {
+                            if (evt.to !== evt.from && evt.clone.parentNode === evt.from) {
+                                evt.from.replaceChild(evt.item, evt.clone);
+                            }
+                        }
+                    },
                     onAdd: function (evt) {
                          var itemEl = evt.item;
                          var fromId = evt.from.id;
@@ -1121,6 +1135,13 @@ class BulkAddPage:
                 with ui.row().classes('w-full p-2 bg-gray-900 border-b border-gray-800 items-center justify-between gap-2 flex-nowrap overflow-x-auto'):
                     ui.label('Library').classes('text-h6 font-bold')
                     with ui.row().classes('items-center gap-1 flex-nowrap'):
+                        async def on_search(e):
+                            self.state['library_search_text'] = e.value
+                            await self.apply_library_filters()
+                        ui.input(placeholder='Search...', on_change=on_search).props('dense borderless dark debounce=300').classes('w-52 text-sm')
+
+                        ui.separator().props('vertical')
+
                         # Pagination
                         async def change_page(delta):
                              new_p = max(1, min(self.state['library_total_pages'], self.state['library_page'] + delta))
@@ -1133,20 +1154,17 @@ class BulkAddPage:
 
                         ui.separator().props('vertical')
 
-                        async def on_search(e):
-                            self.state['library_search_text'] = e.value
-                            await self.apply_library_filters()
-                        ui.input(placeholder='Search...', on_change=on_search).props('dense borderless dark debounce=300').classes('w-24 text-sm')
-
                         # Sort
                         lib_sort_opts = ['Name', 'ATK', 'DEF', 'Level', 'Set', 'Price', 'Newest']
                         async def on_lib_sort(e):
                             self.state['library_sort_by'] = e.value
+                            persistence.save_ui_state({'bulk_library_sort_by': e.value})
                             await self.apply_library_filters()
                         ui.select(lib_sort_opts, value=self.state['library_sort_by'], on_change=on_lib_sort).props('dense options-dense borderless').classes('w-20 text-xs')
 
                         async def toggle_sort():
                             self.state['library_sort_desc'] = not self.state['library_sort_desc']
+                            persistence.save_ui_state({'bulk_library_sort_desc': self.state['library_sort_desc']})
                             await self.apply_library_filters()
                         ui.button(on_click=toggle_sort).props('flat dense color=white size=sm').bind_icon_from(self.state, 'library_sort_desc', lambda d: 'arrow_downward' if d else 'arrow_upward')
 
@@ -1162,6 +1180,13 @@ class BulkAddPage:
                 with ui.row().classes('w-full p-2 bg-gray-900 border-b border-gray-800 items-center justify-between gap-2 flex-nowrap overflow-x-auto'):
                     ui.label('Collection').classes('text-h6 font-bold')
                     with ui.row().classes('items-center gap-1 flex-nowrap'):
+                        async def on_col_search(e):
+                            self.col_state['search_text'] = e.value
+                            await self.apply_collection_filters()
+                        ui.input(placeholder='Search...', on_change=on_col_search).props('dense borderless dark debounce=300').classes('w-52 text-sm')
+
+                        ui.separator().props('vertical')
+
                         # Pagination
                         async def change_col_page(delta):
                              new_p = max(1, min(self.col_state['collection_total_pages'], self.col_state['collection_page'] + delta))
@@ -1174,20 +1199,17 @@ class BulkAddPage:
 
                         ui.separator().props('vertical')
 
-                        async def on_col_search(e):
-                            self.col_state['search_text'] = e.value
-                            await self.apply_collection_filters()
-                        ui.input(placeholder='Search...', on_change=on_col_search).props('dense borderless dark debounce=300').classes('w-24 text-sm')
-
                         # Sort
                         col_sort_opts = ['Name', 'ATK', 'DEF', 'Level', 'Set', 'Quantity', 'Newest']
                         async def on_col_sort(e):
                             self.col_state['sort_by'] = e.value
+                            persistence.save_ui_state({'bulk_collection_sort_by': e.value})
                             await self.apply_collection_filters()
                         ui.select(col_sort_opts, value=self.col_state['sort_by'], on_change=on_col_sort).props('dense options-dense borderless').classes('w-20 text-xs')
 
                         async def toggle_col_sort():
                             self.col_state['sort_desc'] = not self.col_state['sort_desc']
+                            persistence.save_ui_state({'bulk_collection_sort_desc': self.col_state['sort_desc']})
                             await self.apply_collection_filters()
                         ui.button(on_click=toggle_col_sort).props('flat dense color=white size=sm').bind_icon_from(self.col_state, 'sort_desc', lambda d: 'arrow_downward' if d else 'arrow_upward')
 

@@ -28,12 +28,18 @@ def mock_ygo():
         yield y
 
 @pytest.fixture
+def mock_structure_deck_dialog():
+    with patch('src.ui.bulk_add.StructureDeckDialog') as s:
+        s.return_value = MagicMock()
+        yield s
+
+@pytest.fixture
 def mock_ui():
     with patch('src.ui.bulk_add.ui') as u:
         yield u
 
 @pytest.mark.asyncio
-async def test_add_card_triggers_refresh(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui):
+async def test_add_card_triggers_refresh(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui, mock_structure_deck_dialog):
     page = BulkAddPage()
     page.current_collection_obj = MagicMock()
     page.current_collection_obj.cards = []
@@ -68,7 +74,7 @@ async def test_add_card_triggers_refresh(mock_persistence, mock_changelog, mock_
         page.render_library_content.refresh.assert_not_called()
 
 @pytest.mark.asyncio
-async def test_handle_drop_triggers_refresh(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui):
+async def test_handle_drop_triggers_refresh(mock_persistence, mock_changelog, mock_config, mock_ygo, mock_ui, mock_structure_deck_dialog):
     page = BulkAddPage()
     page.current_collection_obj = MagicMock()
 
