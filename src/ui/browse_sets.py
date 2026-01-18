@@ -539,7 +539,7 @@ class BrowseSetsPage:
         self.state['detail_total_pages'] = (count + self.state['detail_page_size'] - 1) // self.state['detail_page_size']
 
         if hasattr(self, 'render_detail_grid'): self.render_detail_grid.refresh()
-        if hasattr(self, 'render_detail_controls'): self.render_detail_controls.refresh()
+        if hasattr(self, 'render_view_scope_toggles'): self.render_view_scope_toggles.refresh()
         if hasattr(self, 'render_detail_pagination_controls'): self.render_detail_pagination_controls.refresh()
 
     async def reset_filters(self):
@@ -659,34 +659,29 @@ class BrowseSetsPage:
 
                         sorted_cards = sorted(cards, key=get_card_rarity_index)
 
-                        # Take top 14 (rarest)
-                        top_cards = sorted_cards[:14]
+                        # Take top 9 (rarest)
+                        top_cards = sorted_cards[:9]
                         # Reverse so the rarest (first in sorted list) ends up last in rendering order (on top)
                         top_cards.reverse()
 
                         # Scattered pile positions (ordered from back to front)
                         positions = [
-                            # Edges / Background
-                            {'left': '-10%', 'top': '-5%', 'rotate': '-30deg'},
-                            {'left': '65%', 'top': '-5%', 'rotate': '30deg'},
-                            {'left': '-10%', 'top': '65%', 'rotate': '-25deg'},
-                            {'left': '65%', 'top': '65%', 'rotate': '25deg'},
-                            {'left': '5%', 'top': '40%', 'rotate': '-20deg'},
-                            {'left': '55%', 'top': '40%', 'rotate': '20deg'},
+                            # Background Layer
+                            {'left': '-5%', 'top': '5%', 'rotate': '-15deg'},
+                            {'left': '60%', 'top': '5%', 'rotate': '15deg'},
+                            {'left': '-5%', 'top': '60%', 'rotate': '-10deg'},
+                            {'left': '60%', 'top': '60%', 'rotate': '10deg'},
 
-                            # Mid-layer
-                            {'left': '10%', 'top': '10%', 'rotate': '-15deg'},
-                            {'left': '50%', 'top': '10%', 'rotate': '15deg'},
-                            {'left': '15%', 'top': '50%', 'rotate': '-10deg'},
-                            {'left': '45%', 'top': '50%', 'rotate': '10deg'},
+                            # Mid Layer
+                            {'left': '10%', 'top': '30%', 'rotate': '-25deg'},
+                            {'left': '45%', 'top': '30%', 'rotate': '25deg'},
 
-                            # Near Center
-                            {'left': '20%', 'top': '20%', 'rotate': '5deg'},
-                            {'left': '40%', 'top': '20%', 'rotate': '-5deg'},
-                            {'left': '25%', 'top': '30%', 'rotate': '2deg'},
+                            # Inner Layer
+                            {'left': '20%', 'top': '15%', 'rotate': '-5deg'},
+                            {'left': '35%', 'top': '50%', 'rotate': '5deg'},
 
-                            # Center Top (Rarest)
-                            {'left': '30%', 'top': '15%', 'rotate': '0deg'},
+                            # Top (Rarest) - Center
+                            {'left': '27.5%', 'top': '32.5%', 'rotate': '0deg'},
                         ]
 
                         # Adjust positions if we have fewer cards to ensure the last one (rarest) is somewhat central
@@ -1076,7 +1071,8 @@ class BrowseSetsPage:
             if p != self.state['detail_page']:
                 self.state['detail_page'] = p
                 self.render_detail_grid.refresh()
-                self.render_detail_controls.refresh()
+                # Controls are no longer refreshable, so no refresh call here needed for inputs
+                # Pagination controls are refreshing themselves via this method being refreshable
                 self.render_detail_pagination_controls.refresh()
 
         with ui.row().classes('items-center gap-2'):
@@ -1085,6 +1081,14 @@ class BrowseSetsPage:
             ui.button(icon='chevron_right', on_click=lambda: change_p(1)).props('flat dense color=white').set_enabled(self.state['detail_page'] < self.state['detail_total_pages'])
 
     @ui.refreshable
+    def render_view_scope_toggles(self):
+        is_cons = self.state['view_scope'] == 'consolidated'
+        with ui.button_group():
+            with ui.button('Collectors', on_click=lambda: self.switch_view_scope('collectors')).props(f'flat={is_cons} color=accent'):
+                ui.tooltip('View all printings separately')
+            with ui.button('Consolidated', on_click=lambda: self.switch_view_scope('consolidated')).props(f'flat={not is_cons} color=accent'):
+                ui.tooltip('View unique cards only')
+
     def render_detail_controls(self):
         with ui.row().classes('w-full items-center gap-4 bg-gray-800 p-2 rounded mb-4'):
             async def on_detail_search(e):
@@ -1119,12 +1123,7 @@ class BrowseSetsPage:
             ui.separator().props('vertical')
 
             # View Toggle
-            is_cons = self.state['view_scope'] == 'consolidated'
-            with ui.button_group():
-                with ui.button('Collectors', on_click=lambda: self.switch_view_scope('collectors')).props(f'flat={is_cons} color=accent'):
-                    ui.tooltip('View all printings separately')
-                with ui.button('Consolidated', on_click=lambda: self.switch_view_scope('consolidated')).props(f'flat={not is_cons} color=accent'):
-                    ui.tooltip('View unique cards only')
+            self.render_view_scope_toggles()
 
             ui.separator().props('vertical')
 
