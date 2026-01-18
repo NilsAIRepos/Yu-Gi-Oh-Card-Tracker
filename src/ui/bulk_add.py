@@ -8,6 +8,7 @@ from src.services.collection_editor import CollectionEditor
 from src.core.utils import generate_variant_id, normalize_set_code, extract_language_code
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
+from src.ui.components.structure_deck_dialog import StructureDeckDialog
 from src.core.models import Collection
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict
@@ -129,10 +130,12 @@ class BulkAddPage:
         }
 
         self.single_card_view = SingleCardView()
+        self.structure_deck_dialog = StructureDeckDialog(self.process_structure_deck_add)
         self.library_filter_pane = None
         self.collection_filter_pane = None
         self.current_collection_obj = None
         self.api_card_map = {} # id -> ApiCard
+        self.set_code_map = {} # set_code (normalized or exact) -> ApiCard
 
         # Load available collections
         self.state['available_collections'] = persistence.list_collections()
@@ -185,7 +188,39 @@ class BulkAddPage:
 
         last_change = changelog_manager.undo_last_change(col_name)
         if last_change:
-            # Revert logic
+            # Handle Batch Undo
+            if last_change.get('type') == 'batch':
+                changes = last_change.get('changes', [])
+                count = 0
+                for c in changes:
+                    action = c['action']
+                    qty = c['quantity']
+                    data = c['card_data']
+
+                    revert_qty = -qty if action == 'ADD' else qty
+
+                    api_card = self.api_card_map.get(data['card_id'])
+                    if api_card:
+                        await self._update_collection(
+                            api_card=api_card,
+                            set_code=data['set_code'],
+                            rarity=data['rarity'],
+                            lang=data['language'],
+                            qty=revert_qty,
+                            cond=data['condition'],
+                            first=data['first_edition'],
+                            img_id=data['image_id'],
+                            variant_id=data.get('variant_id'),
+                            mode='ADD'
+                        )
+                        count += 1
+
+                ui.notify(f"Undid batch: {last_change.get('description')} ({count} items)", type='positive')
+                self.render_header.refresh()
+                await self.load_collection_data()
+                return
+
+            # Revert single logic
             action = last_change['action']
             qty = last_change['quantity']
             data = last_change['card_data']
@@ -221,6 +256,114 @@ class BulkAddPage:
                 ui.notify("Undo failed (no changes made).", type='warning')
         else:
             ui.notify("Nothing to undo.", type='warning')
+
+    async def process_structure_deck_add(self, deck_name: str, cards: List[Dict[str, Any]]):
+        if not self.current_collection_obj or not self.state['selected_collection']:
+            ui.notify("No collection selected", type='negative')
+            return
+
+        defaults = {
+            'lang': self.state['default_language'],
+            'cond': self.state['default_condition'],
+            'first': self.state['default_first_ed']
+        }
+
+        processed_changes = []
+        added_count = 0
+
+        # We need to perform all additions in memory first, then save once.
+        # But _update_collection saves every time.
+        # Ideally, we should update the in-memory object multiple times and then save once.
+        # However, _update_collection logic is coupled with persistence.
+        # Refactoring _update_collection to support a 'save=False' flag would be best.
+        # For now, I will modify _update_collection locally or override behavior.
+        # Actually, let's just create a modified version or use CollectionEditor directly and save at the end.
+
+        collection = self.current_collection_obj
+
+        for card_info in cards:
+            set_code = card_info['set_code']
+            qty = card_info['quantity']
+            rarity = card_info['rarity']
+
+            # Find ApiCard
+            api_card = self.set_code_map.get(set_code)
+
+            # If not found by exact match, try normalized
+            if not api_card:
+                 # Check if the set code exists in our known sets?
+                 # If the card is not in our DB, we skip it as per instructions.
+                 logger.warning(f"Card {set_code} not found in local DB. Skipping.")
+                 continue
+
+            # Determine Image ID
+            # Look for the specific set variant in api_card
+            image_id = None
+            variant_id = None
+
+            if api_card.card_sets:
+                for s in api_card.card_sets:
+                    if s.set_code == set_code:
+                        image_id = s.image_id
+                        variant_id = s.variant_id
+                        break
+
+            if not image_id and api_card.card_images:
+                image_id = api_card.card_images[0].id
+
+            # Apply Change In-Memory
+            CollectionEditor.apply_change(
+                collection=collection,
+                api_card=api_card,
+                set_code=set_code,
+                rarity=rarity,
+                language=defaults['lang'],
+                quantity=qty,
+                condition=defaults['cond'],
+                first_edition=defaults['first'],
+                image_id=image_id,
+                variant_id=variant_id,
+                mode='ADD'
+            )
+
+            # Prepare log entry
+            # Need variant_id if it was generated/found
+            if not variant_id:
+                 variant_id = generate_variant_id(api_card.id, set_code, rarity, image_id)
+
+            processed_changes.append({
+                'action': 'ADD',
+                'quantity': qty,
+                'card_data': {
+                    'card_id': api_card.id,
+                    'name': api_card.name,
+                    'set_code': set_code,
+                    'rarity': rarity,
+                    'image_id': image_id,
+                    'language': defaults['lang'],
+                    'condition': defaults['cond'],
+                    'first_edition': defaults['first'],
+                    'variant_id': variant_id
+                }
+            })
+            added_count += qty
+
+        if processed_changes:
+            # Save Collection
+            await run.io_bound(persistence.save_collection, collection, self.state['selected_collection'])
+
+            # Log Batch
+            changelog_manager.log_batch_change(
+                self.state['selected_collection'],
+                f"Imported {deck_name}",
+                processed_changes
+            )
+
+            ui.notify(f"Added {added_count} cards from {deck_name}", type='positive')
+            self.render_header.refresh()
+            await self.load_collection_data()
+        else:
+            ui.notify("No valid cards found to add (check database update?)", type='warning')
 
     async def add_card_to_collection(self, entry: LibraryEntry, lang, cond, first, qty):
         success = await self._update_collection(
@@ -405,6 +548,14 @@ class BulkAddPage:
         lang_code = config_manager.get_language().lower()
         api_cards = await ygo_service.load_card_database(lang_code)
         self.api_card_map = {c.id: c for c in api_cards}
+
+        # Build Set Code Map
+        # Note: Set codes in DB might be "SDAZ-EN001" or "SDAZ-EN001"
+        self.set_code_map = {}
+        for c in api_cards:
+            if c.card_sets:
+                for s in c.card_sets:
+                    self.set_code_map[s.set_code] = c
 
         entries = []
         sets = set()
@@ -800,6 +951,9 @@ class BulkAddPage:
                              on_change=lambda e: [self.state.update({'default_first_ed': e.value}), persistence.save_ui_state({'bulk_default_first': e.value})]).props('dense')
 
              ui.space()
+
+             # Add Structure Deck Button
+             ui.button("Add Structure Deck", icon="library_add", on_click=self.structure_deck_dialog.open).props('flat color=accent')
 
              has_history = False
              if self.state['selected_collection']:
