@@ -23,6 +23,7 @@ class DeckCard:
 
 class YugipediaService:
     API_URL = "https://yugipedia.com/api.php"
+    HEADERS = {"User-Agent": "YgoCollectionManager/1.0"}
 
     # Rarity Mapping (Yugipedia Abbr -> Full Name)
     RARITY_MAP = {
@@ -60,9 +61,9 @@ class YugipediaService:
         try:
             # Use run.io_bound for blocking requests
             if hasattr(run, 'io_bound'):
-                response = await run.io_bound(requests.get, self.API_URL, params=params)
+                response = await run.io_bound(requests.get, self.API_URL, params=params, headers=self.HEADERS)
             else:
-                response = await asyncio.to_thread(requests.get, self.API_URL, params=params)
+                response = await asyncio.to_thread(requests.get, self.API_URL, params=params, headers=self.HEADERS)
 
             if response.status_code == 200:
                 data = response.json()
@@ -109,9 +110,9 @@ class YugipediaService:
 
         try:
             if hasattr(run, 'io_bound'):
-                response = await run.io_bound(requests.get, self.API_URL, params=params)
+                response = await run.io_bound(requests.get, self.API_URL, params=params, headers=self.HEADERS)
             else:
-                response = await asyncio.to_thread(requests.get, self.API_URL, params=params)
+                response = await asyncio.to_thread(requests.get, self.API_URL, params=params, headers=self.HEADERS)
 
             if response.status_code != 200:
                 return {'main': [], 'bonus': []}
@@ -153,9 +154,9 @@ class YugipediaService:
 
         try:
             if hasattr(run, 'io_bound'):
-                res = await run.io_bound(requests.get, self.API_URL, params=params)
+                res = await run.io_bound(requests.get, self.API_URL, params=params, headers=self.HEADERS)
             else:
-                res = await asyncio.to_thread(requests.get, self.API_URL, params=params)
+                res = await asyncio.to_thread(requests.get, self.API_URL, params=params, headers=self.HEADERS)
 
             results = res.json().get("query", {}).get("search", [])
 
@@ -181,9 +182,9 @@ class YugipediaService:
                     "format": "json"
                 }
                 if hasattr(run, 'io_bound'):
-                    res = await run.io_bound(requests.get, self.API_URL, params=p_params)
+                    res = await run.io_bound(requests.get, self.API_URL, params=p_params, headers=self.HEADERS)
                 else:
-                    res = await asyncio.to_thread(requests.get, self.API_URL, params=p_params)
+                    res = await asyncio.to_thread(requests.get, self.API_URL, params=p_params, headers=self.HEADERS)
 
                 pages = res.json().get("query", {}).get("pages", {})
                 for pid, page in pages.items():
