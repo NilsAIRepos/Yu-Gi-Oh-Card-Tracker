@@ -37,7 +37,7 @@ class StructureDeckDialog:
                     options={},
                     label='Select Structure Deck',
                     on_change=self._on_deck_selected
-                ).classes('w-full').props('use-input input-debounce="0"')
+                ).classes('w-full').props('use-input input-debounce="0" dark behavior="menu"')
 
                 # Loading spinner for deck fetching
                 self.deck_loading = ui.spinner().classes('self-center hidden')
@@ -51,7 +51,7 @@ class StructureDeckDialog:
                         multiple=True,
                         label='Bonus Cards',
                         on_change=lambda e: setattr(self, 'selected_bonus_cards', e.value)
-                    ).classes('w-full').props('use-chips')
+                    ).classes('w-full').props('use-chips dark behavior="menu"')
 
                 # 3. Preview / Info
                 self.preview_container = ui.scroll_area().classes('w-full flex-grow border border-gray-700 rounded p-2 bg-black/20')
