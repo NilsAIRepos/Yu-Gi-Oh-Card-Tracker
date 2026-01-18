@@ -9,8 +9,6 @@ def mock_persistence():
         p.list_collections.return_value = ['test_collection.json']
         p.load_collection = AsyncMock()
         p.save_collection = MagicMock()
-        # Mock load_ui_state to return empty dict by default so defaults work
-        p.load_ui_state.return_value = {}
         yield p
 
 @pytest.fixture
@@ -164,31 +162,3 @@ async def test_apply_collection_filters_monster_category(mock_persistence, mock_
 
     res = page.col_state['collection_filtered']
     assert len(res) == 0
-
-@pytest.mark.asyncio
-async def test_bulk_add_loads_persisted_state(mock_persistence, mock_config, mock_ygo):
-    # Setup persisted state
-    mock_persistence.load_ui_state.return_value = {
-        'bulk_selected_collection': 'test_collection.json',
-        'bulk_default_lang': 'DE',
-        'bulk_default_cond': 'Played',
-        'bulk_default_first': True
-    }
-
-    page = BulkAddPage()
-
-    assert page.state['selected_collection'] == 'test_collection.json'
-    assert page.state['default_language'] == 'DE'
-    assert page.state['default_condition'] == 'Played'
-    assert page.state['default_first_ed'] is True
-
-@pytest.mark.asyncio
-async def test_bulk_add_saves_collection_on_change(mock_persistence, mock_config, mock_ygo):
-    page = BulkAddPage()
-    # Mock render_header refresh and load_collection_data
-    page.render_header = MagicMock()
-    page.load_collection_data = AsyncMock()
-
-    await page.on_collection_change('test_collection.json')
-
-    mock_persistence.save_ui_state.assert_called_with({'bulk_selected_collection': 'test_collection.json'})

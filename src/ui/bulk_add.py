@@ -136,20 +136,8 @@ class BulkAddPage:
 
         # Load available collections
         self.state['available_collections'] = persistence.list_collections()
-
-        # Load UI state for persistence
-        ui_state = persistence.load_ui_state()
-
-        saved_col = ui_state.get('bulk_selected_collection')
-        if saved_col and saved_col in self.state['available_collections']:
-             self.state['selected_collection'] = saved_col
-        elif self.state['available_collections']:
+        if self.state['available_collections']:
              self.state['selected_collection'] = self.state['available_collections'][0]
-
-        # Load defaults
-        self.state['default_language'] = ui_state.get('bulk_default_lang', self.state['default_language'])
-        self.state['default_condition'] = ui_state.get('bulk_default_cond', self.state['default_condition'])
-        self.state['default_first_ed'] = ui_state.get('bulk_default_first', self.state['default_first_ed'])
 
     async def _update_collection(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, mode='ADD', variant_id=None):
         if not self.current_collection_obj or not self.state['selected_collection']:
@@ -372,7 +360,6 @@ class BulkAddPage:
     # Copying previous methods for completeness...
     async def on_collection_change(self, new_val):
         self.state['selected_collection'] = new_val
-        persistence.save_ui_state({'bulk_selected_collection': new_val})
         self.render_header.refresh()
         await self.load_collection_data()
 
@@ -792,12 +779,12 @@ class BulkAddPage:
                  ui.label('Defaults:').classes('text-accent font-bold text-xs uppercase mr-2')
                  ui.select(['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP', 'KR'], label='Lang',
                            value=self.state['default_language'],
-                           on_change=lambda e: [self.state.update({'default_language': e.value}), persistence.save_ui_state({'bulk_default_lang': e.value})]).props('dense options-dense').classes('w-20')
+                           on_change=lambda e: self.state.update({'default_language': e.value})).props('dense options-dense').classes('w-20')
                  ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Cond',
                            value=self.state['default_condition'],
-                           on_change=lambda e: [self.state.update({'default_condition': e.value}), persistence.save_ui_state({'bulk_default_cond': e.value})]).props('dense options-dense').classes('w-32')
+                           on_change=lambda e: self.state.update({'default_condition': e.value})).props('dense options-dense').classes('w-32')
                  ui.checkbox('1st Ed', value=self.state['default_first_ed'],
-                             on_change=lambda e: [self.state.update({'default_first_ed': e.value}), persistence.save_ui_state({'bulk_default_first': e.value})]).props('dense')
+                             on_change=lambda e: self.state.update({'default_first_ed': e.value})).props('dense')
 
              ui.space()
 
@@ -935,9 +922,9 @@ class BulkAddPage:
                                  bubbles: true
                              }));
                          }
-                         // For drops into library (from collection) or collection (from library), we remove the element visually
-                         // so it doesn't stay as a "ghost" with incorrect events/state while the backend processes.
-                         if (toId === 'library-list' || toId === 'collection-list') {
+                         // For drops into library (from collection), we remove the element visually
+                         // so it doesn't stay as a "ghost" while the backend processes.
+                         if (toId === 'library-list') {
                              itemEl.remove();
                          }
                     }
