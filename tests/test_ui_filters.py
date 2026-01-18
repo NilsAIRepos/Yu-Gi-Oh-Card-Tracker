@@ -19,6 +19,7 @@ class TestFilters(unittest.TestCase):
         self.persistence_patcher = patch('src.ui.collection.persistence')
         self.persistence_mock = self.persistence_patcher.start()
         self.persistence_mock.list_collections.return_value = []
+        self.persistence_mock.load_ui_state.return_value = {}
 
         self.config_patcher = patch('src.ui.collection.config_manager')
         self.config_mock = self.config_patcher.start()

@@ -234,6 +234,9 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
 
 class CollectionPage:
     def __init__(self):
+        # Load persisted UI state
+        saved_state = persistence.load_ui_state()
+
         self.state = {
             'cards_consolidated': [],
             'cards_collectors': [],
@@ -269,20 +272,24 @@ class CollectionPage:
             'filter_price_max': 1000.0,
 
             'filter_owned_lang': '',
-            'only_owned': False,
+            'only_owned': saved_state.get('collection_only_owned', False),
             'language': config_manager.get_language(),
-            'sort_by': 'Name',
-            'sort_descending': False,
+            'sort_by': saved_state.get('collection_sort_by', 'Name'),
+            'sort_descending': saved_state.get('collection_sort_descending', False),
 
-            'view_scope': 'consolidated',
-            'view_mode': 'grid',
+            'view_scope': saved_state.get('collection_view_scope', 'consolidated'),
+            'view_mode': saved_state.get('collection_view_mode', 'grid'),
             'page': 1,
             'page_size': 48,
             'total_pages': 1,
         }
 
         files = persistence.list_collections()
-        self.state['selected_file'] = files[0] if files else None
+        saved_file = saved_state.get('collection_selected_file')
+        if saved_file and saved_file in files:
+            self.state['selected_file'] = saved_file
+        else:
+            self.state['selected_file'] = files[0] if files else None
         self.filter_pane: Optional[FilterPane] = None
         self.single_card_view = SingleCardView()
 
@@ -864,7 +871,14 @@ class CollectionPage:
 
     async def switch_scope(self, scope):
         self.state['view_scope'] = scope
+        persistence.save_ui_state({'collection_view_scope': scope})
         await self.load_data()
+        self.render_header.refresh()
+
+    def switch_view_mode(self, mode):
+        self.state['view_mode'] = mode
+        persistence.save_ui_state({'collection_view_mode': mode})
+        self.render_card_display.refresh()
         self.render_header.refresh()
 
     def open_new_collection_dialog(self):
@@ -936,6 +950,7 @@ class CollectionPage:
                     # We will handle that in the dialog logic or just refresh header
                 else:
                     self.state['selected_file'] = val
+                    persistence.save_ui_state({'collection_selected_file': val})
                     await self.load_data()
 
             with ui.select(file_options, value=self.state['selected_file'], label='Collection',
@@ -958,6 +973,11 @@ class CollectionPage:
                     self.state['sort_descending'] = True
                 else:
                     self.state['sort_descending'] = False
+
+                persistence.save_ui_state({
+                    'collection_sort_by': self.state['sort_by'],
+                    'collection_sort_descending': self.state['sort_descending']
+                })
                 self.render_header.refresh()
                 await self.apply_filters()
 
@@ -968,6 +988,7 @@ class CollectionPage:
 
                 async def toggle_sort_dir():
                     self.state['sort_descending'] = not self.state['sort_descending']
+                    persistence.save_ui_state({'collection_sort_descending': self.state['sort_descending']})
                     self.render_header.refresh()
                     await self.apply_filters()
 
@@ -977,6 +998,7 @@ class CollectionPage:
 
             async def on_owned_switch(e):
                 self.state['only_owned'] = e.value
+                persistence.save_ui_state({'collection_only_owned': e.value})
                 await self.apply_filters()
 
             with ui.row().classes('items-center'):
@@ -996,10 +1018,10 @@ class CollectionPage:
 
             with ui.button_group():
                 is_grid = self.state['view_mode'] == 'grid'
-                with ui.button(icon='grid_view', on_click=lambda: [self.state.update({'view_mode': 'grid'}), self.render_card_display.refresh(), self.render_header.refresh()]) \
+                with ui.button(icon='grid_view', on_click=lambda: self.switch_view_mode('grid')) \
                     .props(f'flat={not is_grid} color=accent'):
                     ui.tooltip('Show cards in a grid layout')
-                with ui.button(icon='list', on_click=lambda: [self.state.update({'view_mode': 'list'}), self.render_card_display.refresh(), self.render_header.refresh()]) \
+                with ui.button(icon='list', on_click=lambda: self.switch_view_mode('list')) \
                     .props(f'flat={is_grid} color=accent'):
                     ui.tooltip('Show cards in a list layout')
 
