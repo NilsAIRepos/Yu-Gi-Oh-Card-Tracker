@@ -41,7 +41,23 @@ SDWD-EN001; Blue-Eyes White Dragon
         self.assertEqual(len(result['bonus']), 1)
 
         self.assertEqual(result['bonus'][0].code, "SDWD-EN041")
+        # Check rarity parsing with comma (should pick first)
+        self.assertEqual(result['bonus'][0].rarity, "Secret Rare")
         self.assertEqual(result['main'][0].code, "SDWD-EN001")
+
+    def test_parse_wikitext_leading_whitespace_header(self):
+        # Header has leading space
+        text = """{{Set page header}}
+
+ == Bonus cards ==
+{{Set list|
+SDWD-EN041; Maiden of White
+}}
+"""
+        result = self.service._parse_wikitext(text)
+        self.assertIn('bonus', result)
+        self.assertEqual(len(result['bonus']), 1)
+        self.assertEqual(result['bonus'][0].code, "SDWD-EN041")
 
     def test_parse_wikitext_defaults(self):
          text = """{{Set list|rarities=Super Rare|

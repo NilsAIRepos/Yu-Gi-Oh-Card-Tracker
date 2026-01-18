@@ -206,8 +206,8 @@ class YugipediaService:
         # Often preceded by headers like == Bonus cards == or == Preconstructed Deck ==
 
         # Strategy: Split by "== ... ==" headers to identify context, then find {{Set list}} inside.
-
-        sections = re.split(r'(^==.*?==)', wikitext, flags=re.MULTILINE)
+        # Updated regex to handle leading whitespace before headers
+        sections = re.split(r'(^\s*==.*?==)', wikitext, flags=re.MULTILINE)
 
         main_cards = []
         bonus_cards = []
@@ -223,8 +223,10 @@ class YugipediaService:
             if not part: continue
 
             # Check if header
-            if part.startswith("==") and part.endswith("=="):
-                header = part.lower()
+            # Check if header (allowing for leading whitespace)
+            clean_part = part.strip()
+            if clean_part.startswith("==") and clean_part.endswith("=="):
+                header = clean_part.lower()
                 if "bonus" in header:
                     current_section = "bonus"
                 else:
@@ -274,8 +276,10 @@ class YugipediaService:
                         # Usually rarities param defines the columns or general rarity?
                         # Actually in the example: "rarities=Common" -> cards are Common unless specified.
                         # "rarities=Secret Rare, Quarter Century..." -> Just info?
-                        if ',' not in val:
-                            default_rarity = self._map_rarity(val)
+                        # If multiple rarities are listed (e.g. for promos), take the first one as default
+                        if ',' in val:
+                             val = val.split(',')[0].strip()
+                        default_rarity = self._map_rarity(val)
                 else:
                     if ';' in part:
                         list_content = part
