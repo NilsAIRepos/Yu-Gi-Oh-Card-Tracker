@@ -16,6 +16,8 @@ class ScanPage:
         self.target_collection_file = None
         self.image_element = None
         self.list_container = None
+        self.start_btn = None
+        self.stop_btn = None
         self.is_active = False
 
         # Load available collections
@@ -27,15 +29,26 @@ class ScanPage:
         if not self.is_active:
             return
 
+        # Check for zombie state (element deleted)
+        if self.image_element and self.image_element.is_deleted:
+            self.is_active = False
+            return
+
         # 1. Process Logic
         await scanner_manager.process_pending_lookups()
 
-        # 2. Update Video Feed
+        # 2. Update Controls
+        if self.start_btn:
+            self.start_btn.visible = not scanner_manager.running
+        if self.stop_btn:
+            self.stop_btn.visible = scanner_manager.running
+
+        # 3. Update Video Feed
         frame_b64 = scanner_manager.get_latest_frame()
         if frame_b64 and self.image_element:
             self.image_element.set_source(f'data:image/jpeg;base64,{frame_b64}')
 
-        # 3. Check for new results
+        # 4. Check for new results
         result = scanner_manager.get_latest_result()
         if result:
             self.add_scanned_card(result)
@@ -183,15 +196,15 @@ def scan_page():
             ui.select(options=page.collections, value=page.target_collection_file, label='Target Collection',
                       on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-64')
 
-        ui.button('Start Camera', on_click=lambda: scanner_manager.start(0)).props('icon=videocam')
-        ui.button('Stop Camera', on_click=scanner_manager.stop).props('icon=videocam_off flat color=negative')
+        page.start_btn = ui.button('Start Camera', on_click=lambda: scanner_manager.start(0)).props('icon=videocam')
+        page.stop_btn = ui.button('Stop Camera', on_click=scanner_manager.stop).props('icon=videocam_off flat color=negative')
 
         ui.space()
         ui.button('Add Scanned Cards', on_click=page.commit_cards).props('color=primary icon=save')
 
     with ui.row().classes('w-full h-[calc(100vh-150px)] gap-4'):
         # Left: Camera
-        with ui.card().classes('w-1/2 h-full p-0 overflow-hidden relative bg-black'):
+        with ui.card().classes('flex-1 min-w-0 h-full p-0 overflow-hidden relative bg-black'):
             page.image_element = ui.interactive_image().classes('w-full h-full object-contain')
 
             # Overlay Instructions
@@ -200,7 +213,7 @@ def scan_page():
                 ui.label("Hold steady for scanning.").classes('text-white text-sm')
 
         # Right: List
-        with ui.column().classes('w-1/2 h-full'):
+        with ui.column().classes('flex-1 min-w-0 h-full'):
             ui.label('Session Scanned Cards').classes('text-xl font-bold mb-2')
 
             # Scrollable container
