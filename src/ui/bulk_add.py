@@ -791,10 +791,8 @@ class BulkAddPage:
                     with ui.element('div').classes('relative w-full h-full'):
                          ui.image(img_src).classes('w-full h-full object-cover')
 
-                         with ui.row().classes('absolute top-0 left-0 w-full bg-black/80 p-0.5 gap-0 justify-center'):
-                             ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full text-center')
-
                          with ui.column().classes('absolute bottom-0 left-0 w-full bg-black/80 p-0.5 gap-0'):
+                             ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full')
                              ui.label(item.set_code).classes('text-[10px] font-mono font-bold text-yellow-500 leading-none truncate')
                              ui.label(item.rarity).classes('text-[8px] text-gray-300 leading-none truncate')
 
@@ -838,10 +836,8 @@ class BulkAddPage:
                          ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
                          ui.label(f"{item.quantity}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs shadow-md')
 
-                         with ui.row().classes('absolute top-0 left-0 w-full bg-black/80 p-0.5 gap-0 justify-center'):
-                             ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full text-center')
-
                          with ui.column().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[9px] px-1 gap-0 w-full'):
+                             ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full')
                              with ui.row().classes('w-full justify-between items-center'):
                                  with ui.row().classes('gap-1'):
                                      ui.label(cond_short).classes('font-bold text-yellow-500')
