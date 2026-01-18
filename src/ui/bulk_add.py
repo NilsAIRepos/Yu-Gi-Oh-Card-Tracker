@@ -133,7 +133,6 @@ class BulkAddPage:
         self.collection_filter_pane = None
         self.current_collection_obj = None
         self.api_card_map = {} # id -> ApiCard
-        self.collection_ui_map = {} # id -> {card: ui.card, qty_label: ui.label}
 
         # Load available collections
         self.state['available_collections'] = persistence.list_collections()
@@ -167,123 +166,6 @@ class BulkAddPage:
             logger.error(f"Error updating collection: {e}")
             ui.notify(f"Error: {e}", type='negative')
             return False
-
-    def _is_entry_visible(self, entry: BulkCollectionEntry) -> bool:
-        s = self.col_state
-
-        # Text Search
-        txt = s['search_text'].lower()
-        if txt:
-            if not (txt in entry.api_card.name.lower() or
-                    txt in entry.set_code.lower() or
-                    txt in entry.api_card.desc.lower()):
-                return False
-
-        # Filters
-        if s['filter_card_type'] and not any(t in entry.api_card.type for t in s['filter_card_type']): return False
-        if s['filter_attr'] and entry.api_card.attribute != s['filter_attr']: return False
-        if s['filter_monster_race'] and ("Monster" in entry.api_card.type and entry.api_card.race != s['filter_monster_race']): return False
-        if s['filter_st_race'] and (("Spell" in entry.api_card.type or "Trap" in entry.api_card.type) and entry.api_card.race != s['filter_st_race']): return False
-        if s['filter_archetype'] and entry.api_card.archetype != s['filter_archetype']: return False
-
-        if s['filter_set']:
-             target = s['filter_set'].split('|')[0].strip().lower()
-             if target not in entry.set_code.lower(): return False
-
-        if s['filter_rarity'] and entry.rarity.lower() != s['filter_rarity'].lower(): return False
-
-        if s['filter_monster_category']:
-             if not any(entry.api_card.matches_category(cat) for cat in s['filter_monster_category']): return False
-
-        if s['filter_owned_lang'] and entry.language != s['filter_owned_lang']: return False
-        if s['filter_condition'] and entry.condition not in s['filter_condition']: return False
-
-        return True
-
-    def _handle_local_collection_update(self, api_card, set_code, rarity, lang, qty_delta, cond, first, img_id, variant_id=None):
-        if not variant_id:
-            variant_id = generate_variant_id(api_card.id, set_code, rarity, img_id)
-
-        unique_id = f"{variant_id}_{lang}_{cond}_{first}"
-
-        # 1. Update State (self.col_state['collection_cards'])
-        entry = next((e for e in self.col_state['collection_cards'] if e.id == unique_id), None)
-
-        if entry:
-            entry.quantity += qty_delta
-        else:
-            if qty_delta <= 0: return # Trying to remove non-existent card
-
-            # Create new entry
-            set_name = "Unknown Set"
-            if api_card.card_sets:
-                for s in api_card.card_sets:
-                    if s.set_code == set_code:
-                        set_name = s.set_name
-                        break
-
-            img_url = None
-            if api_card.card_images:
-                 for img in api_card.card_images:
-                        if img.id == img_id:
-                            img_url = img.image_url_small
-                            break
-                 if not img_url: img_url = api_card.card_images[0].image_url_small
-
-            entry = BulkCollectionEntry(
-                id=unique_id,
-                api_card=api_card,
-                quantity=qty_delta,
-                set_code=set_code,
-                rarity=rarity,
-                language=lang,
-                condition=cond,
-                first_edition=first,
-                image_url=img_url,
-                image_id=img_id,
-                variant_id=variant_id,
-                price=0.0
-            )
-            # Insert at top
-            self.col_state['collection_cards'].insert(0, entry)
-
-        # 2. Update filtered list
-        visible = self._is_entry_visible(entry)
-        in_filtered = entry in self.col_state['collection_filtered']
-
-        if visible and not in_filtered:
-             self.col_state['collection_filtered'].insert(0, entry)
-             self.update_collection_pagination()
-        elif not visible and in_filtered:
-             self.col_state['collection_filtered'].remove(entry)
-             self.update_collection_pagination()
-        elif visible and in_filtered:
-             if entry.quantity <= 0:
-                 self.col_state['collection_filtered'].remove(entry)
-                 self.update_collection_pagination()
-
-        if entry.quantity <= 0 and entry in self.col_state['collection_cards']:
-             self.col_state['collection_cards'].remove(entry)
-
-        # 3. Update UI
-        if not hasattr(self, 'collection_grid') or not self.collection_grid:
-            # If grid doesn't exist (e.g. empty collection state), refresh to build it
-            if visible and entry.quantity > 0:
-                self.render_collection_content.refresh()
-            return
-
-        if unique_id in self.collection_ui_map:
-            ui_objs = self.collection_ui_map[unique_id]
-            if entry.quantity > 0:
-                ui_objs['qty_label'].set_text(str(entry.quantity))
-            else:
-                ui_objs['card'].delete()
-                del self.collection_ui_map[unique_id]
-        else:
-            if visible and entry.quantity > 0:
-                 with self.collection_grid:
-                     card = self._create_collection_card(entry)
-                     card.move(target_index=0)
 
     async def undo_last_action(self):
         col_name = self.state['selected_collection']
@@ -356,19 +238,8 @@ class BulkAddPage:
                 'variant_id': var_id
              }
              changelog_manager.log_change(self.state['selected_collection'], 'ADD', card_data, qty)
-
-             self._handle_local_collection_update(
-                 api_card=entry.api_card,
-                 set_code=entry.set_code,
-                 rarity=entry.rarity,
-                 lang=lang,
-                 qty_delta=qty,
-                 cond=cond,
-                 first=first,
-                 img_id=entry.image_id,
-                 variant_id=var_id
-             )
-
+             await self.load_collection_data()
+             self.render_library_content.refresh()
              self.render_header.refresh()
         return success
 
@@ -415,19 +286,7 @@ class BulkAddPage:
                 'variant_id': entry.variant_id
              }
              changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', card_data, qty_to_remove)
-
-             self._handle_local_collection_update(
-                 api_card=entry.api_card,
-                 set_code=entry.set_code,
-                 rarity=entry.rarity,
-                 lang=entry.language,
-                 qty_delta=-qty_to_remove,
-                 cond=entry.condition,
-                 first=entry.first_edition,
-                 img_id=entry.image_id,
-                 variant_id=entry.variant_id
-             )
-
+             await self.load_collection_data()
              self.render_header.refresh()
         return success
 
@@ -458,19 +317,7 @@ class BulkAddPage:
                 'variant_id': entry.variant_id
              }
              changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', card_data, 1)
-
-             self._handle_local_collection_update(
-                 api_card=entry.api_card,
-                 set_code=entry.set_code,
-                 rarity=entry.rarity,
-                 lang=entry.language,
-                 qty_delta=-1,
-                 cond=entry.condition,
-                 first=entry.first_edition,
-                 img_id=entry.image_id,
-                 variant_id=entry.variant_id
-             )
-
+             await self.load_collection_data()
              self.render_header.refresh()
         return success
 
@@ -493,6 +340,8 @@ class BulkAddPage:
 
              await self.add_card_to_collection(entry, lang, cond, is_first, 1)
              ui.notify(f"Added {entry.api_card.name}", type='positive')
+             # Refresh library to avoid artifacts or stuck drag states
+             self.render_library_content.refresh()
 
         # REMOVE: Collection -> Library (Drag back to library to remove)
         elif from_id == 'collection-list' and to_id == 'library-list':
@@ -501,6 +350,8 @@ class BulkAddPage:
 
              await self.remove_card_from_collection(entry)
              ui.notify(f"Removed {entry.api_card.name}", type='info')
+             # Refresh library to ensure the dropped item doesn't stay as a ghost
+             self.render_library_content.refresh()
 
         # REORDER/REFRESH: Collection -> Collection
         elif from_id == 'collection-list' and to_id == 'collection-list':
@@ -989,49 +840,8 @@ class BulkAddPage:
         # putMode = true to allow dropping from collection (to remove)
         ui.run_javascript('initSortable("library-list", "shared", "clone", true)')
 
-    def _create_collection_card(self, item):
-        img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
-
-        flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷'}
-        flag = flag_map.get(item.language, item.language)
-        cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
-        cond_short = cond_map.get(item.condition, item.condition[:2].upper())
-
-        card = ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-accent w-full aspect-[2/3] select-none') \
-                .props(f'data-id="{item.id}"') \
-                .on('click', lambda i=item: self.open_single_view_collection(i)) \
-                .on('contextmenu.prevent', lambda i=item: self.reduce_collection_card_qty(i))
-
-        with card:
-            with ui.element('div').classes('relative w-full h-full'):
-                    ui.image(img_src).classes('w-full h-full object-cover')
-
-                    ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
-                    qty_label = ui.label(f"{item.quantity}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs shadow-md')
-
-                    with ui.column().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[9px] px-1 gap-0 w-full'):
-                        ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full')
-                        with ui.row().classes('w-full justify-between items-center'):
-                            with ui.row().classes('gap-1'):
-                                ui.label(cond_short).classes('font-bold text-yellow-500')
-                                if item.first_edition:
-                                    ui.label('1st').classes('font-bold text-orange-400')
-                            ui.label(item.set_code).classes('font-mono')
-                        ui.label(item.rarity).classes('text-[8px] text-gray-300 w-full truncate')
-
-            self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
-
-        self.collection_ui_map[item.id] = {
-            'card': card,
-            'qty_label': qty_label
-        }
-        return card
-
     @ui.refreshable
     def render_collection_content(self):
-        # Clear UI map on full refresh
-        self.collection_ui_map = {}
-
         start = (self.col_state['collection_page'] - 1) * self.col_state['collection_page_size']
         end = min(start + self.col_state['collection_page_size'], len(self.col_state['collection_filtered']))
         items = self.col_state['collection_filtered'][start:end]
@@ -1046,10 +856,37 @@ class BulkAddPage:
             ui.label('Collection is empty or no matches.').classes('text-gray-500 italic w-full text-center mt-10')
             return
 
-        self.collection_grid = ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))').classes('w-full gap-2 p-2').props('id="collection-list"')
-        with self.collection_grid:
+        with ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))').classes('w-full gap-2 p-2').props('id="collection-list"'):
             for item in items:
-                self._create_collection_card(item)
+                img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
+
+                flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷'}
+                flag = flag_map.get(item.language, item.language)
+                cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
+                cond_short = cond_map.get(item.condition, item.condition[:2].upper())
+
+                with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-accent w-full aspect-[2/3] select-none') \
+                        .props(f'data-id="{item.id}"') \
+                        .on('click', lambda i=item: self.open_single_view_collection(i)) \
+                        .on('contextmenu.prevent', lambda i=item: self.reduce_collection_card_qty(i)):
+
+                    with ui.element('div').classes('relative w-full h-full'):
+                         ui.image(img_src).classes('w-full h-full object-cover')
+
+                         ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
+                         ui.label(f"{item.quantity}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs shadow-md')
+
+                         with ui.column().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[9px] px-1 gap-0 w-full'):
+                             ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full')
+                             with ui.row().classes('w-full justify-between items-center'):
+                                 with ui.row().classes('gap-1'):
+                                     ui.label(cond_short).classes('font-bold text-yellow-500')
+                                     if item.first_edition:
+                                         ui.label('1st').classes('font-bold text-orange-400')
+                                 ui.label(item.set_code).classes('font-mono')
+                             ui.label(item.rarity).classes('text-[8px] text-gray-300 w-full truncate')
+
+                    self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
 
         ui.run_javascript('initSortable("collection-list", "shared", true, true)')
 

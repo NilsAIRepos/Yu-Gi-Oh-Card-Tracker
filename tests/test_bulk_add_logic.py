@@ -20,7 +20,6 @@ def mock_changelog():
 def mock_config():
     with patch('src.ui.bulk_add.config_manager') as c:
         c.get_language.return_value = 'en'
-        c.get_bulk_add_page_size.return_value = 50
         yield c
 
 @pytest.fixture
@@ -52,10 +51,6 @@ async def test_add_card_to_collection(mock_persistence, mock_changelog, mock_con
     # Mock render_library_content refresh
     page.render_library_content = MagicMock()
     page.render_library_content.refresh = MagicMock()
-
-    # Mock render_collection_content refresh
-    page.render_collection_content = MagicMock()
-    page.render_collection_content.refresh = MagicMock()
 
     # Mock load_collection_data to avoid async complexity or just mock it out
     page.load_collection_data = AsyncMock()
