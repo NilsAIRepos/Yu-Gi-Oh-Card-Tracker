@@ -239,7 +239,6 @@ class BulkAddPage:
              }
              changelog_manager.log_change(self.state['selected_collection'], 'ADD', card_data, qty)
              await self.load_collection_data()
-             self.render_library_content.refresh()
              self.render_header.refresh()
         return success
 
@@ -340,8 +339,6 @@ class BulkAddPage:
 
              await self.add_card_to_collection(entry, lang, cond, is_first, 1)
              ui.notify(f"Added {entry.api_card.name}", type='positive')
-             # Refresh library to avoid artifacts or stuck drag states
-             self.render_library_content.refresh()
 
         # REMOVE: Collection -> Library (Drag back to library to remove)
         elif from_id == 'collection-list' and to_id == 'library-list':
