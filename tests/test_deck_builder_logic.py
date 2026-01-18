@@ -134,5 +134,20 @@ class TestDeckBuilderLogic(unittest.TestCase):
         # Order: Owned 5, Owned 2, Owned 0 -> id: 1, 3, 2
         self.assertEqual([c.id for c in res], [1, 3, 2])
 
+    def test_duplicate_check(self):
+        # Setup available decks
+        self.page.state['available_decks'] = ['MyDeck.ydk', 'OtherDeck.ydk']
+
+        # Exact match
+        self.assertTrue(self.page._is_duplicate_deck("MyDeck"))
+
+        # Case insensitive match
+        self.assertTrue(self.page._is_duplicate_deck("mydeck"))
+        self.assertTrue(self.page._is_duplicate_deck("MYDECK"))
+
+        # No match
+        self.assertFalse(self.page._is_duplicate_deck("NewDeck"))
+        self.assertFalse(self.page._is_duplicate_deck("MyDeck2"))
+
 if __name__ == '__main__':
     unittest.main()

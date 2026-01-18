@@ -381,10 +381,14 @@ class DeckBuilderPage:
             logger.error(f"Error saving deck: {e}")
             ui.notify(f"Error saving deck: {e}", type='negative')
 
+    def _is_duplicate_deck(self, name: str) -> bool:
+        filename = f"{name}.ydk"
+        existing_lower = {f.lower() for f in self.state['available_decks']}
+        return filename.lower() in existing_lower
+
     async def create_new_deck(self, name):
         if not name: return
-        filename = f"{name}.ydk"
-        if filename in self.state['available_decks']:
+        if self._is_duplicate_deck(name):
              ui.notify("Deck already exists!", type='warning')
              return
 
@@ -692,17 +696,17 @@ class DeckBuilderPage:
 
                 with ui.dialog() as d, ui.card():
                     ui.label('Save Deck As').classes('text-h6')
-                    name_input = ui.input('New Name')
+                    name_input = ui.input('New Name', value=self.state['current_deck_name'])
                     async def save():
                         name = name_input.value
                         if not name: return
 
-                        filename = f"{name}.ydk"
-                        if filename in self.state['available_decks']:
+                        if self._is_duplicate_deck(name):
                              ui.notify(f"Deck '{name}' already exists!", type='negative')
                              return
 
                         try:
+                            filename = f"{name}.ydk"
                             # Save current deck content to new file
                             await run.io_bound(persistence.save_deck, self.state['current_deck'], filename)
 
