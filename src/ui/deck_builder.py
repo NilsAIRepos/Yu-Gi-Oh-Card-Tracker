@@ -81,7 +81,12 @@ class DeckBuilderPage:
         ui_state = persistence.load_ui_state()
         last_deck = ui_state.get('deck_builder_last_deck')
         last_col = ui_state.get('deck_builder_last_collection')
-        last_banlist = ui_state.get('deck_builder_last_banlist')
+
+        # Default to TCG if no state exists, but respect None (No Banlist) if saved
+        if 'deck_builder_last_banlist' in ui_state:
+            last_banlist = ui_state['deck_builder_last_banlist']
+        else:
+            last_banlist = 'TCG'
 
         self.state = {
             'search_text': '',
@@ -196,17 +201,15 @@ class DeckBuilderPage:
             self.state['available_banlists'] = banlist_service.get_banlists()
 
             # Load default banlist
+            # If current selection is invalid (e.g. file deleted), revert to None (No Banlist)
             if self.state['current_banlist_name'] and self.state['current_banlist_name'] not in self.state['available_banlists']:
                  self.state['current_banlist_name'] = None
 
-            if not self.state['current_banlist_name'] and self.state['available_banlists']:
-                 if 'TCG' in self.state['available_banlists']:
-                      self.state['current_banlist_name'] = 'TCG'
-                 else:
-                      self.state['current_banlist_name'] = self.state['available_banlists'][0]
-
+            # Load the actual map if a banlist is selected
             if self.state['current_banlist_name']:
                  self.state['current_banlist_map'] = await banlist_service.load_banlist(self.state['current_banlist_name'])
+            else:
+                 self.state['current_banlist_map'] = {}
 
             # Setup Filters Metadata
             sets = set()
@@ -602,7 +605,16 @@ class DeckBuilderPage:
             ui.space()
 
             # Banlist Selection
-            banlist_options = self.state['available_banlists']
+            banlist_options = {None: 'No Banlist'}
+            for b in sorted(self.state['available_banlists']):
+                banlist_options[b] = b
+
+            # Ensure current value is in options to prevent 'Invalid value' error
+            # This handles the initial load state where available_banlists might be empty
+            curr_ban = self.state['current_banlist_name']
+            if curr_ban is not None and curr_ban not in banlist_options:
+                banlist_options[curr_ban] = curr_ban
+
             async def on_banlist_change(e):
                 val = e.value
                 persistence.save_ui_state({'deck_builder_last_banlist': val})
@@ -615,7 +627,7 @@ class DeckBuilderPage:
                 self.refresh_deck_area()
                 self.refresh_search_results()
 
-            ui.select(banlist_options, value=self.state['current_banlist_name'], label='Banlist', on_change=on_banlist_change).classes('min-w-[150px]')
+            ui.select(banlist_options, value=curr_ban, label='Banlist', on_change=on_banlist_change).classes('min-w-[150px]')
 
             async def save_banlist_as():
                 with ui.dialog() as d, ui.card():
