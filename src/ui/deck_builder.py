@@ -49,25 +49,6 @@ class DeckBuilderPage:
                     ghostClass: 'sortable-ghost-custom',
                     forceFallback: true,
                     fallbackTolerance: 3,
-                    onMove: function (evt) {
-                        var toZone = evt.to.id.replace('deck-', '').replace('gallery-list', 'gallery');
-                        // gallery-list has ID "gallery-list" so replace logic above works to get "gallery"
-                        // But actually the ID is usually passed as "gallery-list" to initSortable.
-                        // Let's rely on the ID check directly for robustness or normalized zone name.
-
-                        // Normalized zone name logic matching onEnd:
-                        var normalizedTo = evt.to.id.replace('deck-', '').replace('gallery-list', 'gallery');
-
-                        var cardIsExtra = evt.dragged.getAttribute('data-is-extra') === 'true';
-
-                        if (normalizedTo === 'gallery') return false; // Prevent dragging back to gallery (optional)
-                        if (normalizedTo === 'side') return true; // Side deck accepts all
-
-                        if (normalizedTo === 'main' && cardIsExtra) return false;
-                        if (normalizedTo === 'extra' && !cardIsExtra) return false;
-
-                        return true;
-                    },
                     onClone: function (evt) {
                          evt.clone.removeAttribute('id');
                     },
@@ -888,7 +869,7 @@ class DeckBuilderPage:
                          owned_qty = owned_map.get(card.id, 0)
 
                          with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full h-full select-none') \
-                            .props(f'data-id="{card.id}" data-is-extra="{str(card.is_extra_deck).lower()}"') \
+                            .props(f'data-id="{card.id}"') \
                             .on('click', lambda c=card: self.open_deck_builder_wrapper(c)):
 
                              with ui.element('div').classes('relative w-full aspect-[2/3]'):
@@ -945,7 +926,7 @@ class DeckBuilderPage:
             classes += ' opacity-100'
 
         uid = f"card-{uuid.uuid4()}"
-        card_el = ui.card().classes(classes).props(f'data-id="{card_id}" id="{uid}" data-is-extra="{str(card.is_extra_deck).lower()}"')
+        card_el = ui.card().classes(classes).props(f'data-id="{card_id}" id="{uid}"')
         with card_el:
             ui.image(img_src).classes('w-full h-full object-cover rounded')
             with ui.element('div').classes('absolute inset-0 bg-black/50 hidden group-hover:flex items-center justify-center'):
@@ -1102,19 +1083,6 @@ class DeckBuilderPage:
 
         # Update 'to' zone
         if to_zone in valid_zones:
-            # Backend validation for zone rules
-            for cid in to_ids:
-                card = self.api_card_map.get(cid)
-                if card:
-                    if to_zone == 'main' and card.is_extra_deck:
-                        ui.notify(f"Invalid move: {card.name} belongs to Extra Deck", type='negative')
-                        self.refresh_deck_area()
-                        return
-                    if to_zone == 'extra' and not card.is_extra_deck:
-                        ui.notify(f"Invalid move: {card.name} belongs to Main Deck", type='negative')
-                        self.refresh_deck_area()
-                        return
-
             setattr(deck, to_zone, to_ids)
 
         # Update 'from' zone if it's a valid deck zone and different from 'to'

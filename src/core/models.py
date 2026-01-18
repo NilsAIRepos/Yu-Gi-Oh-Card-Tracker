@@ -124,15 +124,6 @@ class ApiCard(BaseModel):
     card_sets: List[ApiCardSet] = []
     card_prices: List[ApiCardPrice] = []
 
-    @property
-    def is_extra_deck(self) -> bool:
-        """
-        Determines if the card belongs in the Extra Deck.
-        Checks for Fusion, Synchro, XYZ, or Link in the card type.
-        """
-        extra_types = ["Fusion", "Synchro", "XYZ", "Link"]
-        return any(t in self.type for t in extra_types)
-
     def matches_category(self, category: str) -> bool:
         """
         Checks if the card belongs to the specified monster category (e.g., 'Normal', 'Effect', 'Synchro').
