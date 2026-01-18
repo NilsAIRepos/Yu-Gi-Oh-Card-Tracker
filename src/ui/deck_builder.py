@@ -621,6 +621,50 @@ class DeckBuilderPage:
         if self.filter_pane: self.filter_pane.reset_ui_elements()
         await self.apply_filters()
 
+    def open_new_deck_dialog(self):
+        with ui.dialog() as d, ui.card().classes('w-96'):
+             ui.label('Create New Deck').classes('text-h6')
+             with ui.tabs().classes('w-full') as tabs:
+                 t_new = ui.tab('New Empty')
+                 t_import = ui.tab('Import .ydk')
+             with ui.tab_panels(tabs, value=t_new).classes('w-full'):
+                 with ui.tab_panel(t_new):
+                     name_input = ui.input('Deck Name').classes('w-full')
+                     async def create():
+                         await self.create_new_deck(name_input.value)
+                         d.close()
+                     ui.button('Create', on_click=create).props('color=positive').classes('w-full q-mt-md')
+                 with ui.tab_panel(t_import):
+                     ui.label('Select .ydk file').classes('text-sm text-grey')
+                     async def handle_upload(e):
+                         try:
+                             f_obj = None
+                             if hasattr(e, 'content'): f_obj = e.content
+                             elif hasattr(e, 'file'): f_obj = e.file
+                             if not f_obj: raise Exception("Could not find file content")
+
+                             content = (await f_obj.read()).decode('utf-8')
+
+                             raw_name = None
+                             if hasattr(e, 'name'): raw_name = e.name
+                             elif hasattr(f_obj, 'name'): raw_name = f_obj.name
+                             elif hasattr(f_obj, 'filename'): raw_name = f_obj.filename
+
+                             if not raw_name: raise Exception("Could not determine filename")
+
+                             name = os.path.basename(raw_name).replace('.ydk', '')
+                             filename = f"{name}.ydk"
+                             filepath = f"data/decks/{filename}"
+                             with open(filepath, 'w', encoding='utf-8') as f: f.write(content)
+                             await self.load_deck(filename)
+                             d.close()
+                             ui.notify(f"Imported deck: {name}", type='positive')
+                         except Exception as ex:
+                             logger.error(f"Error importing deck: {ex}", exc_info=True)
+                             ui.notify(f"Error importing: {ex}", type='negative')
+                     ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=.ydk').classes('w-full')
+        d.open()
+
     @ui.refreshable
     def render_header(self):
         with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
@@ -631,54 +675,15 @@ class DeckBuilderPage:
 
             async def on_deck_change(e):
                 if e.value == '__NEW__':
-                    with ui.dialog() as d, ui.card().classes('w-96'):
-                         ui.label('Create New Deck').classes('text-h6')
-                         with ui.tabs().classes('w-full') as tabs:
-                             t_new = ui.tab('New Empty')
-                             t_import = ui.tab('Import .ydk')
-                         with ui.tab_panels(tabs, value=t_new).classes('w-full'):
-                             with ui.tab_panel(t_new):
-                                 name_input = ui.input('Deck Name').classes('w-full')
-                                 async def create():
-                                     await self.create_new_deck(name_input.value)
-                                     d.close()
-                                 ui.button('Create', on_click=create).props('color=positive').classes('w-full q-mt-md')
-                             with ui.tab_panel(t_import):
-                                 ui.label('Select .ydk file').classes('text-sm text-grey')
-                                 async def handle_upload(e):
-                                     try:
-                                         f_obj = None
-                                         if hasattr(e, 'content'): f_obj = e.content
-                                         elif hasattr(e, 'file'): f_obj = e.file
-                                         if not f_obj: raise Exception("Could not find file content")
-
-                                         content = (await f_obj.read()).decode('utf-8')
-
-                                         raw_name = None
-                                         if hasattr(e, 'name'): raw_name = e.name
-                                         elif hasattr(f_obj, 'name'): raw_name = f_obj.name
-                                         elif hasattr(f_obj, 'filename'): raw_name = f_obj.filename
-
-                                         if not raw_name: raise Exception("Could not determine filename")
-
-                                         name = os.path.basename(raw_name).replace('.ydk', '')
-                                         filename = f"{name}.ydk"
-                                         filepath = f"data/decks/{filename}"
-                                         with open(filepath, 'w', encoding='utf-8') as f: f.write(content)
-                                         await self.load_deck(filename)
-                                         d.close()
-                                         ui.notify(f"Imported deck: {name}", type='positive')
-                                     except Exception as ex:
-                                         logger.error(f"Error importing deck: {ex}", exc_info=True)
-                                         ui.notify(f"Error importing: {ex}", type='negative')
-                                 ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=.ydk').classes('w-full')
-                    d.open()
+                    self.open_new_deck_dialog()
                 elif e.value:
                     await self.load_deck(e.value)
 
             selected = f"{self.state['current_deck_name']}.ydk" if self.state['current_deck_name'] else None
             if selected and selected not in deck_options: selected = None
             ui.select(deck_options, value=selected, label='Current Deck', on_change=on_deck_change).classes('min-w-[200px]')
+
+            ui.button(icon='add_circle', on_click=self.open_new_deck_dialog).props('flat round color=white').tooltip('Create New Deck')
 
             async def save_deck_as():
                 if not self.state['current_deck']:
