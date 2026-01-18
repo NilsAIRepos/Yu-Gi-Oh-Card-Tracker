@@ -774,3 +774,114 @@ class SingleCardView:
 
         except Exception as e:
             logger.error(f"Error opening deck builder view: {e}", exc_info=True)
+
+    async def open_db_edit_view(
+        self,
+        card: ApiCard,
+        variant_id: str,
+        set_code: str,
+        rarity: str,
+        image_id: int,
+        on_save_callback: Callable[[str, str, int], Any]
+    ):
+        try:
+            input_state = {
+                'set_code': set_code,
+                'rarity': rarity,
+                'image_id': image_id
+            }
+
+            with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
+                d.open()
+                ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
+
+                with ui.row().classes('w-full h-full no-wrap gap-0'):
+                    # Image Column
+                    with ui.column().classes('w-1/3 min-w-[300px] h-full bg-black items-center justify-center p-8 shrink-0'):
+                        image_element = ui.image().classes('max-h-full max-w-full object-contain shadow-2xl')
+
+                        def update_image():
+                            img_id = input_state['image_id']
+                            high_res_remote_url = None
+                            low_res_url = None
+
+                            if card.card_images:
+                                for img in card.card_images:
+                                    if img.id == img_id:
+                                        high_res_remote_url = img.image_url
+                                        low_res_url = img.image_url_small
+                                        break
+                                # Fallback if specific ID not found in images (legacy/custom)
+                                if not low_res_url:
+                                    low_res_url = card.card_images[0].image_url_small if card.card_images else None
+
+                            self._setup_high_res_image_logic(
+                                img_id,
+                                high_res_remote_url,
+                                low_res_url,
+                                image_element,
+                                current_id_check=lambda: input_state['image_id'] == img_id
+                            )
+
+                        update_image()
+
+                    with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
+                        # Header
+                        ui.label(f"Edit Database Entry: {card.name}").classes('text-2xl font-bold text-accent q-mb-md')
+                        ui.label(f"Variant ID: {variant_id}").classes('text-xs text-gray-500 font-mono q-mb-xl')
+
+                        # Form
+                        with ui.card().classes('w-full bg-gray-800 p-6 gap-6'):
+                            ui.label('Edit Variant Details').classes('text-h6 text-white')
+
+                            # Set Code Input
+                            ui.input('Set Code', value=input_state['set_code'],
+                                     on_change=lambda e: input_state.update({'set_code': e.value})).classes('w-full').props('dark')
+
+                            # Rarity Select
+                            rarity_options = list(STANDARD_RARITIES)
+                            if input_state['rarity'] not in rarity_options:
+                                rarity_options.append(input_state['rarity'])
+
+                            ui.select(rarity_options, label='Rarity', value=input_state['rarity'],
+                                      on_change=lambda e: input_state.update({'rarity': e.value})).classes('w-full').props('dark')
+
+                            # Image/Artstyle Select
+                            art_options = {}
+                            if card.card_images:
+                                for i, img in enumerate(card.card_images):
+                                    art_options[img.id] = f"Artwork {i+1} (ID: {img.id})"
+
+                            # Ensure current image_id is in options
+                            if input_state['image_id'] not in art_options:
+                                art_options[input_state['image_id']] = f"Custom/Unknown (ID: {input_state['image_id']})"
+
+                            def on_art_change(e):
+                                input_state['image_id'] = e.value
+                                update_image()
+
+                            ui.select(art_options, label='Artwork / Image ID', value=input_state['image_id'],
+                                      on_change=on_art_change).classes('w-full').props('dark')
+
+                            ui.separator().classes('q-my-md bg-gray-600')
+
+                            # Actions
+                            with ui.row().classes('w-full justify-end gap-4'):
+                                ui.button('Cancel', on_click=d.close).props('flat color=white')
+
+                                async def save():
+                                    success = await on_save_callback(
+                                        input_state['set_code'],
+                                        input_state['rarity'],
+                                        input_state['image_id']
+                                    )
+                                    if success:
+                                        d.close()
+                                        ui.notify('Changes saved to database.', type='positive')
+                                    else:
+                                        ui.notify('Failed to save changes.', type='negative')
+
+                                ui.button('Save Changes', on_click=save).props('color=positive icon=save')
+
+        except Exception as e:
+            logger.error(f"Error opening db edit view: {e}", exc_info=True)

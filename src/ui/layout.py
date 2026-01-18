@@ -155,6 +155,7 @@ def create_layout(content_function):
             nav_button('Bulk Add', 'playlist_add', '/bulk_add')
             nav_button('Scan Cards', 'camera', '/scan')
             nav_button('Import Tools', 'qr_code_scanner', '/import')
+            nav_button('Edit Card DB', 'edit', '/db_editor')
 
             ui.separator().classes('q-my-md bg-grey-8')
             ui.label('Settings').classes('text-grey-4 q-px-md text-sm uppercase font-bold')

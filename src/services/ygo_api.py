@@ -279,6 +279,61 @@ class YugiohService:
 
         return new_set
 
+    async def update_card_variant(self, card_id: int, variant_id: str,
+                                  set_code: str, set_rarity: str, image_id: int,
+                                  language: str = "en") -> bool:
+        """
+        Updates an existing card variant in the database.
+        """
+        cards = await self.load_card_database(language)
+        card = next((c for c in cards if c.id == card_id), None)
+
+        if not card:
+            logger.error(f"Card {card_id} not found for update.")
+            return False
+
+        variant = next((v for v in card.card_sets if v.variant_id == variant_id), None)
+        if not variant:
+            # If variant not found, assume we are creating a new one (e.g. from "No Set" state)
+            logger.info(f"Variant {variant_id} not found for card {card_id}. Creating new variant.")
+
+            new_id = str(uuid.uuid4())
+            set_name = "Custom Set"
+
+            # Attempt to resolve set name from global sets
+            prefix = set_code.split('-')[0]
+            set_info = await self.get_set_info(prefix)
+            if set_info:
+                set_name = set_info.get('name', set_name)
+
+            new_set = ApiCardSet(
+                variant_id=new_id,
+                set_name=set_name,
+                set_code=set_code,
+                set_rarity=set_rarity,
+                image_id=image_id
+            )
+            card.card_sets.append(new_set)
+
+            await self.save_card_database(cards, language)
+            logger.info(f"Added new variant {new_id} to card {card_id} (update fallback)")
+            return True
+
+        # Update fields
+        variant.set_code = set_code
+        variant.set_rarity = set_rarity
+        variant.image_id = image_id
+
+        # Attempt to refresh set_name from global sets if code changed
+        prefix = set_code.split('-')[0]
+        set_info = await self.get_set_info(prefix)
+        if set_info:
+            variant.set_name = set_info.get('name', variant.set_name)
+
+        await self.save_card_database(cards, language)
+        logger.info(f"Updated variant {variant_id} for card {card_id}")
+        return True
+
     async def load_card_database(self, language: str = "en") -> List[ApiCard]:
         """Loads the database from disk. If missing, fetches it."""
         if language in self._cards_cache:
