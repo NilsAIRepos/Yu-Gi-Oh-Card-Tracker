@@ -433,7 +433,8 @@ class SingleCardView:
         set_price: float = 0.0,
         current_collection: Any = None,
         save_callback: Callable = None,
-        variant_id: str = None
+        variant_id: str = None,
+        hide_header_stats: bool = False
     ):
         try:
             set_options = {}
@@ -549,6 +550,10 @@ class SingleCardView:
                         if owned_count == 0:
                             owned_label.set_visibility(False)
 
+                        if hide_header_stats:
+                            # Hide total owned section if requested (or just the count, prompt says 'no Total owned')
+                            owned_label.parent_slot.parent.set_visibility(False)
+
                         ui.separator().classes('q-my-md bg-gray-700')
 
                         # Card Details Grid
@@ -563,9 +568,21 @@ class SingleCardView:
                                 lbl_set_code = info_label('Set Code', set_code, 'yellow-500')
                                 lbl_rarity = info_label('Rarity', rarity)
 
-                                lbl_lang = info_label('Language', language)
-                                lbl_cond = info_label('Condition', condition)
-                                lbl_edition = info_label('Edition', "1st Edition" if first_edition else "Unlimited")
+                                if not hide_header_stats:
+                                    lbl_lang = info_label('Language', language)
+                                    lbl_cond = info_label('Condition', condition)
+                                    lbl_edition = info_label('Edition', "1st Edition" if first_edition else "Unlimited")
+                                else:
+                                    # Create placeholders or just skip?
+                                    # Since we use variables later in update_display_stats, we must define them.
+                                    # But we can hide the UI elements.
+                                    # Or simpler: Define them but set visibility false.
+                                    lbl_lang = info_label('Language', language)
+                                    lbl_lang.parent_slot.parent.set_visibility(False)
+                                    lbl_cond = info_label('Condition', condition)
+                                    lbl_cond.parent_slot.parent.set_visibility(False)
+                                    lbl_edition = info_label('Edition', "1st Edition" if first_edition else "Unlimited")
+                                    lbl_edition.parent_slot.parent.set_visibility(False)
 
                         ui.separator().classes('q-my-md bg-gray-700')
 

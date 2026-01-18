@@ -138,6 +138,7 @@ def create_layout(content_function):
             nav_button('Collection', 'style', '/collection')
             nav_button('Browse Sets', 'library_books', '/sets')
             nav_button('Deck Builder', 'construction', '/decks')
+            nav_button('Bulk Add', 'playlist_add', '/bulk_add')
             nav_button('Import Tools', 'qr_code_scanner', '/import')
 
             ui.separator().classes('q-my-md bg-grey-8')

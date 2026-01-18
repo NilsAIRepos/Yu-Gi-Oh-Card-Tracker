@@ -14,6 +14,7 @@ from src.ui.collection import collection_page
 from src.ui.deck_builder import deck_builder_page
 from src.ui.import_tools import import_tools_page
 from src.ui.browse_sets import browse_sets_page
+from src.ui.bulk_add import bulk_add_page
 
 @ui.page('/')
 def home():
@@ -30,6 +31,10 @@ def sets():
 @ui.page('/decks')
 def decks():
     create_layout(deck_builder_page)
+
+@ui.page('/bulk_add')
+def bulk_add():
+    create_layout(bulk_add_page)
 
 @ui.page('/import')
 def import_tools():
