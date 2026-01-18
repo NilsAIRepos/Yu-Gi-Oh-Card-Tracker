@@ -525,4 +525,30 @@ class YugiohService:
         """Downloads/Caches set image."""
         return await image_manager.ensure_set_image(set_code, url)
 
+    async def get_real_set_counts(self, language: str = "en") -> Dict[str, int]:
+        """
+        Calculates the real number of unique cards per set based on the local card database.
+        Returns a dict mapping set_code_prefix -> unique card count.
+        """
+        cards = await self.load_card_database(language)
+        counts = {}
+
+        for card in cards:
+            if not card.card_sets:
+                continue
+
+            # Identify unique sets this card belongs to
+            seen_prefixes = set()
+            for cs in card.card_sets:
+                # Normalize prefix
+                parts = cs.set_code.split('-')
+                if not parts: continue
+                prefix = parts[0].upper() # Normalize to Upper for matching
+
+                if prefix not in seen_prefixes:
+                    seen_prefixes.add(prefix)
+                    counts[prefix] = counts.get(prefix, 0) + 1
+
+        return counts
+
 ygo_service = YugiohService()

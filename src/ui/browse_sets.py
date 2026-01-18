@@ -219,9 +219,23 @@ class BrowseSetsPage:
     async def load_data(self):
         # Load Sets
         sets_info = await ygo_service.get_all_sets_info()
+
+        # Override with real counts from local DB
+        try:
+            real_counts = await ygo_service.get_real_set_counts()
+            for s in sets_info:
+                code = s.get('code')
+                if code:
+                    prefix = code.split('-')[0].upper()
+                    if prefix in real_counts:
+                         s['count'] = real_counts[prefix]
+        except Exception as e:
+            logger.error(f"Error loading real set counts: {e}")
+
         self.state['sets'] = sets_info
 
         self.calc_filter_ranges()
+        if hasattr(self, 'render_filter_row'): self.render_filter_row.refresh()
 
         await self.apply_set_filters()
 
@@ -234,12 +248,12 @@ class BrowseSetsPage:
 
     def date_to_int(self, date_str):
         # YYYY-MM-DD -> total_months
-        if not date_str: return 0
+        if not date_str: return None
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d")
             return d.year * 12 + (d.month - 1)
         except:
-            return 0
+            return None
 
     def int_to_date_str(self, val):
         # total_months -> YYYY-MM
@@ -264,13 +278,16 @@ class BrowseSetsPage:
         dates = []
         for s in sets:
             d_str = s.get('date')
-            if d_str:
-                dates.append(self.date_to_int(d_str))
+            val = self.date_to_int(d_str)
+            if val is not None and val > 0: # Check > 0 to exclude Year 0 issues
+                dates.append(val)
 
         if dates:
             min_d, max_d = min(dates), max(dates)
             self.state['slider_min_date'] = min_d
             self.state['slider_max_date'] = max_d
+            # Only reset if we haven't set a valid range yet or if current range is invalid
+            # But usually we want to start with full range
             self.state['filter_date_range'] = {'min': min_d, 'max': max_d}
 
     async def apply_set_filters(self):
@@ -293,8 +310,8 @@ class BrowseSetsPage:
 
         def check_date(s):
             d_str = s.get('date')
-            if not d_str: return False # Exclude unknown dates if filtering? Or include? Usually exclude.
             d_val = self.date_to_int(d_str)
+            if d_val is None: return False
             return min_d <= d_val <= max_d
 
         try:
@@ -638,20 +655,34 @@ class BrowseSetsPage:
 
                         sorted_cards = sorted(cards, key=get_card_rarity_index)
 
-                        # Take top 7 (rarest)
-                        top_cards = sorted_cards[:7]
+                        # Take top 14 (rarest)
+                        top_cards = sorted_cards[:14]
                         # Reverse so the rarest (first in sorted list) ends up last in rendering order (on top)
                         top_cards.reverse()
 
-                        # Scattered pile positions
+                        # Scattered pile positions (ordered from back to front)
                         positions = [
-                            {'left': '10%', 'top': '20%', 'rotate': '-20deg'},
-                            {'left': '45%', 'top': '10%', 'rotate': '20deg'},
-                            {'left': '15%', 'top': '40%', 'rotate': '-10deg'},
-                            {'left': '50%', 'top': '50%', 'rotate': '10deg'},
-                            {'left': '25%', 'top': '15%', 'rotate': '5deg'},
-                            {'left': '40%', 'top': '35%', 'rotate': '-5deg'},
-                            {'left': '28%', 'top': '25%', 'rotate': '0deg'}, # Center-ish top
+                            # Edges / Background
+                            {'left': '-10%', 'top': '-5%', 'rotate': '-30deg'},
+                            {'left': '65%', 'top': '-5%', 'rotate': '30deg'},
+                            {'left': '-10%', 'top': '65%', 'rotate': '-25deg'},
+                            {'left': '65%', 'top': '65%', 'rotate': '25deg'},
+                            {'left': '5%', 'top': '40%', 'rotate': '-20deg'},
+                            {'left': '55%', 'top': '40%', 'rotate': '20deg'},
+
+                            # Mid-layer
+                            {'left': '10%', 'top': '10%', 'rotate': '-15deg'},
+                            {'left': '50%', 'top': '10%', 'rotate': '15deg'},
+                            {'left': '15%', 'top': '50%', 'rotate': '-10deg'},
+                            {'left': '45%', 'top': '50%', 'rotate': '10deg'},
+
+                            # Near Center
+                            {'left': '20%', 'top': '20%', 'rotate': '5deg'},
+                            {'left': '40%', 'top': '20%', 'rotate': '-5deg'},
+                            {'left': '25%', 'top': '30%', 'rotate': '2deg'},
+
+                            # Center Top (Rarest)
+                            {'left': '30%', 'top': '15%', 'rotate': '0deg'},
                         ]
 
                         # Adjust positions if we have fewer cards to ensure the last one (rarest) is somewhat central
@@ -779,124 +810,127 @@ class BrowseSetsPage:
                     .bind_icon_from(self.state, 'sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward') \
                     .props('flat round dense color=white')
 
-            # Filter Row: Sliders
-            with ui.row().classes('w-full items-start gap-8'):
-                # Date Slider
-                with ui.column().classes('gap-1 flex-grow'):
-                    ui.label('Release Date').classes('text-xs text-gray-400')
-                    with ui.row().classes('w-full items-center gap-2'):
-                        date_min_input = ui.input(placeholder='YYYY-MM').classes('w-28').props('dense borderless dark')
-                        date_slider = ui.range(min=self.state['slider_min_date'],
-                                               max=self.state['slider_max_date'],
-                                               step=1).classes('col-grow').props('label=false color=primary')
-                        date_max_input = ui.input(placeholder='YYYY-MM').classes('w-28').props('dense borderless dark')
-
-                        # Init
-                        date_min_input.value = self.int_to_date_str(self.state['filter_date_range']['min'])
-                        date_max_input.value = self.int_to_date_str(self.state['filter_date_range']['max'])
-                        date_slider.value = self.state['filter_date_range']
-
-                        # Logic
-                        async def on_date_slider_change(e):
-                            val = e.sender.value if e.sender.value else self.state['filter_date_range']
-                            self.state['filter_date_range'] = val
-                            date_min_input.value = self.int_to_date_str(val['min'])
-                            date_max_input.value = self.int_to_date_str(val['max'])
-                            await self.apply_set_filters()
-
-                        async def on_date_slider_update(e):
-                            # Live update of inputs while dragging
-                            # e.args might be dictionary directly
-                            args = e.args
-                            if isinstance(args, dict) and 'min' in args and 'max' in args:
-                                date_min_input.value = self.int_to_date_str(int(args['min']))
-                                date_max_input.value = self.int_to_date_str(int(args['max']))
-
-                        date_slider.on('change', on_date_slider_change)
-                        date_slider.on('update:model-value', on_date_slider_update)
-
-                        async def on_date_input_change():
-                            try:
-                                d_min_str = date_min_input.value
-                                d_max_str = date_max_input.value
-
-                                # Validate format roughly
-                                if len(d_min_str) == 4: d_min_str += "-01"
-                                if len(d_max_str) == 4: d_max_str += "-12"
-                                if len(d_min_str) == 7: d_min_str += "-01"
-                                if len(d_max_str) == 7: d_max_str += "-01" # Logic: date_to_int just needs YYYY-MM-DD
-
-                                v_min = self.date_to_int(d_min_str)
-                                v_max = self.date_to_int(d_max_str)
-
-                                # If parsing failed (returns 0), revert to bounds if 0 is not valid start
-                                # But 0 is valid (year 0). If parsing fails, date_to_int returns 0.
-                                # Let's trust user inputs somewhat but clamp.
-
-                                # Clamp
-                                v_min = max(self.state['slider_min_date'], v_min)
-                                v_max = min(self.state['slider_max_date'], v_max)
-                                if v_min > v_max: v_min = v_max
-
-                                self.state['filter_date_range'] = {'min': v_min, 'max': v_max}
-                                date_slider.value = self.state['filter_date_range']
-                                await self.apply_set_filters()
-                            except Exception as e:
-                                logger.error(f"Date filter error: {e}")
-
-                        date_min_input.on('change', on_date_input_change)
-                        date_max_input.on('change', on_date_input_change)
-
-                # Count Slider
-                with ui.column().classes('gap-1 w-1/3'):
-                    ui.label('Card Count').classes('text-xs text-gray-400')
-                    with ui.row().classes('w-full items-center gap-2'):
-                        count_min_input = ui.number().classes('w-16').props('dense borderless dark')
-                        count_slider = ui.range(min=self.state['slider_min_count'],
-                                                max=self.state['slider_max_count'],
-                                                step=1).classes('col-grow').props('label=false color=primary')
-                        count_max_input = ui.number().classes('w-16').props('dense borderless dark')
-
-                        # Init
-                        count_min_input.value = self.state['filter_count_range']['min']
-                        count_max_input.value = self.state['filter_count_range']['max']
-                        count_slider.value = self.state['filter_count_range']
-
-                        # Logic
-                        async def on_count_slider_change(e):
-                            val = e.sender.value if e.sender.value else self.state['filter_count_range']
-                            self.state['filter_count_range'] = val
-                            count_min_input.value = val['min']
-                            count_max_input.value = val['max']
-                            await self.apply_set_filters()
-
-                        async def on_count_slider_update(e):
-                            args = e.args
-                            if isinstance(args, dict) and 'min' in args and 'max' in args:
-                                count_min_input.value = int(args['min'])
-                                count_max_input.value = int(args['max'])
-
-                        count_slider.on('change', on_count_slider_change)
-                        count_slider.on('update:model-value', on_count_slider_update)
-
-                        async def on_count_input_change():
-                            try:
-                                v_min = int(count_min_input.value or 0)
-                                v_max = int(count_max_input.value or 0)
-
-                                v_min = max(self.state['slider_min_count'], v_min)
-                                v_max = min(self.state['slider_max_count'], v_max)
-                                if v_min > v_max: v_min = v_max
-
-                                self.state['filter_count_range'] = {'min': v_min, 'max': v_max}
-                                count_slider.value = self.state['filter_count_range']
-                                await self.apply_set_filters()
-                            except: pass
-
-                        count_min_input.on('change', on_count_input_change)
-                        count_max_input.on('change', on_count_input_change)
+            self.render_filter_row()
 
         self.render_gallery_content()
+
+    @ui.refreshable
+    def render_filter_row(self):
+        # Filter Row: Sliders
+        with ui.row().classes('w-full items-start gap-8'):
+            # Date Slider
+            with ui.column().classes('gap-1 flex-grow'):
+                ui.label('Release Date').classes('text-xs text-gray-400')
+                with ui.row().classes('w-full items-center gap-2'):
+                    date_min_input = ui.input(placeholder='YYYY-MM').classes('w-28').props('dense borderless dark')
+                    date_slider = ui.range(min=self.state['slider_min_date'],
+                                            max=self.state['slider_max_date'],
+                                            step=1).classes('col-grow').props('label=false color=primary')
+                    date_max_input = ui.input(placeholder='YYYY-MM').classes('w-28').props('dense borderless dark')
+
+                    # Init
+                    date_min_input.value = self.int_to_date_str(self.state['filter_date_range']['min'])
+                    date_max_input.value = self.int_to_date_str(self.state['filter_date_range']['max'])
+                    date_slider.value = self.state['filter_date_range']
+
+                    # Logic
+                    async def on_date_slider_change(e):
+                        val = e.sender.value if e.sender.value else self.state['filter_date_range']
+                        self.state['filter_date_range'] = val
+                        date_min_input.value = self.int_to_date_str(val['min'])
+                        date_max_input.value = self.int_to_date_str(val['max'])
+                        await self.apply_set_filters()
+
+                    async def on_date_slider_update(e):
+                        # Live update of inputs while dragging
+                        # e.args might be dictionary directly
+                        args = e.args
+                        if isinstance(args, dict) and 'min' in args and 'max' in args:
+                            date_min_input.value = self.int_to_date_str(int(args['min']))
+                            date_max_input.value = self.int_to_date_str(int(args['max']))
+
+                    date_slider.on('change', on_date_slider_change)
+                    date_slider.on('update:model-value', on_date_slider_update)
+
+                    async def on_date_input_change():
+                        try:
+                            d_min_str = date_min_input.value
+                            d_max_str = date_max_input.value
+
+                            # Validate format roughly
+                            if len(d_min_str) == 4: d_min_str += "-01"
+                            if len(d_max_str) == 4: d_max_str += "-12"
+                            if len(d_min_str) == 7: d_min_str += "-01"
+                            if len(d_max_str) == 7: d_max_str += "-01" # Logic: date_to_int just needs YYYY-MM-DD
+
+                            v_min = self.date_to_int(d_min_str)
+                            v_max = self.date_to_int(d_max_str)
+
+                            if v_min is None: v_min = self.state['slider_min_date']
+                            if v_max is None: v_max = self.state['slider_max_date']
+
+                            # Clamp
+                            v_min = max(self.state['slider_min_date'], v_min)
+                            v_max = min(self.state['slider_max_date'], v_max)
+                            if v_min > v_max: v_min = v_max
+
+                            self.state['filter_date_range'] = {'min': v_min, 'max': v_max}
+                            date_slider.value = self.state['filter_date_range']
+                            await self.apply_set_filters()
+                        except Exception as e:
+                            logger.error(f"Date filter error: {e}")
+
+                    date_min_input.on('change', on_date_input_change)
+                    date_max_input.on('change', on_date_input_change)
+
+            # Count Slider
+            with ui.column().classes('gap-1 w-1/3'):
+                ui.label('Card Count').classes('text-xs text-gray-400')
+                with ui.row().classes('w-full items-center gap-2'):
+                    count_min_input = ui.number().classes('w-16').props('dense borderless dark')
+                    count_slider = ui.range(min=self.state['slider_min_count'],
+                                            max=self.state['slider_max_count'],
+                                            step=1).classes('col-grow').props('label=false color=primary')
+                    count_max_input = ui.number().classes('w-16').props('dense borderless dark')
+
+                    # Init
+                    count_min_input.value = self.state['filter_count_range']['min']
+                    count_max_input.value = self.state['filter_count_range']['max']
+                    count_slider.value = self.state['filter_count_range']
+
+                    # Logic
+                    async def on_count_slider_change(e):
+                        val = e.sender.value if e.sender.value else self.state['filter_count_range']
+                        self.state['filter_count_range'] = val
+                        count_min_input.value = val['min']
+                        count_max_input.value = val['max']
+                        await self.apply_set_filters()
+
+                    async def on_count_slider_update(e):
+                        args = e.args
+                        if isinstance(args, dict) and 'min' in args and 'max' in args:
+                            count_min_input.value = int(args['min'])
+                            count_max_input.value = int(args['max'])
+
+                    count_slider.on('change', on_count_slider_change)
+                    count_slider.on('update:model-value', on_count_slider_update)
+
+                    async def on_count_input_change():
+                        try:
+                            v_min = int(count_min_input.value or 0)
+                            v_max = int(count_max_input.value or 0)
+
+                            v_min = max(self.state['slider_min_count'], v_min)
+                            v_max = min(self.state['slider_max_count'], v_max)
+                            if v_min > v_max: v_min = v_max
+
+                            self.state['filter_count_range'] = {'min': v_min, 'max': v_max}
+                            count_slider.value = self.state['filter_count_range']
+                            await self.apply_set_filters()
+                        except: pass
+
+                    count_min_input.on('change', on_count_input_change)
+                    count_max_input.on('change', on_count_input_change)
 
     @ui.refreshable
     def render_gallery_content(self):
@@ -965,7 +999,7 @@ class BrowseSetsPage:
         # Header
         with ui.row().classes('w-full items-start gap-6 mb-6 p-6 bg-gray-900 rounded-lg border border-gray-800'):
             # Image
-            with ui.element('div').classes('w-64 h-64 relative bg-black rounded shadow-lg overflow-hidden'):
+            with ui.element('div').classes('w-32 h-64 relative bg-black rounded shadow-lg overflow-hidden'):
                  container = ui.element('div').classes('w-full h-full')
                  self.render_set_visual(container, info['code'], info.get('image'))
 
