@@ -333,7 +333,10 @@ class BrowseSetsPage:
 
         self.state['filtered_sets'] = res
         self.update_pagination()
-        if hasattr(self, 'render_content'): self.render_content.refresh()
+        if self.state['view'] == 'gallery':
+             if hasattr(self, 'render_gallery_content'): self.render_gallery_content.refresh()
+        elif hasattr(self, 'render_content'):
+             self.render_content.refresh()
 
     def update_pagination(self):
         count = len(self.state['filtered_sets'])
@@ -893,6 +896,10 @@ class BrowseSetsPage:
                         count_min_input.on('change', on_count_input_change)
                         count_max_input.on('change', on_count_input_change)
 
+        self.render_gallery_content()
+
+    @ui.refreshable
+    def render_gallery_content(self):
         self.render_pagination()
 
         start = (self.state['page'] - 1) * self.state['page_size']
@@ -922,7 +929,10 @@ class BrowseSetsPage:
                 p = max(1, min(p, self.state['total_pages']))
                 if p != self.state['page']:
                     self.state['page'] = p
-                    self.render_content.refresh()
+                    if self.state['view'] == 'gallery':
+                        self.render_gallery_content.refresh()
+                    else:
+                        self.render_content.refresh()
 
             # Debounce prevents refresh while typing (e.g. typing "12")
             ui.number(value=self.state['page'], on_change=on_page_change) \
@@ -934,7 +944,10 @@ class BrowseSetsPage:
 
     def change_page(self, delta):
         self.state['page'] += delta
-        self.render_content.refresh()
+        if self.state['view'] == 'gallery':
+             self.render_gallery_content.refresh()
+        else:
+             self.render_content.refresh()
 
     @ui.refreshable
     def render_set_header(self):
