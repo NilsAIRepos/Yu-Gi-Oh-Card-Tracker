@@ -6,11 +6,12 @@ from src.services.image_manager import image_manager
 from src.core.config import config_manager
 from src.core.utils import generate_variant_id, normalize_set_code
 from src.ui.components.filter_pane import FilterPane
-from src.ui.components.single_card_view import SingleCardView
+from src.ui.components.single_card_view import SingleCardView, STANDARD_RARITIES
 from dataclasses import dataclass
 from typing import List, Optional
 import logging
 import re
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,10 @@ class DbEditorPage:
             'sort_by': saved_state.get('db_editor_sort_by', 'Name'),
             'sort_descending': saved_state.get('db_editor_sort_descending', False),
             'view_mode': saved_state.get('db_editor_view_mode', 'grid'),
+            'main_view': 'cards', # cards, sets, set_detail
+            'selected_set_code': None,
+            'set_gallery_items': [],
+            'sets_search_query': '',
 
             'page': 1,
             'page_size': 48,
@@ -156,6 +161,37 @@ class DbEditorPage:
 
     def update_filter_ui(self):
         if self.filter_pane: self.filter_pane.update_options()
+
+    def load_sets_data(self):
+        asyncio.create_task(self._async_load_sets())
+
+    async def _async_load_sets(self):
+        all_sets = await ygo_service.get_all_sets_info()
+        q = (self.state['sets_search_query'] or "").lower()
+        if q:
+            self.state['set_gallery_items'] = [s for s in all_sets if q in s['name'].lower() or q in s['code'].lower()]
+        else:
+            self.state['set_gallery_items'] = all_sets
+
+        self.state['set_gallery_items'].sort(key=lambda x: x['name'])
+
+        if self.state['main_view'] == 'sets' and hasattr(self, 'render_content'):
+             self.render_content.refresh()
+
+    async def load_set_detail_data(self, set_code):
+        logger.info(f"Loading detail for set: {set_code}")
+        cards = await ygo_service.get_set_cards(set_code, self.state['language'])
+        self.state['set_detail_cards'] = cards
+
+        all_rows = await run.io_bound(build_db_rows, cards)
+        prefix = set_code.split('-')[0]
+
+        def match_set(row):
+            parts = row.set_code.split('-')
+            p = parts[0] if parts else row.set_code
+            return p == prefix
+
+        self.state['set_detail_rows'] = [r for r in all_rows if match_set(r)]
 
     async def reset_filters(self):
         self.state.update({
@@ -426,49 +462,222 @@ class DbEditorPage:
         else:
             self.render_list(page_items)
 
+    @ui.refreshable
+    def render_content(self):
+        if self.state['main_view'] == 'cards':
+            self.render_card_display()
+        elif self.state['main_view'] == 'sets':
+            self.render_set_list()
+        elif self.state['main_view'] == 'set_detail':
+            self.render_set_detail()
+
+    def render_set_list(self):
+        items = self.state['set_gallery_items']
+        if not items:
+            ui.label("No sets found.").classes('text-gray-400 p-4')
+            return
+
+        with ui.grid(columns='repeat(auto-fill, minmax(180px, 1fr))').classes('w-full gap-4 p-4'):
+            for s in items:
+                self.render_set_card_item(s)
+
+    def render_set_card_item(self, set_info):
+        code = set_info['code']
+        name = set_info['name']
+        image_url = set_info.get('image')
+
+        async def open_detail():
+            self.state['selected_set_code'] = code
+            self.state['main_view'] = 'set_detail'
+            if hasattr(self, 'load_set_detail_data'):
+                await self.load_set_detail_data(code)
+
+            # Hide pagination for set detail
+            if hasattr(self, 'pagination_row'):
+                self.pagination_row.set_visibility(False)
+
+            self.render_content.refresh()
+            self.render_header.refresh()
+
+        with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform bg-gray-900 border border-gray-700 shadow-lg').on('click', open_detail):
+             with ui.element('div').classes('h-24 w-full bg-black relative flex items-center justify-center overflow-hidden'):
+                 if image_url:
+                     ui.image(image_url).classes('h-full object-contain')
+                 else:
+                     ui.icon('image_not_supported', color='grey')
+
+             with ui.column().classes('p-2 gap-0 w-full'):
+                 ui.label(name).classes('font-bold text-xs truncate w-full text-white')
+                 ui.label(code).classes('text-[10px] text-yellow-500 font-mono')
+
+    def render_set_detail(self):
+        code = self.state['selected_set_code']
+        if not code: return
+
+        # Find set info
+        info = next((s for s in self.state['set_gallery_items'] if s['code'] == code), None)
+        name = info['name'] if info else "Unknown Set"
+
+        # Header
+        with ui.row().classes('w-full items-start gap-6 mb-6 p-6 bg-gray-900 rounded-lg border border-gray-800'):
+            # Image
+            if info and info.get('image'):
+                ui.image(info['image']).classes('w-32 h-auto object-contain')
+
+            with ui.column().classes('gap-2'):
+                ui.label(name).classes('text-h4 font-bold text-white')
+                ui.label(code).classes('text-xl font-mono text-yellow-500')
+
+                def go_back():
+                    self.state['main_view'] = 'sets'
+                    self.render_content.refresh()
+                    self.render_header.refresh()
+
+                ui.button('Back to Sets', icon='arrow_back', on_click=go_back).props('flat color=white')
+
+        # Bulk Operations
+        with ui.card().classes('w-full bg-gray-800 p-4 mb-4 gap-4'):
+             ui.label('Edit Set Variants').classes('text-h6 text-white')
+
+             with ui.row().classes('items-end gap-4'):
+                 # Prefix Edit
+                 prefix_input = ui.input('Set Prefix', value=code).props('dark').classes('w-32')
+
+                 async def save_prefix():
+                     old = code
+                     new = prefix_input.value
+                     if not new: return
+                     count = await ygo_service.bulk_update_set_prefix(old, new, self.state['language'])
+                     ui.notify(f"Updated {count} variants.", type='positive')
+
+                     self.state['selected_set_code'] = new
+                     self.load_sets_data()
+                     await self.load_set_detail_data(new)
+                     self.render_content.refresh()
+
+                 ui.button('Save Changes', on_click=save_prefix).props('color=primary')
+
+                 ui.separator().props('vertical')
+
+                 # Add Rarity
+                 rarity_select = ui.select(list(STANDARD_RARITIES), label='Rarity').props('dark').classes('w-48')
+
+                 async def add_rarity():
+                     r = rarity_select.value
+                     if not r: return
+                     count = await ygo_service.bulk_add_rarity_to_set(code, r, self.state['language'])
+                     ui.notify(f"Added {count} variants.", type='positive')
+                     await self.load_set_detail_data(code)
+                     self.render_content.refresh()
+
+                 ui.button('Add Variant', on_click=add_rarity).props('color=secondary')
+
+                 ui.space()
+
+                 # Delete Set
+                 async def delete_set():
+                     with ui.dialog() as d, ui.card():
+                         ui.label(f"Delete all cards in set {code}?").classes('text-lg font-bold')
+                         ui.label("This action cannot be undone.")
+                         with ui.row().classes('w-full justify-end'):
+                             ui.button('Cancel', on_click=d.close).props('flat')
+                             async def do_del():
+                                 d.close()
+                                 count = await ygo_service.bulk_delete_set(code, self.state['language'])
+                                 ui.notify(f"Deleted {count} variants.", type='positive')
+
+                                 self.state['main_view'] = 'sets'
+                                 self.load_sets_data()
+                                 self.render_content.refresh()
+                                 self.render_header.refresh()
+                             ui.button('Delete', on_click=do_del).props('color=negative')
+                     d.open()
+
+                 ui.button('Delete Set', icon='delete', on_click=delete_set).props('color=negative flat')
+
+        # Grid
+        rows = self.state.get('set_detail_rows', [])
+        if not rows:
+            ui.label("No cards found in this set.").classes('text-gray-400')
+        else:
+            self.render_grid(rows)
+
     def render_header(self):
         with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
             ui.label('Card Database Editor').classes('text-h5')
 
-            async def on_search(e):
-                self.state['search_text'] = e.value
-                await self.apply_filters()
+            # View Toggle
+            def switch_main_view(mode):
+                self.state['main_view'] = mode
+                if mode == 'sets':
+                    self.load_sets_data()
+                elif mode == 'cards':
+                    self.state['selected_set_code'] = None
 
-            with ui.input(placeholder='Search...', on_change=on_search) \
-                .props('debounce=300 icon=search').classes('w-64') as i:
-                i.value = self.state['search_text']
-                ui.tooltip('Search by card name, set code, etc.')
+                if hasattr(self, 'pagination_row'):
+                    self.pagination_row.set_visibility(mode == 'cards')
 
-            async def on_sort_change(e):
-                self.state['sort_by'] = e.value
-                if e.value != 'Name': self.state['sort_descending'] = True
-                else: self.state['sort_descending'] = False
-                persistence.save_ui_state({'db_editor_sort_by': e.value, 'db_editor_sort_descending': self.state['sort_descending']})
+                self.render_content.refresh()
                 self.render_header.refresh()
-                await self.apply_filters()
 
-            with ui.row().classes('items-center gap-1'):
-                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
-                        on_change=on_sort_change).classes('w-32'): pass
-
-                async def toggle_sort():
-                    self.state['sort_descending'] = not self.state['sort_descending']
-                    persistence.save_ui_state({'db_editor_sort_descending': self.state['sort_descending']})
-                    self.render_header.refresh()
-                    await self.apply_filters()
-
-                icon = 'arrow_downward' if self.state.get('sort_descending') else 'arrow_upward'
-                ui.button(icon=icon, on_click=toggle_sort).props('flat round dense color=white')
+            with ui.button_group():
+                is_cards = self.state['main_view'] == 'cards'
+                is_sets = self.state['main_view'] in ['sets', 'set_detail']
+                ui.button('Cards', on_click=lambda: switch_main_view('cards')).props(f'flat={not is_cards} color=accent')
+                ui.button('Sets', on_click=lambda: switch_main_view('sets')).props(f'flat={not is_sets} color=accent')
 
             ui.separator().props('vertical')
 
-            with ui.button_group():
-                is_grid = self.state['view_mode'] == 'grid'
-                with ui.button(icon='grid_view', on_click=lambda: self.switch_view_mode('grid')).props(f'flat={not is_grid} color=accent'): pass
-                with ui.button(icon='list', on_click=lambda: self.switch_view_mode('list')).props(f'flat={is_grid} color=accent'): pass
+            if self.state['main_view'] == 'cards':
+                async def on_search(e):
+                    self.state['search_text'] = e.value
+                    await self.apply_filters()
 
-            ui.space()
-            ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary size=lg')
+                with ui.input(placeholder='Search Cards...', on_change=on_search) \
+                    .props('debounce=300 icon=search').classes('w-64') as i:
+                    i.value = self.state['search_text']
+                    ui.tooltip('Search by card name, set code, etc.')
+
+                async def on_sort_change(e):
+                    self.state['sort_by'] = e.value
+                    if e.value != 'Name': self.state['sort_descending'] = True
+                    else: self.state['sort_descending'] = False
+                    persistence.save_ui_state({'db_editor_sort_by': e.value, 'db_editor_sort_descending': self.state['sort_descending']})
+                    self.render_header.refresh()
+                    await self.apply_filters()
+
+                with ui.row().classes('items-center gap-1'):
+                    with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
+                            on_change=on_sort_change).classes('w-32'): pass
+
+                    async def toggle_sort():
+                        self.state['sort_descending'] = not self.state['sort_descending']
+                        persistence.save_ui_state({'db_editor_sort_descending': self.state['sort_descending']})
+                        self.render_header.refresh()
+                        await self.apply_filters()
+
+                    icon = 'arrow_downward' if self.state.get('sort_descending') else 'arrow_upward'
+                    ui.button(icon=icon, on_click=toggle_sort).props('flat round dense color=white')
+
+                ui.separator().props('vertical')
+
+                with ui.button_group():
+                    is_grid = self.state['view_mode'] == 'grid'
+                    with ui.button(icon='grid_view', on_click=lambda: self.switch_view_mode('grid')).props(f'flat={not is_grid} color=accent'): pass
+                    with ui.button(icon='list', on_click=lambda: self.switch_view_mode('list')).props(f'flat={is_grid} color=accent'): pass
+
+                ui.space()
+                ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary size=lg')
+
+            else:
+                # Sets View Header Controls
+                if self.state['main_view'] == 'sets':
+                    async def on_set_search(e):
+                        self.state['sets_search_query'] = e.value
+                        self.load_sets_data()
+
+                    ui.input(placeholder='Search Sets...', on_change=on_set_search) \
+                        .bind_value(self.state, 'sets_search_query').props('debounce=300 icon=search dark clearable').classes('w-64')
 
     def switch_view_mode(self, mode):
         self.state['view_mode'] = mode
@@ -486,7 +695,7 @@ class DbEditorPage:
         self.render_header()
 
         # Pagination
-        with ui.row().classes('w-full items-center justify-between q-mb-sm px-4'):
+        with ui.row().classes('w-full items-center justify-between q-mb-sm px-4') as self.pagination_row:
             self.pagination_showing_label = ui.label("Loading...").classes('text-grey')
             with ui.row().classes('items-center gap-2'):
                 async def change_page(delta):
@@ -494,7 +703,7 @@ class DbEditorPage:
                     if new_p != self.state['page']:
                         self.state['page'] = new_p
                         await self.prepare_current_page_images()
-                        self.render_card_display.refresh()
+                        self.render_content.refresh()
                         self.update_pagination_labels()
 
                 ui.button(icon='chevron_left', on_click=lambda: change_page(-1)).props('flat dense')
@@ -503,7 +712,7 @@ class DbEditorPage:
                     new_val = int(p) if p else 1
                     self.state['page'] = new_val
                     await self.prepare_current_page_images()
-                    self.render_card_display.refresh()
+                    self.render_content.refresh()
                     self.update_pagination_labels()
 
                 n_input = ui.number(min=1).bind_value(self.state, 'page').props('dense borderless input-class="text-center"').classes('w-20')
@@ -513,7 +722,7 @@ class DbEditorPage:
                 self.pagination_total_label = ui.label("/ 1")
                 ui.button(icon='chevron_right', on_click=lambda: change_page(1)).props('flat dense')
 
-        self.render_card_display()
+        self.render_content()
         self.update_pagination_labels()
         ui.timer(0.1, self.load_data, once=True)
 
