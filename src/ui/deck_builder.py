@@ -85,6 +85,7 @@ class DeckBuilderPage:
 
         last_sort_by = ui_state.get('deck_builder_sort_by', 'Name')
         last_sort_desc = ui_state.get('deck_builder_sort_desc', False)
+        last_only_owned = ui_state.get('deck_builder_only_owned', False)
 
         # Default to TCG if no state exists, but respect None (No Banlist) if saved
         if 'deck_builder_last_banlist' in ui_state:
@@ -114,7 +115,7 @@ class DeckBuilderPage:
             'filter_price_max': 1000.0,
             'filter_owned_lang': '',
 
-            'only_owned': False,
+            'only_owned': last_only_owned,
 
             'sort_by': last_sort_by,
             'sort_descending': last_sort_desc,
@@ -1235,6 +1236,12 @@ class DeckBuilderPage:
                          ui.label('Library').classes('text-h6 text-white font-bold')
 
                          with ui.row().classes('gap-1 items-center'):
+                             async def on_owned_toggle(e):
+                                self.state['only_owned'] = e.value
+                                persistence.save_ui_state({'deck_builder_only_owned': e.value})
+                                await self.apply_filters()
+                             ui.switch('Owned Only', value=self.state['only_owned'], on_change=on_owned_toggle).props('dense').classes('text-white text-xs')
+
                              # Sort Controls
                              sort_btn = None
 
@@ -1277,11 +1284,6 @@ class DeckBuilderPage:
                         await self.apply_filters()
                      ui.input(placeholder='Search...', value=self.state['search_text'], on_change=on_search) \
                         .props('debounce=300 icon=search dense outlined dark input-class=text-white').classes('w-full')
-
-                     async def on_owned_toggle(e):
-                        self.state['only_owned'] = e.value
-                        await self.apply_filters()
-                     ui.switch('Owned Only', value=self.state['only_owned'], on_change=on_owned_toggle).props('dense').classes('text-white text-xs')
 
                 # RESULTS CONTAINER
                 self.search_results_container = ui.column().classes('w-full flex-grow overflow-hidden flex flex-col')
