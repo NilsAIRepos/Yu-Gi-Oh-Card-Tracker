@@ -49,6 +49,16 @@ class ScannerManager:
         self.status_message = "Idle"
         self.latest_normalized_contour: Optional[List[List[float]]] = None
 
+        # Debug State
+        self.manual_scan_requested = False
+        self.debug_state = {
+            "logs": [],
+            "warped_image": None,
+            "ocr_text": None,
+            "contour_area": 0,
+            "stability": 0
+        }
+
         # Configuration
         self.stability_threshold = 10.0 # Max pixel movement allowed
         self.required_stable_frames = 3 # Reduced for lower FPS
@@ -92,6 +102,22 @@ class ScannerManager:
         except queue.Full:
             pass
 
+    def trigger_manual_scan(self):
+        """Triggers a manual scan on the next frame, bypassing checks."""
+        self.manual_scan_requested = True
+        self._log_debug("Manual Scan Triggered")
+
+    def get_debug_snapshot(self) -> Dict[str, Any]:
+        """Returns the current debug state."""
+        return self.debug_state.copy()
+
+    def _log_debug(self, message: str):
+        """Appends a message to the debug log."""
+        timestamp = time.strftime("%H:%M:%S")
+        entry = f"[{timestamp}] {message}"
+        # Keep last 20 logs
+        self.debug_state["logs"] = [entry] + self.debug_state["logs"][:19]
+
     def get_status(self) -> str:
         return self.status_message
 
@@ -133,7 +159,23 @@ class ScannerManager:
                 # Fast Detection
                 contour = self.scanner.find_card_contour(frame)
 
+                # Update Debug Stats
+                self.debug_state["stability"] = self.stable_frames
+
+                # Check for manual trigger
+                force_scan = False
+                if self.manual_scan_requested:
+                    self.manual_scan_requested = False
+                    if contour is not None:
+                         force_scan = True
+                         self._log_debug("Manual Scan: Proceeding with contour")
+                    else:
+                         self._log_debug("Manual Scan: Skipped (No contour detected)")
+
                 if contour is not None:
+                    area = cv2.contourArea(contour)
+                    self.debug_state["contour_area"] = area
+
                     # Normalize and store contour
                     # contour is shape (4, 1, 2)
                     pts = contour.reshape(4, 2).astype(float)
@@ -147,11 +189,17 @@ class ScannerManager:
                         self.stable_frames += 1
                     else:
                         self.stable_frames = 0
+                        # Log instability only occasionally? Or implies movement
+                        pass
 
                     # Trigger Processing
-                    if self.stable_frames >= self.required_stable_frames and not self.is_processing and self.cooldown == 0:
+                    # Trigger if: Stable enough OR Forced
+                    should_process = (self.stable_frames >= self.required_stable_frames) or force_scan
+
+                    if should_process and not self.is_processing and (self.cooldown == 0 or force_scan):
                         self.is_processing = True
                         self.status_message = "Processing..."
+                        self._log_debug(f"Starting Processing (Stable: {self.stable_frames}, Force: {force_scan})")
                         # Run CV tasks in thread
                         threading.Thread(target=self._cv_scan_task, args=(frame.copy(), contour)).start()
                     elif self.is_processing:
@@ -163,10 +211,12 @@ class ScannerManager:
                     self.last_corners = None
                     self.latest_normalized_contour = None
                     self.status_message = "Scanning..."
+                    self.debug_state["contour_area"] = 0
 
             except Exception as e:
                 logger.error(f"Error in scanner worker: {e}")
                 self.status_message = "Error"
+                self._log_debug(f"Worker Error: {str(e)}")
 
     def _check_stability(self, contour) -> bool:
         """Checks if the contour corners have moved significantly."""
@@ -194,8 +244,16 @@ class ScannerManager:
             logger.info("Starting CV scan task...")
             warped = self.scanner.warp_card(frame, contour)
 
+            # Generate Debug Image (Warped + ROIs)
+            debug_img = self.scanner.debug_draw_rois(warped)
+            _, buffer = cv2.imencode('.jpg', debug_img)
+            b64_debug = base64.b64encode(buffer).decode('utf-8')
+            self.debug_state["warped_image"] = f"data:image/jpeg;base64,{b64_debug}"
+
             # 1. OCR Set ID
             set_id = self.scanner.extract_set_id(warped)
+            self._log_debug(f"OCR Result: '{set_id}'")
+            self.debug_state["ocr_text"] = set_id
 
             # 2. Detect Language (Visual/OCR)
             language = self.scanner.detect_language(warped, set_id)
@@ -219,6 +277,7 @@ class ScannerManager:
 
         except Exception as e:
             logger.error(f"Error in CV scan task: {e}")
+            self._log_debug(f"CV Task Error: {str(e)}")
             self.is_processing = False # Reset flag if error
 
     async def process_pending_lookups(self):
@@ -230,6 +289,7 @@ class ScannerManager:
                 return
 
             logger.info(f"Processing lookup for Set ID: {data.get('set_code')}")
+            self._log_debug(f"Database Lookup: {data.get('set_code')}")
 
             set_id = data.get('set_code')
             warped = data.pop('warped_image', None) # Remove from dict to be clean
@@ -245,9 +305,11 @@ class ScannerManager:
 
                 if card_info:
                     data.update(card_info)
+                    self._log_debug(f"Found Card: {card_info.get('name')}")
 
                     # 2. Match Art (if multiple arts exist and we have the warped image)
                     if warped is not None and card_info.get("potential_art_paths"):
+                        self._log_debug("Matching artwork...")
                         # Run ORB in thread to avoid blocking loop
                         match_path = await run.io_bound(
                             self.scanner.match_artwork, warped, card_info["potential_art_paths"]
@@ -255,8 +317,12 @@ class ScannerManager:
                         if match_path:
                             data["image_path"] = match_path
                             logger.info(f"Art matched: {match_path}")
+                            self._log_debug("Artwork matched successfully")
                         else:
                             data["image_path"] = card_info["potential_art_paths"][0]
+                            self._log_debug("Artwork match failed, using default")
+                else:
+                    self._log_debug("Card not found in database")
 
             # Finalize Rarity
             if data["rarity"] == "Unknown":
@@ -268,9 +334,11 @@ class ScannerManager:
             # Reset processing flag
             self.is_processing = False
             self.cooldown = self.scan_cooldown_frames
+            self._log_debug("Scan cycle complete")
 
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}")
+            self._log_debug(f"Lookup Error: {str(e)}")
             self.is_processing = False
 
     async def _resolve_card_details(self, set_id: str) -> Optional[Dict[str, Any]]:

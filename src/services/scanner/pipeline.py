@@ -277,19 +277,31 @@ class CardScanner:
 
         return "Common"
 
-    def debug_draw_rois(self, frame, warped_contour=None):
-        """Draws ROIs on the frame for debugging."""
-        # This draws on the UNWARPED frame if we map points back,
-        # or we just return a warped debug image.
-        # Let's return a blank card canvas with ROIs drawn.
-        canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+    def debug_draw_rois(self, image=None):
+        """Draws ROIs on the provided image (or a blank one)."""
+        if image is not None:
+             canvas = image.copy()
+        else:
+             canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
-        # Draw Set ID ROI
-        cv2.rectangle(canvas, (self.roi_set_id[0], self.roi_set_id[1]),
-                     (self.roi_set_id[0]+self.roi_set_id[2], self.roi_set_id[1]+self.roi_set_id[3]), (0, 255, 0), 2)
+        # Helper to draw
+        def draw_roi(roi, color):
+            x, y, w, h = roi
+            cv2.rectangle(canvas, (x, y), (x + w, y + h), color, 2)
 
-        # Draw 1st Ed ROI
-        cv2.rectangle(canvas, (self.roi_1st_ed[0], self.roi_1st_ed[1]),
-                     (self.roi_1st_ed[0]+self.roi_1st_ed[2], self.roi_1st_ed[1]+self.roi_1st_ed[3]), (255, 0, 0), 2)
+        # Draw Set ID ROI (Green)
+        draw_roi(self.roi_set_id, (0, 255, 0))
+
+        # Draw 1st Ed ROI (Blue)
+        draw_roi(self.roi_1st_ed, (255, 0, 0))
+
+        # Draw Name ROI (Yellow)
+        draw_roi(self.roi_name, (0, 255, 255))
+
+        # Draw Art ROI (Magenta)
+        draw_roi(self.roi_art, (255, 0, 255))
+
+        # Draw Desc ROI (White)
+        draw_roi(self.roi_desc, (255, 255, 255))
 
         return canvas

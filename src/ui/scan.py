@@ -142,6 +142,14 @@ class ScanPage:
         self.camera_select = None
         self.is_active = False
 
+        # Debug UI
+        self.debug_mode = False
+        self.debug_drawer_el = None
+        self.debug_switch = None
+        self.debug_img = None
+        self.debug_stats_label = None
+        self.debug_log_label = None
+
         # Load available collections
         self.collections = persistence.list_collections()
         if self.collections:
@@ -190,6 +198,25 @@ class ScanPage:
         if self.status_label:
             self.status_label.text = "Status: Idle"
 
+    def toggle_debug_mode(self, e):
+        # e might be a ChangeEvent or just a dummy object if called manually
+        if hasattr(e, 'value'):
+             self.debug_mode = e.value
+
+        # Update switch if we triggered from elsewhere (like close button)
+        if self.debug_switch and self.debug_switch.value != self.debug_mode:
+             self.debug_switch.value = self.debug_mode
+
+        if self.debug_drawer_el:
+             if self.debug_mode:
+                 self.debug_drawer_el.classes(remove='translate-x-full', add='translate-x-0')
+             else:
+                 self.debug_drawer_el.classes(remove='translate-x-0', add='translate-x-full')
+
+    def trigger_manual_scan(self):
+        scanner_manager.trigger_manual_scan()
+        ui.notify("Manual Scan Triggered", type='info')
+
     async def update_loop(self):
         if not self.is_active:
             return
@@ -229,6 +256,25 @@ class ScanPage:
         result = scanner_manager.get_latest_result()
         if result:
             self.add_scanned_card(result)
+
+        # 6. Update Debug Info
+        if self.debug_mode:
+            snapshot = scanner_manager.get_debug_snapshot()
+
+            # Update Image
+            if snapshot.get("warped_image") and self.debug_img:
+                 self.debug_img.set_source(snapshot["warped_image"])
+
+            # Update Stats
+            if self.debug_stats_label:
+                stats = f"Stability: {snapshot.get('stability', 0)}\n" \
+                        f"Contour Area: {snapshot.get('contour_area', 0):.0f}\n" \
+                        f"OCR: {snapshot.get('ocr_text', 'N/A')}"
+                self.debug_stats_label.text = stats
+
+            # Update Logs
+            if self.debug_log_label and snapshot.get("logs"):
+                 self.debug_log_label.text = "\n".join(snapshot["logs"])
 
     def add_scanned_card(self, data: Dict[str, Any]):
         self.scanned_cards.insert(0, data)
@@ -356,6 +402,30 @@ def scan_page():
     # Inject Client-Side JS
     ui.add_body_html(JS_CAMERA_CODE)
 
+    # Debug Drawer (Simulated)
+    # Using fixed positioning to overlay on top of everything.
+    # Initially hidden off-screen (translate-x-full).
+    with ui.element('div').classes('fixed top-0 right-0 h-full w-96 bg-gray-100 text-gray-900 shadow-xl z-[2000] p-4 transition-transform duration-300 transform translate-x-full border-l flex flex-col') as drawer_el:
+         page.debug_drawer_el = drawer_el
+
+         with ui.row().classes('w-full items-center justify-between mb-4'):
+             ui.label("Scanner Debug").classes('text-xl font-bold')
+             # Close button using a value wrapper to mimic event
+             ui.button(icon='close', on_click=lambda: page.toggle_debug_mode(type('obj', (object,), {'value': False}))).props('flat round dense text-color=gray-900')
+
+         ui.label("Controls:").classes('font-bold')
+         ui.button("Force Manual Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('w-full mb-4')
+
+         ui.label("Warped View:").classes('font-bold')
+         page.debug_img = ui.image().classes('w-full h-auto border bg-black mb-4 min-h-[100px]')
+
+         ui.label("Stats:").classes('font-bold')
+         page.debug_stats_label = ui.label("Waiting...").classes('text-sm font-mono mb-4 whitespace-pre-wrap bg-white text-black p-2 border rounded w-full')
+
+         ui.label("Logs:").classes('font-bold')
+         with ui.scroll_area().classes('flex-grow border bg-white p-2 w-full'):
+             page.debug_log_label = ui.label().classes('text-xs font-mono whitespace-pre-wrap text-black')
+
     with ui.row().classes('w-full gap-4 items-center mb-4'):
         ui.label('Card Scanner').classes('text-2xl font-bold')
 
@@ -372,6 +442,8 @@ def scan_page():
         page.start_btn = ui.button('Start Camera', on_click=page.start_camera).props('icon=videocam')
         page.stop_btn = ui.button('Stop Camera', on_click=page.stop_camera).props('icon=videocam_off flat color=negative')
         page.stop_btn.visible = False # Initial state
+
+        page.debug_switch = ui.switch('Debug Mode', on_change=page.toggle_debug_mode)
 
         ui.space()
         ui.button('Add Scanned Cards', on_click=page.commit_cards).props('color=primary icon=save')
