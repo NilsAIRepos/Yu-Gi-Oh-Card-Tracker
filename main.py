@@ -16,6 +16,7 @@ from src.ui.import_tools import import_tools_page
 from src.ui.browse_sets import browse_sets_page
 from src.ui.bulk_add import bulk_add_page
 from src.ui.scan import scan_page
+from src.ui.db_editor import db_editor_page
 
 @ui.page('/')
 def home():
@@ -44,6 +45,10 @@ def import_tools():
 @ui.page('/scan')
 def scan():
     create_layout(scan_page)
+
+@ui.page('/db_editor')
+def db_editor():
+    create_layout(db_editor_page)
 
 # Serve images
 app.add_static_files('/images', 'data/images')
