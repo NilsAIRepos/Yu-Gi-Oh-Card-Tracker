@@ -100,7 +100,7 @@ def metric_card(label, value, icon, color='accent', sub_text=None):
             if sub_text:
                 ui.label(sub_text).classes('text-xs text-grey-600')
 
-def nav_card(title, description, icon, target_url, color_class='text-accent'):
+def nav_card(title, description, icon, target_url, color_class='text-accent', is_large=False):
     with ui.card().classes('group relative overflow-hidden bg-gray-900 border border-gray-800 p-6 cursor-pointer hover:border-gray-600 hover:bg-gray-800 transition-all duration-300') \
             .on('click', lambda: ui.navigate.to(target_url)):
 
@@ -113,8 +113,11 @@ def nav_card(title, description, icon, target_url, color_class='text-accent'):
 
             ui.icon('arrow_forward', size='1.2rem').classes('text-gray-600 group-hover:text-white transition-colors opacity-0 group-hover:opacity-100 transform translate-x-[-10px] group-hover:translate-x-0 transition-all duration-300')
 
-        ui.label(title).classes('text-xl font-bold text-white q-mb-sm group-hover:text-accent transition-colors')
-        ui.label(description).classes('text-sm text-gray-400 leading-relaxed')
+        title_size = 'text-2xl' if is_large else 'text-xl'
+        desc_size = 'text-base' if is_large else 'text-sm'
+
+        ui.label(title).classes(f'{title_size} font-bold text-white q-mb-sm group-hover:text-accent transition-colors')
+        ui.label(description).classes(f'{desc_size} text-gray-400 leading-relaxed')
 
 @ui.refreshable
 def render_metrics(stats):
@@ -266,19 +269,19 @@ def dashboard_page():
             with ui.grid(columns=2).classes('w-full gap-6'):
                 nav_card('Collection',
                          'Manage your inventory, view prices, and track your progress.',
-                         'style', '/collection', 'text-blue-400')
+                         'style', '/collection', 'text-blue-400', is_large=True)
 
                 nav_card('Deck Builder',
                          'Create and edit decks using your collection or the full database.',
-                         'construction', '/decks', 'text-yellow-500')
+                         'construction', '/decks', 'text-yellow-500', is_large=True)
 
                 nav_card('Browse Sets',
                          'Explore card sets, check rarity spread, and view completion.',
-                         'library_books', '/sets', 'text-purple-400')
+                         'library_books', '/sets', 'text-purple-400', is_large=True)
 
                 nav_card('Bulk Add',
                          'Quickly add large numbers of cards via lists or drag-and-drop.',
-                         'playlist_add', '/bulk_add', 'text-green-400')
+                         'playlist_add', '/bulk_add', 'text-green-400', is_large=True)
 
             # Admin Functions (1 Row, 3 Cols)
             with ui.grid(columns=3).classes('w-full gap-6'):
