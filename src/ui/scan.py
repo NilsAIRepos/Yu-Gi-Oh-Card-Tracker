@@ -16,9 +16,15 @@ JS_CAMERA_CODE = """
 <script>
 var video = null;
 var stream = null;
+var overlayCanvas = null;
+var overlayCtx = null;
 
 function initScanner() {
     video = document.getElementById('scanner-video');
+    overlayCanvas = document.getElementById('overlay-canvas');
+    if (overlayCanvas) {
+        overlayCtx = overlayCanvas.getContext('2d');
+    }
 }
 
 async function startCamera(deviceId) {
@@ -38,6 +44,12 @@ async function startCamera(deviceId) {
         if (video) {
             video.srcObject = stream;
             await video.play();
+
+            // Sync canvas size to video size
+            if (overlayCanvas) {
+                overlayCanvas.width = video.videoWidth;
+                overlayCanvas.height = video.videoHeight;
+            }
         }
         return true;
     } catch (err) {
@@ -54,6 +66,7 @@ function stopCamera() {
     if (video) {
         video.srcObject = null;
     }
+    clearOverlay();
 }
 
 function captureFrame() {
@@ -65,6 +78,40 @@ function captureFrame() {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0);
     return canvas.toDataURL('image/jpeg', 0.8);
+}
+
+function drawOverlay(points) {
+    if (!overlayCanvas || !overlayCtx || !video) return;
+
+    // Ensure canvas dimensions match video
+    if (overlayCanvas.width !== video.videoWidth || overlayCanvas.height !== video.videoHeight) {
+        overlayCanvas.width = video.videoWidth;
+        overlayCanvas.height = video.videoHeight;
+    }
+
+    const w = overlayCanvas.width;
+    const h = overlayCanvas.height;
+
+    overlayCtx.clearRect(0, 0, w, h);
+
+    if (!points || points.length < 4) return;
+
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(points[0][0] * w, points[0][1] * h);
+    for (let i = 1; i < points.length; i++) {
+        overlayCtx.lineTo(points[i][0] * w, points[i][1] * h);
+    }
+    overlayCtx.closePath();
+
+    overlayCtx.strokeStyle = '#00FF00';
+    overlayCtx.lineWidth = 4;
+    overlayCtx.stroke();
+}
+
+function clearOverlay() {
+    if (overlayCtx && overlayCanvas) {
+        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    }
 }
 
 async function getVideoDevices() {
@@ -113,19 +160,35 @@ class ScanPage:
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
-        success = await ui.run_javascript(f'startCamera("{device_id}")')
-        if success:
-            scanner_manager.start()
-            self.start_btn.visible = False
-            self.stop_btn.visible = True
-        else:
-            ui.notify("Failed to access camera. Check permissions.", type='negative')
+
+        try:
+            # Increase timeout to 60s for permission dialogs
+            success = await ui.run_javascript(f'startCamera("{device_id}")', timeout=60.0)
+            logger.info(f"startCamera JS returned: {success}")
+
+            if success:
+                scanner_manager.start()
+                self.start_btn.visible = False
+                self.stop_btn.visible = True
+            else:
+                ui.notify("Failed to access camera. Check permissions.", type='negative')
+        except Exception as e:
+            logger.error(f"Error starting camera: {e}")
+            ui.notify("Camera start timed out or failed.", type='negative')
+            # If it failed but maybe partially worked, ensure we don't leave UI in weird state
+            # But here we assume failure means start button should remain visible.
 
     async def stop_camera(self):
-        await ui.run_javascript('stopCamera()')
+        try:
+            await ui.run_javascript('stopCamera()')
+        except Exception as e:
+            logger.error(f"Error stopping camera: {e}")
+
         scanner_manager.stop()
         self.start_btn.visible = True
         self.stop_btn.visible = False
+        if self.status_label:
+            self.status_label.text = "Status: Idle"
 
     async def update_loop(self):
         if not self.is_active:
@@ -144,12 +207,21 @@ class ScanPage:
         # 3. Process Logic
         await scanner_manager.process_pending_lookups()
 
-        # 4. Capture Frame (Client -> Server)
+        # 4. Capture Frame & Draw Overlay (Client -> Server -> Client)
         if is_running:
             try:
+                # Capture frame
                 b64 = await ui.run_javascript('captureFrame()')
                 if b64:
                     scanner_manager.push_frame(b64)
+
+                # Update Overlay
+                contour = scanner_manager.get_live_contour()
+                if contour:
+                    await ui.run_javascript(f'drawOverlay({contour})')
+                else:
+                    await ui.run_javascript('clearOverlay()')
+
             except Exception:
                 pass
 
@@ -309,6 +381,9 @@ def scan_page():
         with ui.card().classes('flex-1 min-w-0 h-full p-0 overflow-hidden relative bg-black'):
             # Video Element
             ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
+
+            # Canvas Overlay
+            ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
 
             # Overlay Status
             with ui.column().classes('absolute bottom-4 left-4 p-2 bg-black/50 rounded'):

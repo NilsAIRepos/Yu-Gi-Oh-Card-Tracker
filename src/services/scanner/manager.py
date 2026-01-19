@@ -4,7 +4,7 @@ import queue
 import time
 import base64
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 try:
     import numpy as np
@@ -47,6 +47,7 @@ class ScannerManager:
         self.is_processing = False
         self.cooldown = 0
         self.status_message = "Idle"
+        self.latest_normalized_contour: Optional[List[List[float]]] = None
 
         # Configuration
         self.stability_threshold = 10.0 # Max pixel movement allowed
@@ -75,6 +76,7 @@ class ScannerManager:
         with self.input_queue.mutex:
             self.input_queue.queue.clear()
 
+        self.latest_normalized_contour = None
         logger.info("Scanner stopped")
 
     def push_frame(self, b64_frame: str):
@@ -100,6 +102,10 @@ class ScannerManager:
         except queue.Empty:
             return None
 
+    def get_live_contour(self) -> Optional[List[List[float]]]:
+        """Returns the latest detected card contour as normalized coordinates (0.0-1.0)."""
+        return self.latest_normalized_contour
+
     def _worker(self):
         while self.running:
             try:
@@ -122,10 +128,20 @@ class ScannerManager:
                 if frame is None:
                     continue
 
+                height, width = frame.shape[:2]
+
                 # Fast Detection
                 contour = self.scanner.find_card_contour(frame)
 
                 if contour is not None:
+                    # Normalize and store contour
+                    # contour is shape (4, 1, 2)
+                    pts = contour.reshape(4, 2).astype(float)
+                    # Normalize x by width, y by height
+                    pts[:, 0] /= width
+                    pts[:, 1] /= height
+                    self.latest_normalized_contour = pts.tolist()
+
                     # Check Stability
                     if self._check_stability(contour):
                         self.stable_frames += 1
@@ -145,6 +161,7 @@ class ScannerManager:
                 else:
                     self.stable_frames = 0
                     self.last_corners = None
+                    self.latest_normalized_contour = None
                     self.status_message = "Scanning..."
 
             except Exception as e:
