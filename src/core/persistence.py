@@ -142,7 +142,7 @@ class PersistenceManager:
 
     def load_ui_state(self) -> dict:
         """Loads UI state from data/ui_state.json."""
-        filepath = os.path.join(self.data_dir, "ui_state.json")
+        filepath = os.path.join(DATA_DIR, "ui_state.json")
         if not os.path.exists(filepath):
             return {}
         try:
@@ -154,7 +154,7 @@ class PersistenceManager:
 
     def save_ui_state(self, state: dict):
         """Saves UI state to data/ui_state.json. Merges with existing state."""
-        filepath = os.path.join(self.data_dir, "ui_state.json")
+        filepath = os.path.join(DATA_DIR, "ui_state.json")
         try:
             current = self.load_ui_state()
             current.update(state)
