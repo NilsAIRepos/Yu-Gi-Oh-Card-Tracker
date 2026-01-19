@@ -201,51 +201,52 @@ class YugipediaService:
         Parses the wikitext to extract card lists.
         Distinguishes between Main Deck (default) and Bonus Cards.
         """
+        # We need to identify sections.
+        # {{Set list ...}} blocks.
+        # Often preceded by headers like == Bonus cards == or == Preconstructed Deck ==
+
+        # Strategy: Split by "== ... ==" headers to identify context, then find {{Set list}} inside.
+        # Updated regex to handle leading whitespace before headers
+        sections = re.split(r'(^\s*==.*?==)', wikitext, flags=re.MULTILINE)
+
         main_cards = []
         bonus_cards = []
 
-        current_section = "main"
+        current_section = "main" # Default to main if no header
 
-        # Accumulate text for the current section
-        section_content = []
+        # If no headers found, sections will just be [content]
+        # If headers found, it will be [preamble, header, content, header, content...]
 
-        lines = wikitext.splitlines()
+        # Iterate and parse
+        for i, part in enumerate(sections):
+            part = part.strip()
+            if not part: continue
 
-        for line in lines:
-            stripped = line.strip()
-            # Detect Header: Line starting with "==" (ignoring leading whitespace)
-            if stripped.startswith("==") and stripped.endswith("=="):
-                # Process the previous accumulated block
-                if section_content:
-                    block_text = "\n".join(section_content)
-                    cards = self._extract_cards_from_block(block_text)
-                    if current_section == "bonus":
-                        bonus_cards.extend(cards)
-                    else:
-                        main_cards.extend(cards)
-                    section_content = []
-
-                # Determine new section context
-                header_text = stripped.lower()
-                if "bonus" in header_text:
+            # Check if header
+            # Check if header (allowing for leading whitespace)
+            clean_part = part.strip()
+            if clean_part.startswith("==") and clean_part.endswith("=="):
+                header = clean_part.lower()
+                if "bonus" in header:
                     current_section = "bonus"
                 else:
                     current_section = "main"
-            else:
-                section_content.append(line)
+                continue
 
-        # Process the final block
-        if section_content:
-            block_text = "\n".join(section_content)
-            cards = self._extract_cards_from_block(block_text)
-            if current_section == "bonus":
-                bonus_cards.extend(cards)
-            else:
-                main_cards.extend(cards)
+            # Parse Set list in this part
+            cards = self._extract_cards_from_block(part)
+            if cards:
+                if current_section == "bonus":
+                    bonus_cards.extend(cards)
+                else:
+                    main_cards.extend(cards)
+
+        # Post-processing: If only one list found and it was put in main, assume it is the deck.
+        # If we have explicit bonus section, we labeled it.
 
         return {
             'main': main_cards,
-            'bonus': sorted(bonus_cards, key=lambda c: c.name)
+            'bonus': sorted(bonus_cards, key=lambda c: c.name) # Sort bonus for UI
         }
 
     def _extract_cards_from_block(self, text: str) -> List[DeckCard]:

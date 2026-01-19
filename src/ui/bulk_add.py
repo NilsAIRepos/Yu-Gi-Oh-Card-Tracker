@@ -541,7 +541,7 @@ class BulkAddPage:
         is_local = image_manager.image_exists(img_id, high_res=True)
         initial_src = f"/images/{img_id}_high.jpg" if is_local else (high_res_url or low_res_url)
 
-        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none').props('style="max-width: none" delay=5000') as tooltip:
+        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none').props('style="max-width: none" delay=3500') as tooltip:
             if initial_src:
                 ui.image(initial_src).classes('w-auto h-[65vh] min-w-[1000px] object-contain rounded-lg shadow-2xl').props('fit=contain')
             if not is_local and high_res_url:
