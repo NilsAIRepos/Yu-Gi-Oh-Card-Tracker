@@ -22,5 +22,35 @@ RARITY_RANKING = [
     "Common"
 ]
 
+RARITY_ABBREVIATIONS = {
+    "Common": "C",
+    "Rare": "R",
+    "Super Rare": "SR",
+    "Ultra Rare": "UR",
+    "Secret Rare": "ScR",
+    "Ultimate Rare": "UtR",
+    "Ghost Rare": "GR",
+    "Starlight Rare": "StR",
+    "Collector's Rare": "CR",
+    "Prismatic Secret Rare": "PScR",
+    "Platinum Secret Rare": "PS",
+    "Quarter Century Secret Rare": "QCScR",
+    "Gold Rare": "GUR",
+    "Premium Gold Rare": "PG",
+    "Ghost/Gold Rare": "GGR",
+    "Duel Terminal Normal Parallel Rare": "DNPR",
+    "Duel Terminal Rare Parallel Rare": "DRPR",
+    "Duel Terminal Super Parallel Rare": "DSPR",
+    "Duel Terminal Ultra Parallel Rare": "DUPR",
+    "Parallel Rare": "PR",
+    "Short Print": "SP",
+    "Mosaic Rare": "MSR",
+    "Starfoil Rare": "SFR",
+    "Shatterfoil Rare": "SHR",
+    "Extra Secret Rare": "EScR",
+    "Holographic Rare": "HGR",
+    "10000 Secret Rare": "10000ScR"
+}
+
 # Map for standardized display/filtering if needed, though simple list is usually enough for sorting.
 # Lower index = Higher Priority/Rarity

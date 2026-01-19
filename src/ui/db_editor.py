@@ -321,6 +321,26 @@ class DbEditorPage:
             else:
                 ui.notify(f"Failed to delete variant {row.variant_id}", type='negative')
 
+        async def on_add(set_code, rarity, image_id):
+            logger.info(f"Adding new variant: {set_code} / {rarity}")
+            # Try to resolve set name from global or fallback to custom
+            s_name = await ygo_service.get_set_name_by_code(set_code) or "Custom Set"
+
+            new_variant = await ygo_service.add_card_variant(
+                card_id=row.api_card.id,
+                set_name=s_name,
+                set_code=set_code,
+                set_rarity=rarity,
+                image_id=image_id,
+                language=self.state['language']
+            )
+
+            if new_variant:
+                 ui.notify(f"Added new variant: {set_code}", type='positive')
+                 await self.load_data()
+            else:
+                 ui.notify(f"Variant already exists: {set_code} / {rarity}", type='warning')
+
         try:
             await self.single_card_view.open_db_edit_view(
                 card=row.api_card,
@@ -329,7 +349,8 @@ class DbEditorPage:
                 rarity=row.rarity,
                 image_id=row.image_id,
                 on_save_callback=on_save,
-                on_delete_callback=on_delete
+                on_delete_callback=on_delete,
+                on_add_callback=on_add
             )
             logger.info("Edit view opened successfully")
         except Exception as e:

@@ -783,7 +783,8 @@ class SingleCardView:
         rarity: str,
         image_id: int,
         on_save_callback: Callable[[str, str, int], Any],
-        on_delete_callback: Callable[[], Any] = None
+        on_delete_callback: Callable[[], Any] = None,
+        on_add_callback: Callable[[str, str, int], Any] = None
     ):
         try:
             input_state = {
@@ -868,7 +869,7 @@ class SingleCardView:
 
                             # Actions
                             with ui.row().classes('w-full justify-between gap-4'):
-                                with ui.row():
+                                with ui.row().classes('items-center gap-2'):
                                     if on_delete_callback:
                                         async def confirm_delete():
                                             with ui.dialog() as del_d, ui.card():
@@ -884,6 +885,15 @@ class SingleCardView:
                                             del_d.open()
 
                                         ui.button('Delete Variant', on_click=confirm_delete).props('color=negative icon=delete flat')
+
+                                    if on_add_callback:
+                                        async def do_add():
+                                            await on_add_callback(
+                                                input_state['set_code'],
+                                                input_state['rarity'],
+                                                input_state['image_id']
+                                            )
+                                        ui.button('Add Variant', on_click=do_add).props('color=secondary icon=add_circle outline')
 
                                 with ui.row().classes('gap-4'):
                                     ui.button('Cancel', on_click=d.close).props('flat color=white')

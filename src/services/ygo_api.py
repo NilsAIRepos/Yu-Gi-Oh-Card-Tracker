@@ -9,7 +9,7 @@ from src.core.models import ApiCard, ApiCardSet
 from src.services.image_manager import image_manager
 from src.core.persistence import persistence
 from src.core.utils import generate_variant_id
-from src.core.constants import RARITY_RANKING
+from src.core.constants import RARITY_RANKING, RARITY_ABBREVIATIONS
 from nicegui import run
 
 API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -251,16 +251,30 @@ class YugiohService:
 
     async def add_card_variant(self, card_id: int, set_name: str, set_code: str, set_rarity: str,
                                set_rarity_code: Optional[str] = None, set_price: Optional[str] = None,
-                               image_id: Optional[int] = None, language: str = "en") -> ApiCardSet:
+                               image_id: Optional[int] = None, language: str = "en") -> Optional[ApiCardSet]:
         """
         Adds a new custom variant to a card in the database.
         Generates a unique variant_id using UUID to distinguish it from API-sourced variants.
+        Returns the new ApiCardSet if successful, or None if a duplicate exists.
         """
         cards = await self.load_card_database(language)
         card = next((c for c in cards if c.id == card_id), None)
 
         if not card:
             raise ValueError(f"Card with ID {card_id} not found.")
+
+        # Check for duplicates (same set_code, rarity, and image_id)
+        for existing in card.card_sets:
+            same_img = (existing.image_id == image_id) or (existing.image_id is None and image_id is None)
+            if existing.set_code == set_code and existing.set_rarity == set_rarity and same_img:
+                logger.warning(f"Duplicate variant attempt: {set_code} / {set_rarity}")
+                return None
+
+        # Resolve set_rarity_code if missing
+        if not set_rarity_code:
+            abbr = RARITY_ABBREVIATIONS.get(set_rarity)
+            if abbr:
+                set_rarity_code = f"({abbr})"
 
         new_variant_id = str(uuid.uuid4())
 
@@ -309,11 +323,18 @@ class YugiohService:
             if set_info:
                 set_name = set_info.get('name', set_name)
 
+            # Resolve rarity code
+            rarity_code = None
+            abbr = RARITY_ABBREVIATIONS.get(set_rarity)
+            if abbr:
+                rarity_code = f"({abbr})"
+
             new_set = ApiCardSet(
                 variant_id=new_id,
                 set_name=set_name,
                 set_code=set_code,
                 set_rarity=set_rarity,
+                set_rarity_code=rarity_code,
                 image_id=image_id
             )
             card.card_sets.append(new_set)
@@ -326,6 +347,11 @@ class YugiohService:
         variant.set_code = set_code
         variant.set_rarity = set_rarity
         variant.image_id = image_id
+
+        # Update rarity code
+        abbr = RARITY_ABBREVIATIONS.get(set_rarity)
+        if abbr:
+            variant.set_rarity_code = f"({abbr})"
 
         # Attempt to refresh set_name from global sets if code changed
         prefix = set_code.split('-')[0]
