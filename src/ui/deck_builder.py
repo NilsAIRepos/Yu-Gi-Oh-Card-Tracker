@@ -1242,6 +1242,8 @@ class DeckBuilderPage:
                                 await self.apply_filters()
                              ui.switch('Owned Only', value=self.state['only_owned'], on_change=on_owned_toggle).props('dense').classes('text-white text-xs')
 
+                             ui.separator().props('vertical').classes('mx-2 h-6 bg-gray-800')
+
                              # Sort Controls
                              sort_btn = None
 
