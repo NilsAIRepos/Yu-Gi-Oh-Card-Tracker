@@ -175,8 +175,13 @@ class DbEditorPage:
 
         self.state['set_gallery_items'].sort(key=lambda x: x['name'])
 
+        # Reset pagination for sets
+        self.state['page'] = 1
+        self.update_pagination()
+
         if self.state['main_view'] == 'sets' and hasattr(self, 'render_content'):
              self.render_content.refresh()
+        self.update_pagination_labels()
 
     async def load_set_detail_data(self, set_code):
         logger.info(f"Loading detail for set: {set_code}")
@@ -315,14 +320,22 @@ class DbEditorPage:
         self.update_pagination_labels()
 
     def update_pagination(self):
-        count = len(self.state['filtered_items'])
+        if self.state['main_view'] == 'sets':
+            count = len(self.state['set_gallery_items'])
+        else:
+            count = len(self.state['filtered_items'])
         self.state['total_pages'] = (count + self.state['page_size'] - 1) // self.state['page_size']
 
     def update_pagination_labels(self):
+        if self.state['main_view'] == 'sets':
+            items = self.state['set_gallery_items']
+        else:
+            items = self.state['filtered_items']
+
         if self.pagination_showing_label:
             start = (self.state['page'] - 1) * self.state['page_size']
-            end = min(start + self.state['page_size'], len(self.state['filtered_items']))
-            self.pagination_showing_label.text = f"Showing {start+1}-{end} of {len(self.state['filtered_items'])}"
+            end = min(start + self.state['page_size'], len(items))
+            self.pagination_showing_label.text = f"Showing {start+1}-{end} of {len(items)}"
         if self.pagination_total_label:
             self.pagination_total_label.text = f"/ {max(1, self.state['total_pages'])}"
 
@@ -477,8 +490,12 @@ class DbEditorPage:
             ui.label("No sets found.").classes('text-gray-400 p-4')
             return
 
+        start = (self.state['page'] - 1) * self.state['page_size']
+        end = min(start + self.state['page_size'], len(items))
+        page_items = items[start:end]
+
         with ui.grid(columns='repeat(auto-fill, minmax(180px, 1fr))').classes('w-full gap-4 p-4'):
-            for s in items:
+            for s in page_items:
                 self.render_set_card_item(s)
 
     def render_set_card_item(self, set_info):
@@ -500,9 +517,9 @@ class DbEditorPage:
             self.render_header.refresh()
 
         with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform bg-gray-900 border border-gray-700 shadow-lg').on('click', open_detail):
-             with ui.element('div').classes('h-24 w-full bg-black relative flex items-center justify-center overflow-hidden'):
+             with ui.element('div').classes('w-full bg-black relative flex items-center justify-center overflow-hidden').style('aspect-ratio: 2/3'):
                  if image_url:
-                     ui.image(image_url).classes('h-full object-contain')
+                     ui.image(image_url).classes('h-full w-full object-contain')
                  else:
                      ui.icon('image_not_supported', color='grey')
 
@@ -602,6 +619,7 @@ class DbEditorPage:
         else:
             self.render_grid(rows)
 
+    @ui.refreshable
     def render_header(self):
         with ui.row().classes('w-full items-center gap-4 q-mb-md p-4 bg-gray-900 rounded-lg border border-gray-800'):
             ui.label('Card Database Editor').classes('text-h5')
@@ -613,9 +631,11 @@ class DbEditorPage:
                     self.load_sets_data()
                 elif mode == 'cards':
                     self.state['selected_set_code'] = None
+                    self.update_pagination()
+                    self.update_pagination_labels()
 
                 if hasattr(self, 'pagination_row'):
-                    self.pagination_row.set_visibility(mode == 'cards')
+                    self.pagination_row.set_visibility(mode in ['cards', 'sets'])
 
                 self.render_content.refresh()
                 self.render_header.refresh()
@@ -702,7 +722,8 @@ class DbEditorPage:
                     new_p = max(1, min(self.state['total_pages'], self.state['page'] + delta))
                     if new_p != self.state['page']:
                         self.state['page'] = new_p
-                        await self.prepare_current_page_images()
+                        if self.state['main_view'] == 'cards':
+                            await self.prepare_current_page_images()
                         self.render_content.refresh()
                         self.update_pagination_labels()
 
@@ -711,7 +732,8 @@ class DbEditorPage:
                 async def set_page(p):
                     new_val = int(p) if p else 1
                     self.state['page'] = new_val
-                    await self.prepare_current_page_images()
+                    if self.state['main_view'] == 'cards':
+                        await self.prepare_current_page_images()
                     self.render_content.refresh()
                     self.update_pagination_labels()
 
