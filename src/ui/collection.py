@@ -105,8 +105,9 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
 
             # Pass 2: Fuzzy Matches (for unassigned sets)
             for idx, cset in enumerate(card.card_sets):
-                if idx in assignments:
-                    continue # Already matched exactly
+                # We do NOT skip if already matched exactly, because we want to allow
+                # regional variants (e.g. SDK-E001) to group with the main set (SDK-001)
+                # even if the main set itself is also owned.
 
                 target_variant_id = cset.variant_id
                 norm_api = normalize_set_code(cset.set_code)
@@ -122,7 +123,9 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         fuzzy_matches.append(var)
 
                 if fuzzy_matches:
-                    assignments[idx] = fuzzy_matches
+                    # Append to existing assignments if any (from Exact Match)
+                    current_list = assignments.get(idx, [])
+                    assignments[idx] = current_list + fuzzy_matches
                     for m in fuzzy_matches:
                         processed_variant_ids.add(m.variant_id)
 
