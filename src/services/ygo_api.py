@@ -665,4 +665,141 @@ class YugiohService:
 
         return counts
 
+    async def bulk_update_set_prefix(self, old_prefix: str, new_prefix: str, language: str = "en") -> int:
+        """
+        Updates the set prefix for all cards in the specified set.
+        Preserves the suffix (region + number).
+        Returns the number of variants updated.
+        """
+        cards = await self.load_card_database(language)
+        updated_count = 0
+
+        # Normalize prefixes for comparison
+        old_p = old_prefix.strip()
+        new_p = new_prefix.strip()
+
+        if old_p == new_p:
+            return 0
+
+        for card in cards:
+            if not card.card_sets:
+                continue
+
+            card_updated = False
+            for s in card.card_sets:
+                parts = s.set_code.split('-')
+                if parts and parts[0] == old_p:
+                    # Construct new code
+                    parts[0] = new_p
+                    new_code = "-".join(parts)
+                    s.set_code = new_code
+                    updated_count += 1
+                    card_updated = True
+
+        if updated_count > 0:
+            await self.save_card_database(cards, language)
+
+        logger.info(f"Bulk updated prefix from {old_p} to {new_p}. Updated {updated_count} variants.")
+        return updated_count
+
+    async def bulk_add_rarity_to_set(self, set_prefix: str, rarity: str, language: str = "en") -> int:
+        """
+        Adds a new variant with the specified rarity to all cards belonging to the set.
+        """
+        cards = await self.load_card_database(language)
+        added_count = 0
+        target_prefix = set_prefix.strip()
+
+        # Resolve rarity code
+        rarity_code = None
+        abbr = RARITY_ABBREVIATIONS.get(rarity)
+        if abbr:
+            rarity_code = f"({abbr})"
+
+        for card in cards:
+            if not card.card_sets:
+                continue
+
+            # Identify unique set codes for this prefix (handling Alt Arts / multiple codes)
+            codes_in_set = {} # code -> set_name
+
+            for s in card.card_sets:
+                parts = s.set_code.split('-')
+                if parts and parts[0] == target_prefix:
+                    codes_in_set[s.set_code] = s.set_name
+
+            for code, name in codes_in_set.items():
+                # Check if this specific code+rarity exists
+                exists = False
+                for s in card.card_sets:
+                    if s.set_code == code and s.set_rarity == rarity:
+                        exists = True
+                        break
+
+                if not exists:
+                    # Create new variant
+                    new_id = str(uuid.uuid4())
+
+                    # Try to use image_id from an existing variant of this code
+                    ref_img_id = None
+                    for s in card.card_sets:
+                        if s.set_code == code:
+                            ref_img_id = s.image_id
+                            break
+                    if ref_img_id is None:
+                         ref_img_id = card.card_images[0].id if card.card_images else None
+
+                    new_set = ApiCardSet(
+                        variant_id=new_id,
+                        set_name=name,
+                        set_code=code,
+                        set_rarity=rarity,
+                        set_rarity_code=rarity_code,
+                        set_price="0.00",
+                        image_id=ref_img_id
+                    )
+                    card.card_sets.append(new_set)
+                    added_count += 1
+
+        if added_count > 0:
+            await self.save_card_database(cards, language)
+
+        logger.info(f"Bulk added rarity {rarity} to set {target_prefix}. Added {added_count} variants.")
+        return added_count
+
+    async def bulk_delete_set(self, set_prefix: str, language: str = "en") -> int:
+        """
+        Deletes all variants belonging to the specified set prefix.
+        """
+        cards = await self.load_card_database(language)
+        deleted_count = 0
+        target_prefix = set_prefix.strip()
+
+        cards_to_remove = []
+
+        for card in cards:
+            if not card.card_sets:
+                continue
+
+            original_len = len(card.card_sets)
+            # Keep variants that DO NOT match the prefix
+            card.card_sets = [s for s in card.card_sets if s.set_code.split('-')[0] != target_prefix]
+
+            removed = original_len - len(card.card_sets)
+            deleted_count += removed
+
+            if len(card.card_sets) == 0:
+                cards_to_remove.append(card.id)
+
+        if deleted_count > 0:
+            if cards_to_remove:
+                remove_set = set(cards_to_remove)
+                new_cards = [c for c in cards if c.id not in remove_set]
+                await self.save_card_database(new_cards, language)
+            else:
+                await self.save_card_database(cards, language)
+
+        logger.info(f"Bulk deleted set {target_prefix}. Removed {deleted_count} variants.")
+        return deleted_count
+
 ygo_service = YugiohService()
