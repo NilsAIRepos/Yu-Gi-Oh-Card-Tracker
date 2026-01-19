@@ -873,7 +873,7 @@ class SingleCardView:
                                         async def confirm_delete():
                                             with ui.dialog() as del_d, ui.card():
                                                 ui.label('Are you sure you want to delete this variant?').classes('text-lg font-bold')
-                                                ui.label('This action cannot be undone immediately (requires API fetch to restore).')
+                                                ui.label('This cannot be undone. Deleted cards can only be restored via the API.')
                                                 with ui.row().classes('w-full justify-end'):
                                                     ui.button('Cancel', on_click=del_d.close).props('flat')
                                                     async def do_delete():

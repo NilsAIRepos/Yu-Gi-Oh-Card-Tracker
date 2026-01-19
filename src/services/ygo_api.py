@@ -360,8 +360,8 @@ class YugiohService:
 
         # If no variants left, remove the card entirely to prevent "NO SET" entries
         if new_count == 0:
-             cards = [c for c in cards if c.id != card_id]
-             logger.info(f"Card {card_id} removed because it has no variants left.")
+            cards = [c for c in cards if c.id != card_id]
+            logger.info(f"Card {card_id} removed because it has no variants left.")
 
         await self.save_card_database(cards, language)
         logger.info(f"Deleted variant {variant_id} from card {card_id}")

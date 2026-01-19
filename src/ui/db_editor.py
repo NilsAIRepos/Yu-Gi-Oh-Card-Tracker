@@ -309,10 +309,11 @@ class DbEditorPage:
 
         async def on_delete():
             logger.info(f"Deleting variant {row.variant_id}")
+            lang = self.state['language'].lower() if self.state['language'] else 'en'
             success = await ygo_service.delete_card_variant(
                 card_id=row.api_card.id,
                 variant_id=row.variant_id,
-                language=self.state['language']
+                language=lang
             )
             if success:
                 ui.notify(f"Deleted variant {row.variant_id}", type='positive')
