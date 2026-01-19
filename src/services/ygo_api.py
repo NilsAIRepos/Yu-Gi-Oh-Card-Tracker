@@ -74,6 +74,9 @@ class YugiohService:
             except RuntimeError:
                 api_cards = parse_cards_data(cards_data)
 
+            # Filter out cards without sets (unreleased/leaked cards)
+            api_cards = [c for c in api_cards if c.card_sets]
+
             # Load existing local data to merge
             local_cards = []
             try:
@@ -332,6 +335,36 @@ class YugiohService:
 
         await self.save_card_database(cards, language)
         logger.info(f"Updated variant {variant_id} for card {card_id}")
+        return True
+
+    async def delete_card_variant(self, card_id: int, variant_id: str, language: str = "en") -> bool:
+        """
+        Deletes a specific variant from a card in the database.
+        If the card has no variants left after deletion, the card itself is removed.
+        """
+        cards = await self.load_card_database(language)
+        card = next((c for c in cards if c.id == card_id), None)
+
+        if not card:
+            logger.error(f"Card {card_id} not found for deletion.")
+            return False
+
+        # Find and remove the variant
+        original_count = len(card.card_sets)
+        card.card_sets = [v for v in card.card_sets if v.variant_id != variant_id]
+        new_count = len(card.card_sets)
+
+        if new_count == original_count:
+            logger.warning(f"Variant {variant_id} not found in card {card_id}.")
+            return False
+
+        # If no variants left, remove the card entirely to prevent "NO SET" entries
+        if new_count == 0:
+            cards = [c for c in cards if c.id != card_id]
+            logger.info(f"Card {card_id} removed because it has no variants left.")
+
+        await self.save_card_database(cards, language)
+        logger.info(f"Deleted variant {variant_id} from card {card_id}")
         return True
 
     async def load_card_database(self, language: str = "en") -> List[ApiCard]:

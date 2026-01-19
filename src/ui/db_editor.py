@@ -307,6 +307,20 @@ class DbEditorPage:
                 await self.load_data()
             return success
 
+        async def on_delete():
+            logger.info(f"Deleting variant {row.variant_id}")
+            lang = self.state['language'].lower() if self.state['language'] else 'en'
+            success = await ygo_service.delete_card_variant(
+                card_id=row.api_card.id,
+                variant_id=row.variant_id,
+                language=lang
+            )
+            if success:
+                ui.notify(f"Deleted variant {row.variant_id}", type='positive')
+                await self.load_data()
+            else:
+                ui.notify(f"Failed to delete variant {row.variant_id}", type='negative')
+
         try:
             await self.single_card_view.open_db_edit_view(
                 card=row.api_card,
@@ -314,7 +328,8 @@ class DbEditorPage:
                 set_code=row.set_code,
                 rarity=row.rarity,
                 image_id=row.image_id,
-                on_save_callback=on_save
+                on_save_callback=on_save,
+                on_delete_callback=on_delete
             )
             logger.info("Edit view opened successfully")
         except Exception as e:

@@ -782,7 +782,8 @@ class SingleCardView:
         set_code: str,
         rarity: str,
         image_id: int,
-        on_save_callback: Callable[[str, str, int], Any]
+        on_save_callback: Callable[[str, str, int], Any],
+        on_delete_callback: Callable[[], Any] = None
     ):
         try:
             input_state = {
@@ -866,22 +867,40 @@ class SingleCardView:
                             ui.separator().classes('q-my-md bg-gray-600')
 
                             # Actions
-                            with ui.row().classes('w-full justify-end gap-4'):
-                                ui.button('Cancel', on_click=d.close).props('flat color=white')
+                            with ui.row().classes('w-full justify-between gap-4'):
+                                with ui.row():
+                                    if on_delete_callback:
+                                        async def confirm_delete():
+                                            with ui.dialog() as del_d, ui.card():
+                                                ui.label('Are you sure you want to delete this variant?').classes('text-lg font-bold')
+                                                ui.label('This cannot be undone. Deleted cards can only be restored via the API.')
+                                                with ui.row().classes('w-full justify-end'):
+                                                    ui.button('Cancel', on_click=del_d.close).props('flat')
+                                                    async def do_delete():
+                                                        del_d.close()
+                                                        await on_delete_callback()
+                                                        d.close()
+                                                    ui.button('Delete', on_click=do_delete).props('color=negative')
+                                            del_d.open()
 
-                                async def save():
-                                    success = await on_save_callback(
-                                        input_state['set_code'],
-                                        input_state['rarity'],
-                                        input_state['image_id']
-                                    )
-                                    if success:
-                                        d.close()
-                                        ui.notify('Changes saved to database.', type='positive')
-                                    else:
-                                        ui.notify('Failed to save changes.', type='negative')
+                                        ui.button('Delete Variant', on_click=confirm_delete).props('color=negative icon=delete flat')
 
-                                ui.button('Save Changes', on_click=save).props('color=positive icon=save')
+                                with ui.row().classes('gap-4'):
+                                    ui.button('Cancel', on_click=d.close).props('flat color=white')
+
+                                    async def save():
+                                        success = await on_save_callback(
+                                            input_state['set_code'],
+                                            input_state['rarity'],
+                                            input_state['image_id']
+                                        )
+                                        if success:
+                                            d.close()
+                                            ui.notify('Changes saved to database.', type='positive')
+                                        else:
+                                            ui.notify('Failed to save changes.', type='negative')
+
+                                    ui.button('Save Changes', on_click=save).props('color=positive icon=save')
 
         except Exception as e:
             logger.error(f"Error opening db edit view: {e}", exc_info=True)
