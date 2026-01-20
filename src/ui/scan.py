@@ -71,13 +71,37 @@ function stopCamera() {
 
 function captureFrame() {
     if (!video || !stream) return null;
+
+    // Get actual dimensions
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (vw === 0 || vh === 0) return null;
+
+    // Downscale if too large to prevent websocket saturation
+    const maxDim = 800;
+    let w = vw;
+    let h = vh;
+
+    if (w > maxDim || h > maxDim) {
+        if (w > h) {
+            h = Math.round(h * (maxDim / w));
+            w = maxDim;
+        } else {
+            w = Math.round(w * (maxDim / h));
+            h = maxDim;
+        }
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    if (canvas.width === 0 || canvas.height === 0) return null;
+    canvas.width = w;
+    canvas.height = h;
+
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.8);
+    // Draw scaled image
+    ctx.drawImage(video, 0, 0, w, h);
+
+    // Return lower quality JPEG to reduce size
+    return canvas.toDataURL('image/jpeg', 0.6);
 }
 
 function drawOverlay(points) {
@@ -227,76 +251,82 @@ class ScanPage:
         if not self.is_active:
             return
 
-        # 1. Sync State (Backend)
-        is_running = scanner_manager.running
-        # Note: We rely on manual start/stop button clicks to toggle visibility,
-        # but we can force sync here if needed.
-        # But if JS fails, backend might run while frontend stopped.
+        try:
+            # 1. Sync State (Backend)
+            is_running = scanner_manager.running
+            # Note: We rely on manual start/stop button clicks to toggle visibility,
+            # but we can force sync here if needed.
+            # But if JS fails, backend might run while frontend stopped.
 
-        # 2. Update Status
-        if self.status_label:
-            self.status_label.text = f"Status: {scanner_manager.get_status()}"
+            # 2. Update Status
+            if self.status_label:
+                self.status_label.text = f"Status: {scanner_manager.get_status()}"
 
-        # 3. Process Logic
-        await scanner_manager.process_pending_lookups()
+            # 3. Process Logic
+            await scanner_manager.process_pending_lookups()
 
-        # 4. Capture Frame & Draw Overlay (Client -> Server -> Client)
-        if is_running:
-            try:
-                # Capture frame
-                b64 = await ui.run_javascript('captureFrame()')
-                if b64:
-                    scanner_manager.push_frame(b64)
+            # 4. Capture Frame & Draw Overlay (Client -> Server -> Client)
+            if is_running:
+                try:
+                    # Capture frame with timeout to prevent blocking
+                    b64 = await ui.run_javascript('captureFrame()', timeout=2.0)
+                    if b64:
+                        scanner_manager.push_frame(b64)
 
-                # Update Overlay
-                contour = scanner_manager.get_live_contour()
-                if contour:
-                    await ui.run_javascript(f'drawOverlay({contour})')
-                else:
-                    await ui.run_javascript('clearOverlay()')
+                    # Update Overlay
+                    contour = scanner_manager.get_live_contour()
+                    if contour:
+                        await ui.run_javascript(f'drawOverlay({contour})')
+                    else:
+                        await ui.run_javascript('clearOverlay()')
 
-            except Exception:
-                pass
+                except Exception as e:
+                    # Log but continue so UI doesn't freeze
+                    # logger.debug(f"Frame capture/overlay error: {e}")
+                    pass
 
-        # 5. Check for new results
-        result = scanner_manager.get_latest_result()
-        if result:
-            self.add_scanned_card(result)
+            # 5. Check for new results
+            result = scanner_manager.get_latest_result()
+            if result:
+                self.add_scanned_card(result)
 
-        # Check for notifications
-        note = scanner_manager.get_latest_notification()
-        if note:
-             type_, msg = note
-             ui.notify(msg, type=type_)
+            # Check for notifications
+            note = scanner_manager.get_latest_notification()
+            if note:
+                 type_, msg = note
+                 ui.notify(msg, type=type_)
 
-        # 6. Update Debug Info
-        if self.debug_mode:
-            snapshot = scanner_manager.get_debug_snapshot()
+            # 6. Update Debug Info
+            if self.debug_mode:
+                snapshot = scanner_manager.get_debug_snapshot()
 
-            # Update Captured Image (Raw with annotations)
-            if self.captured_img:
-                src = snapshot.get("captured_image")
-                if src != self.captured_img.source: # Minimal update check (nicegui handles this usually but good to be safe)
-                     self.captured_img.set_source(src)
+                # Update Captured Image (Raw with annotations)
+                if self.captured_img:
+                    src = snapshot.get("captured_image")
+                    if src != self.captured_img.source: # Minimal update check
+                         self.captured_img.set_source(src)
 
-            # Update Result Label
-            if self.scan_result_label:
-                self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')}"
+                # Update Result Label
+                if self.scan_result_label:
+                    self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')}"
 
-            # Update Warped Image
-            if snapshot.get("warped_image") and self.debug_img:
-                 self.debug_img.set_source(snapshot["warped_image"])
+                # Update Warped Image
+                if snapshot.get("warped_image") and self.debug_img:
+                     self.debug_img.set_source(snapshot["warped_image"])
 
-            # Update Stats
-            if self.debug_stats_label:
-                stats = f"Stability: {snapshot.get('stability', 0)}\n" \
-                        f"Contour Area: {snapshot.get('contour_area', 0):.0f}\n" \
-                        f"OCR: {snapshot.get('ocr_text', 'N/A')}"
-                self.debug_stats_label.text = stats
+                # Update Stats
+                if self.debug_stats_label:
+                    stats = f"Stability: {snapshot.get('stability', 0)}\n" \
+                            f"Contour Area: {snapshot.get('contour_area', 0):.0f}\n" \
+                            f"OCR: {snapshot.get('ocr_text', 'N/A')}"
+                    self.debug_stats_label.text = stats
 
-            # Update Logs
-            if self.debug_log_label and snapshot.get("logs"):
-                 self.debug_log_label.text = "\n".join(snapshot["logs"])
+                # Update Logs
+                if self.debug_log_label and snapshot.get("logs"):
+                     self.debug_log_label.text = "\n".join(snapshot["logs"])
+
+        except Exception as e:
+            logger.error(f"Error in ScanPage update_loop: {e}")
 
     def add_scanned_card(self, data: Dict[str, Any]):
         self.scanned_cards.insert(0, data)
