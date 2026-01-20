@@ -57,7 +57,10 @@ class SingleCardView:
         default_set_base_code: str = None,
         original_variant_id: str = None,
         show_remove_button: bool = True,
-        rarity_map: Dict[str, Set[str]] = None
+        rarity_map: Dict[str, Set[str]] = None,
+        view_mode: str = 'consolidated',
+        current_collection: Any = None,
+        original_quantity: int = 0
     ):
         """
         Renders the inventory management section (Language, Set, Rarity, etc.).
@@ -169,55 +172,84 @@ class SingleCardView:
                     )
 
                     # If inputs haven't changed and we have the original variant ID, use it.
-                    # This bypasses regeneration/matching logic which might fail for edge cases.
                     if is_original and original_variant_id:
+                        if mode == 'MOVE' and view_mode == 'collectors':
+                             # Moving to same place = no-op
+                             ui.notify('No changes detected.', type='warning')
+                             return
                         await on_save_callback(mode, original_variant_id)
                         return
 
-                    # Calculate the target code based on language (e.g. LDS2-EN025 -> LDS2-DE025)
+                    # Calculate the target code based on language
                     final_code = transform_set_code(base_code, input_state['language'])
 
-                    # Check if variant exists in API data
-                    variant_exists = False
+                    # Resolve target variant ID
                     matched_variant_id = None
-
                     if card.card_sets:
                         for s in card.card_sets:
                             s_img = s.image_id if s.image_id is not None else (card.card_images[0].id if card.card_images else None)
-
-                            # Check against the TRANSFORMED code, not just the base code
-                            # This ensures we find the DE variant if it already exists
                             if s.set_code == final_code and s.set_rarity == sel_rarity and s_img == sel_img:
-                                variant_exists = True
                                 matched_variant_id = s.variant_id
                                 break
 
-                    if not variant_exists:
-                        s_name = set_info_map[base_code].set_name if base_code in set_info_map else "Custom Set"
+                    if not matched_variant_id:
+                         # Use generated ID check/creation
+                         matched_variant_id = generate_variant_id(card.id, final_code, sel_rarity, sel_img)
+                         # We might need to create it if it doesn't exist in DB, handled by CollectionEditor/Service generally,
+                         # but here we ensured logic adds it if missing previously.
+                         # Re-implementing ensure-variant logic:
+                         s_name = set_info_map[base_code].set_name if base_code in set_info_map else "Custom Set"
+                         # Optimistic: It will be created if missing by ygo_service if we call add_card_variant.
+                         # Since we need to be sure for duplicate check, we should probably ensure it exists or use the generated ID for check.
+                         # The ID is deterministic.
 
-                        # Create new variant if it doesn't exist, using the TRANSFORMED code
-                        await ygo_service.add_card_variant(
-                            card_id=card.id,
-                            set_name=s_name,
-                            set_code=final_code,  # Use final_code here
-                            set_rarity=sel_rarity,
-                            image_id=sel_img,
-                            language="en"
-                        )
-                        ui.notify(f"Added new variant: {final_code} / {sel_rarity}", type='positive')
-                        matched_variant_id = generate_variant_id(card.id, final_code, sel_rarity, sel_img)
+                    # Duplicate Check for MOVE (Collectors Mode)
+                    if mode == 'MOVE' and view_mode == 'collectors' and current_collection:
+                         # Check if target entry exists
+                         qty = CollectionEditor.get_quantity(
+                             current_collection,
+                             card.id,
+                             variant_id=matched_variant_id,
+                             language=input_state['language'],
+                             condition=input_state['condition'],
+                             first_edition=input_state['first_edition']
+                         )
 
-                    # We pass the variant_id back to the saver
+                         if qty > 0:
+                             with ui.dialog() as d, ui.card():
+                                 ui.label(f"You already have {qty} copies of this card in the target configuration.").classes('text-lg')
+                                 ui.label(f"Do you want to merge your {original_quantity} copies into it? (Total: {qty + original_quantity})")
+                                 with ui.row().classes('w-full justify-end'):
+                                     ui.button('Cancel', on_click=d.close).props('flat')
+                                     async def do_merge():
+                                         d.close()
+                                         # Proceed with MOVE
+                                         await on_save_callback(mode, matched_variant_id)
+                                     ui.button('Merge', on_click=do_merge).props('color=primary')
+                             d.open()
+                             return
+
+                    # Normal flow
                     await on_save_callback(mode, matched_variant_id)
 
-                async def do_set():
-                    await handle_update('SET')
+                async def do_update():
+                    # In Collectors mode, SET button becomes "Update Entry" (MOVE)
+                    # It moves the entire original quantity to the new state.
+                    await handle_update('MOVE')
 
                 async def do_add():
                     await handle_update('ADD')
 
-                ui.button('SET', on_click=do_set).props('color=warning text-color=dark')
-                ui.button('ADD', on_click=do_add).props('color=secondary')
+                # Button Rendering based on Mode
+                if view_mode == 'collectors':
+                    with ui.button('Update Entry', on_click=do_update).props('color=warning text-color=dark'):
+                        ui.tooltip('Change this entry into the selected values (Set, Condition, etc). Merges if target exists.').classes('bg-black text-white')
+                else:
+                    # Consolidated Mode: No SET button
+                    pass
+
+                with ui.button('ADD', on_click=do_add).props('color=secondary'):
+                    ui.tooltip('Add the specified quantity to your collection').classes('bg-black text-white')
 
                 if show_remove_button:
                     async def confirm_remove():
@@ -228,11 +260,15 @@ class SingleCardView:
                                 async def do_remove():
                                     d.close()
                                     input_state['quantity'] = 0
+                                    # In collectors mode, remove means quantity -> 0 or just delete.
+                                    # We can reuse SET 0 or ADD -qty.
+                                    # Using SET 0 is cleaner for "Remove".
                                     await handle_update('SET')
                                 ui.button('Remove', on_click=do_remove).props('color=negative')
                         d.open()
 
-                    ui.button('REMOVE', on_click=confirm_remove).props('color=negative')
+                    with ui.button('REMOVE', on_click=confirm_remove).props('color=negative'):
+                         ui.tooltip('Remove this entry from your collection').classes('bg-black text-white')
 
     def _render_available_sets(self, card: ApiCard):
         ui.separator().classes('q-my-md')
@@ -440,7 +476,8 @@ class SingleCardView:
                                 on_save_callback=on_save_wrapper,
                                 default_set_base_code=default_set_code,
                                 show_remove_button=False,
-                                rarity_map=rarity_map
+                                rarity_map=rarity_map,
+                                view_mode='consolidated'
                             )
 
                         self._render_available_sets(card)
@@ -696,6 +733,16 @@ class SingleCardView:
                              async def on_save_wrapper(mode, target_variant_id):
                                 final_set_code = transform_set_code(input_state['set_base_code'], input_state['language'])
 
+                                extra_args = {}
+                                if mode == 'MOVE':
+                                    extra_args = {
+                                        'source_variant_id': variant_id,
+                                        'source_language': language,
+                                        'source_condition': condition,
+                                        'source_first_edition': first_edition,
+                                        'source_quantity': owned_count
+                                    }
+
                                 await save_callback(
                                     card,
                                     final_set_code,
@@ -706,7 +753,8 @@ class SingleCardView:
                                     input_state['first_edition'],
                                     input_state['image_id'],
                                     target_variant_id,
-                                    mode
+                                    mode,
+                                    **extra_args
                                 )
                                 d.close()
 
@@ -719,7 +767,10 @@ class SingleCardView:
                                 on_save_callback=on_save_wrapper,
                                 default_set_base_code=initial_base_code,
                                 original_variant_id=variant_id,
-                                rarity_map=rarity_map
+                                rarity_map=rarity_map,
+                                view_mode='collectors',
+                                current_collection=current_collection,
+                                original_quantity=owned_count
                             )
 
                         self._render_available_sets(card)

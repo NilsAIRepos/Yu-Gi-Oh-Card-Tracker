@@ -1,5 +1,6 @@
 from nicegui import ui, run
 from src.core.persistence import persistence
+from src.core.changelog_manager import changelog_manager
 from src.core.models import Collection, CollectionCard, CollectionVariant, CollectionEntry, Card, CardMetadata
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
@@ -304,6 +305,7 @@ class CollectionPage:
         # UI Element references for pagination updates
         self.pagination_showing_label = None
         self.pagination_total_label = None
+        self.api_card_map = {}
 
     async def load_data(self, keep_page=False):
         logger.info(f"Loading data... (Language: {self.state['language']})")
@@ -311,6 +313,7 @@ class CollectionPage:
         try:
             lang_code = self.state['language'].lower() if self.state['language'] else 'en'
             api_cards = await ygo_service.load_card_database(lang_code)
+            self.api_card_map = {c.id: c for c in api_cards}
         except Exception as e:
             logger.error(f"Error loading database: {e}")
             ui.notify(f"Error loading database: {e}", type='negative')
@@ -628,7 +631,76 @@ class CollectionPage:
         if self.pagination_total_label:
             self.pagination_total_label.text = f"/ {max(1, self.state['total_pages'])}"
 
-    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET'):
+    async def undo_last_action(self):
+        col_name = self.state['selected_file']
+        if not col_name: return
+
+        last_change = changelog_manager.undo_last_change(col_name)
+        if last_change:
+            # Batch Undo
+            if last_change.get('type') == 'batch':
+                changes = last_change.get('changes', [])
+                count = 0
+                if self.state['current_collection']:
+                    col = self.state['current_collection']
+                    for c in changes:
+                        action = c['action']
+                        qty = c['quantity']
+                        data = c['card_data']
+                        revert_qty = -qty if action == 'ADD' else qty
+
+                        api_card = self.api_card_map.get(data['card_id'])
+                        if api_card:
+                             CollectionEditor.apply_change(
+                                 collection=col,
+                                 api_card=api_card,
+                                 set_code=data.get('set_code', ''),
+                                 rarity=data.get('rarity', ''),
+                                 language=data['language'],
+                                 quantity=revert_qty,
+                                 condition=data['condition'],
+                                 first_edition=data['first_edition'],
+                                 image_id=data.get('image_id'),
+                                 variant_id=data.get('variant_id'),
+                                 mode='ADD'
+                             )
+                             count += 1
+
+                    await run.io_bound(persistence.save_collection, col, col_name)
+                    ui.notify(f"Undid batch: {last_change.get('description')}", type='positive')
+                    await self.load_data(keep_page=True)
+                    self.render_header.refresh()
+                return
+
+            # Single Undo
+            action = last_change['action']
+            qty = last_change['quantity']
+            data = last_change['card_data']
+            revert_qty = -qty if action == 'ADD' else qty
+
+            api_card = self.api_card_map.get(data['card_id'])
+            if api_card:
+                 await self.save_card_change(
+                     api_card=api_card,
+                     set_code=data.get('set_code', ''),
+                     rarity=data.get('rarity', ''),
+                     language=data['language'],
+                     quantity=revert_qty,
+                     condition=data['condition'],
+                     first_edition=data['first_edition'],
+                     image_id=data.get('image_id'),
+                     variant_id=data.get('variant_id'),
+                     mode='ADD',
+                     skip_log=True
+                 )
+                 ui.notify(f"Undid: {action}", type='positive')
+                 self.render_header.refresh()
+            else:
+                ui.notify("Error: Card data not found for undo.", type='negative')
+        else:
+            ui.notify("Nothing to undo.", type='warning')
+
+    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET', skip_log: bool = False, **kwargs):
         if not self.state['current_collection']:
             ui.notify('No collection selected.', type='negative')
             return
@@ -636,26 +708,80 @@ class CollectionPage:
         col = self.state['current_collection']
 
         try:
-            # Delegate logic to CollectionEditor
-            modified = CollectionEditor.apply_change(
-                collection=col,
-                api_card=api_card,
-                set_code=set_code,
-                rarity=rarity,
-                language=language,
-                quantity=quantity,
-                condition=condition,
-                first_edition=first_edition,
-                image_id=image_id,
-                variant_id=variant_id,
-                mode=mode
-            )
+            modified = False
+
+            if mode == 'MOVE':
+                src_var_id = kwargs.get('source_variant_id')
+                src_lang = kwargs.get('source_language')
+                src_cond = kwargs.get('source_condition')
+                src_first = kwargs.get('source_first_edition')
+                src_qty = kwargs.get('source_quantity', 0)
+
+                if src_qty > 0:
+                    # 1. Remove from Source
+                    CollectionEditor.apply_change(
+                        col, api_card,
+                        set_code="", rarity="",
+                        language=src_lang, quantity=-src_qty, condition=src_cond, first_edition=src_first,
+                        variant_id=src_var_id, mode='ADD'
+                    )
+
+                    # 2. Add to Target
+                    CollectionEditor.apply_change(
+                        col, api_card,
+                        set_code=set_code, rarity=rarity,
+                        language=language, quantity=src_qty, condition=condition, first_edition=first_edition,
+                        image_id=image_id, variant_id=variant_id, mode='ADD'
+                    )
+                    modified = True
+
+                    if not skip_log:
+                        changes = [
+                            {'action': 'REMOVE', 'quantity': src_qty, 'card_data': {
+                                'card_id': api_card.id, 'variant_id': src_var_id, 'language': src_lang, 'condition': src_cond, 'first_edition': src_first
+                            }},
+                            {'action': 'ADD', 'quantity': src_qty, 'card_data': {
+                                'card_id': api_card.id, 'variant_id': variant_id, 'set_code': set_code, 'rarity': rarity, 'language': language, 'condition': condition, 'first_edition': first_edition, 'image_id': image_id
+                            }}
+                        ]
+                        changelog_manager.log_batch_change(self.state['selected_file'], "Moved Entry", changes)
+
+            else:
+                # Standard ADD/SET
+                modified = CollectionEditor.apply_change(
+                    collection=col,
+                    api_card=api_card,
+                    set_code=set_code,
+                    rarity=rarity,
+                    language=language,
+                    quantity=quantity,
+                    condition=condition,
+                    first_edition=first_edition,
+                    image_id=image_id,
+                    variant_id=variant_id,
+                    mode=mode
+                )
+
+                if modified and not skip_log:
+                    card_data = {
+                        'card_id': api_card.id,
+                        'name': api_card.name,
+                        'set_code': set_code,
+                        'rarity': rarity,
+                        'image_id': image_id,
+                        'language': language,
+                        'condition': condition,
+                        'first_edition': first_edition,
+                        'variant_id': variant_id
+                    }
+                    changelog_manager.log_change(self.state['selected_file'], mode, card_data, quantity)
 
             if modified:
                 await run.io_bound(persistence.save_collection, col, self.state['selected_file'])
                 logger.info(f"Collection saved: {self.state['selected_file']}")
                 ui.notify('Collection saved.', type='positive')
                 await self.load_data(keep_page=True)
+                self.render_header.refresh()
             else:
                 # No change needed, but maybe refresh just in case? Or just do nothing.
                 pass
@@ -665,8 +791,8 @@ class CollectionPage:
             ui.notify(f"Error saving: {e}", type='negative')
 
     async def open_single_view(self, card: ApiCard, is_owned: bool = False, quantity: int = 0, initial_set: str = None, owned_languages: Set[str] = None, rarity: str = None, set_name: str = None, language: str = None, condition: str = "Near Mint", first_edition: bool = False, image_url: str = None, image_id: int = None, set_price: float = 0.0, variant_id: str = None):
-        async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
-            await self.save_card_change(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode)
+        async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, **kwargs):
+            await self.save_card_change(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, **kwargs)
 
         if self.state['view_scope'] == 'consolidated':
             owned_breakdown = {}
@@ -1012,6 +1138,21 @@ class CollectionPage:
             with ui.row().classes('items-center'):
                 with ui.switch('Owned', on_change=on_owned_switch).bind_value(self.state, 'only_owned'):
                     ui.tooltip('Toggle to show only cards you own')
+
+            ui.separator().props('vertical')
+
+            # Undo Button
+            has_history = False
+            if self.state['selected_file']:
+                 last = changelog_manager.get_last_change(self.state['selected_file'])
+                 has_history = last is not None
+
+            undo_btn = ui.button('Undo Last', icon='undo', on_click=self.undo_last_action).props('flat color=white')
+            if not has_history:
+                 undo_btn.disable()
+                 undo_btn.classes('opacity-50')
+            else:
+                 with undo_btn: ui.tooltip('Undo last action')
 
             ui.separator().props('vertical')
 
