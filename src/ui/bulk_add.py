@@ -1025,7 +1025,7 @@ class BulkAddPage:
                  if e.value == '__NEW_COLLECTION__':
                      self.open_new_collection_dialog()
                  else:
-                     self.on_collection_change(e.value)
+                     await self.on_collection_change(e.value)
 
              ui.select(cols, label='Target Collection', value=self.state['selected_collection'],
                        on_change=handle_col_change).classes('w-48')
