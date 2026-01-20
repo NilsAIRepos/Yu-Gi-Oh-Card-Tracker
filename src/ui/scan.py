@@ -482,19 +482,6 @@ class ScanPage:
             ui.label("Regions of Interest:").classes('font-bold text-lg')
             ui.image(self.debug_report['roi_viz_url']).classes('w-full h-auto border rounded mb-2')
 
-        crops = self.debug_report.get('crops', {})
-        if crops:
-            ui.label("Extracted Crops:").classes('font-bold text-lg')
-            with ui.row().classes('gap-4'):
-                if crops.get('set_id'):
-                     with ui.column():
-                        ui.label("Set ID").classes('text-xs')
-                        ui.image(crops['set_id']).classes('h-12 border rounded')
-                if crops.get('art'):
-                     with ui.column():
-                        ui.label("Artwork").classes('text-xs')
-                        ui.image(crops['art']).classes('h-32 w-32 object-contain border rounded')
-
     @ui.refreshable
     def render_debug_pipeline_results(self):
         results = self.debug_report.get('results', {})

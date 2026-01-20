@@ -201,7 +201,8 @@ class CardScanner:
         # Get data to find confidence of the matched word
         data = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
 
-        text = " ".join(data['text']).strip().upper()
+        # Ensure text is not None
+        text = " ".join([t for t in data['text'] if t is not None]).strip().upper()
 
         # Regex for standard Set ID
         # Looking for pattern in the full text
