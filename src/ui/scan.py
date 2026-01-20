@@ -146,6 +146,8 @@ class ScanPage:
         self.debug_mode = False
         self.debug_drawer_el = None
         self.debug_switch = None
+        self.captured_img = None
+        self.scan_result_label = None
         self.debug_img = None
         self.debug_stats_label = None
         self.debug_log_label = None
@@ -217,6 +219,10 @@ class ScanPage:
         scanner_manager.trigger_manual_scan()
         ui.notify("Manual Scan Triggered", type='info')
 
+    def resume_auto_scan(self):
+        scanner_manager.resume_automatic_scan()
+        ui.notify("Automatic Scan Resumed", type='positive')
+
     async def update_loop(self):
         if not self.is_active:
             return
@@ -261,7 +267,17 @@ class ScanPage:
         if self.debug_mode:
             snapshot = scanner_manager.get_debug_snapshot()
 
-            # Update Image
+            # Update Captured Image (Raw with annotations)
+            if self.captured_img:
+                src = snapshot.get("captured_image")
+                if src != self.captured_img.source: # Minimal update check (nicegui handles this usually but good to be safe)
+                     self.captured_img.set_source(src)
+
+            # Update Result Label
+            if self.scan_result_label:
+                self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')}"
+
+            # Update Warped Image
             if snapshot.get("warped_image") and self.debug_img:
                  self.debug_img.set_source(snapshot["warped_image"])
 
@@ -414,7 +430,13 @@ def scan_page():
              ui.button(icon='close', on_click=lambda: page.toggle_debug_mode(type('obj', (object,), {'value': False}))).props('flat round dense text-color=gray-900')
 
          ui.label("Controls:").classes('font-bold')
-         ui.button("Force Manual Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('w-full mb-4')
+         with ui.row().classes('w-full mb-4 gap-2'):
+            ui.button("Force Manual Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('flex-1')
+            ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
+
+         ui.label("Captured View:").classes('font-bold')
+         page.captured_img = ui.image().classes('w-full h-auto border bg-black mb-2 min-h-[100px]')
+         page.scan_result_label = ui.label("Result: N/A").classes('text-sm font-bold mb-4')
 
          ui.label("Warped View:").classes('font-bold')
          page.debug_img = ui.image().classes('w-full h-auto border bg-black mb-4 min-h-[100px]')

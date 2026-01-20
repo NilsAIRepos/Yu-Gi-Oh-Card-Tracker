@@ -48,11 +48,14 @@ class ScannerManager:
         self.cooldown = 0
         self.status_message = "Idle"
         self.latest_normalized_contour: Optional[List[List[float]]] = None
+        self.auto_scan_paused = False
 
         # Debug State
         self.manual_scan_requested = False
         self.debug_state = {
             "logs": [],
+            "captured_image": None,
+            "scan_result": "N/A",
             "warped_image": None,
             "ocr_text": None,
             "contour_area": 0,
@@ -104,8 +107,16 @@ class ScannerManager:
 
     def trigger_manual_scan(self):
         """Triggers a manual scan on the next frame, bypassing checks."""
+        self.auto_scan_paused = True
         self.manual_scan_requested = True
         self._log_debug("Manual Scan Triggered")
+
+    def resume_automatic_scan(self):
+        """Resumes automatic scanning and clears debug captured image."""
+        self.auto_scan_paused = False
+        self.debug_state["captured_image"] = None
+        self.debug_state["scan_result"] = "N/A"
+        self._log_debug("Automatic Scan Resumed")
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
         """Returns the current debug state."""
@@ -143,6 +154,10 @@ class ScannerManager:
                 self.cooldown -= 1
 
             try:
+                # Skip if paused and no manual request
+                if self.auto_scan_paused and not self.manual_scan_requested:
+                    continue
+
                 # Decode Base64
                 if ',' in b64_str:
                     b64_str = b64_str.split(',')[1]
@@ -164,13 +179,19 @@ class ScannerManager:
 
                 # Check for manual trigger
                 force_scan = False
+                capture_snapshot = False
+
                 if self.manual_scan_requested:
                     self.manual_scan_requested = False
+                    capture_snapshot = True  # Always capture on manual
+
                     if contour is not None:
                          force_scan = True
+                         self.debug_state["scan_result"] = "Card Detected"
                          self._log_debug("Manual Scan: Proceeding with contour")
                     else:
-                         self._log_debug("Manual Scan: Skipped (No contour detected)")
+                         self.debug_state["scan_result"] = "No Card Found"
+                         self._log_debug("Manual Scan: No contour detected")
 
                 if contour is not None:
                     area = cv2.contourArea(contour)
@@ -198,6 +219,7 @@ class ScannerManager:
 
                     if should_process and not self.is_processing and (self.cooldown == 0 or force_scan):
                         self.is_processing = True
+                        capture_snapshot = True  # Capture on auto-success too
                         self.status_message = "Processing..."
                         self._log_debug(f"Starting Processing (Stable: {self.stable_frames}, Force: {force_scan})")
                         # Run CV tasks in thread
@@ -210,8 +232,21 @@ class ScannerManager:
                     self.stable_frames = 0
                     self.last_corners = None
                     self.latest_normalized_contour = None
-                    self.status_message = "Scanning..."
+                    self.status_message = "Scanning..." if not self.auto_scan_paused else "Paused"
                     self.debug_state["contour_area"] = 0
+
+                # Capture Snapshot if needed
+                if capture_snapshot:
+                    debug_frame = frame.copy()
+                    if contour is not None:
+                        cv2.drawContours(debug_frame, [contour], -1, (0, 255, 0), 2)
+                    else:
+                        cv2.putText(debug_frame, "NO CARD FOUND", (50, height // 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+
+                    _, buffer = cv2.imencode('.jpg', debug_frame)
+                    b64_debug = base64.b64encode(buffer).decode('utf-8')
+                    self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
 
             except Exception as e:
                 logger.error(f"Error in scanner worker: {e}")
