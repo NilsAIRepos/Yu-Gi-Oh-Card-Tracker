@@ -158,3 +158,10 @@ class ApiCard(BaseModel):
             return False
         else:
             return category in card_type
+
+    def is_extra_deck_card(self) -> bool:
+        """
+        Checks if the card belongs to the Extra Deck (Fusion, Synchro, XYZ, Link).
+        """
+        extra_types = ["Fusion", "Synchro", "XYZ", "Link"]
+        return any(t in self.type for t in extra_types)

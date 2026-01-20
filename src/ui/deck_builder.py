@@ -140,7 +140,9 @@ class DeckBuilderPage:
             'page_size': config_manager.get_deck_builder_page_size(),
             'total_pages': 1,
 
-            'loading': False
+            'loading': False,
+            'validation_violations': {}, # card_id -> [messages]
+            'validation_global_errors': []
         }
 
         self.single_card_view = SingleCardView()
@@ -356,6 +358,72 @@ class DeckBuilderPage:
             self.render_header.refresh()
             self.refresh_search_results()
 
+    def _validate_deck(self):
+        deck = self.state['current_deck']
+        if not deck: return {}, []
+
+        violations = {} # card_id -> [messages]
+        global_errors = []
+
+        # 1. Zone Counts
+        main_count = len(deck.main)
+        extra_count = len(deck.extra)
+        side_count = len(deck.side)
+
+        if main_count < 40: global_errors.append(f"Main Deck too small ({main_count}/40).")
+        if main_count > 60: global_errors.append(f"Main Deck too large ({main_count}/60).")
+        if extra_count > 15: global_errors.append(f"Extra Deck too large ({extra_count}/15).")
+        if side_count > 15: global_errors.append(f"Side Deck too large ({side_count}/15).")
+
+        # 2. Card Counts & Validity
+        all_cards = deck.main + deck.extra + deck.side
+        counts = {}
+        for cid in all_cards:
+            counts[cid] = counts.get(cid, 0) + 1
+
+        # Helper to add violation
+        def add_violation(cid, msg):
+            if cid not in violations: violations[cid] = []
+            if msg not in violations[cid]: violations[cid].append(msg)
+
+        banlist = self.state['current_banlist_map']
+
+        for cid, count in counts.items():
+            card = self.api_card_map.get(cid)
+            if not card: continue
+
+            # Limit 3
+            if count > 3:
+                add_violation(cid, f"Max 3 copies allowed (has {count}).")
+
+            # Banlist
+            status = banlist.get(str(cid))
+            if status:
+                limit = 3
+                if status == 'Forbidden': limit = 0
+                elif status == 'Limited': limit = 1
+                elif status == 'Semi-Limited': limit = 2
+
+                if count > limit:
+                     add_violation(cid, f"{status}: Max {limit} allowed (has {count}).")
+
+            # Zone Validity
+            is_extra = card.is_extra_deck_card()
+
+            # Check if card is in wrong zone
+            if is_extra:
+                if cid in deck.main: add_violation(cid, "Extra Deck card in Main Deck.")
+            else:
+                if cid in deck.extra: add_violation(cid, "Main Deck card in Extra Deck.")
+                # Side deck allows main deck cards.
+
+        self.state['validation_violations'] = violations
+        self.state['validation_global_errors'] = global_errors
+        return violations, global_errors
+
+    def _get_card_warnings(self, card_id: int) -> List[str]:
+        return self.state.get('validation_violations', {}).get(card_id, [])
+
     async def load_deck(self, filename):
         try:
             deck = await run.io_bound(persistence.load_deck, filename)
@@ -364,6 +432,10 @@ class DeckBuilderPage:
             self.state['current_deck_name'] = name
 
             persistence.save_ui_state({'deck_builder_last_deck': name})
+
+            # Run initial validation
+            if config_manager.get_deck_builder_warnings() != 'none':
+                self._validate_deck()
 
             self.refresh_deck_area()
             self.render_header.refresh()
@@ -375,15 +447,45 @@ class DeckBuilderPage:
     async def save_current_deck(self):
         if not self.state['current_deck'] or not self.state['current_deck_name']:
             return
+
+        # Validation
+        setting = config_manager.get_deck_builder_warnings()
+        if setting != 'none':
+            violations, global_errors = self._validate_deck()
+            has_errors = bool(violations or global_errors)
+
+            # If Strict Mode: Block save on error
+            if setting == 'strict' and has_errors:
+                msg = "Deck validation failed. Save aborted (Strict Mode)."
+                if global_errors:
+                    msg += f"\n{global_errors[0]}"
+                ui.notify(msg, type='negative', close_button=True)
+
+                # Refresh UI to show red warnings
+                self.refresh_deck_area()
+                return False
+
+            # If Warning Mode: Notify but proceed
+            if setting == 'warning' and has_errors:
+                 # Just refresh to ensure icons are up to date
+                 self.refresh_deck_area()
+                 ui.notify("Deck saved with validation warnings.", type='warning')
+
         try:
             filename = f"{self.state['current_deck_name']}.ydk"
             await run.io_bound(persistence.save_deck, self.state['current_deck'], filename)
-            ui.notify('Deck saved.', type='positive')
+
+            # Only notify success if explicit save or maybe suppress for auto-save?
+            # Existing behavior was notify. We keep it.
+            # ui.notify('Deck saved.', type='positive')
+
             self.state['available_decks'] = persistence.list_decks()
             self.render_header.refresh()
+            return True
         except Exception as e:
             logger.error(f"Error saving deck: {e}")
             ui.notify(f"Error saving deck: {e}", type='negative')
+            return False
 
     def _is_duplicate_deck(self, name: str) -> bool:
         filename = f"{name}.ydk"
@@ -983,6 +1085,19 @@ class DeckBuilderPage:
                 ui.icon('remove', color='white').classes('text-lg')
 
             self._render_ban_icon(card.id)
+
+            # Warnings
+            setting = config_manager.get_deck_builder_warnings()
+            if setting != 'none':
+                warnings = self._get_card_warnings(card.id)
+                if warnings:
+                    with ui.element('div').classes('absolute top-1 right-1 z-10'):
+                        ui.icon('warning', color='orange' if setting == 'warning' else 'red').classes('text-xl bg-white rounded-full shadow-sm')
+
+                    with ui.tooltip().classes('bg-red-800 text-white text-sm'):
+                        for w in warnings:
+                            ui.label(w)
+
             self._setup_card_tooltip(card)
 
         card_el.on('click', lambda: self.open_deck_builder_wrapper(card))

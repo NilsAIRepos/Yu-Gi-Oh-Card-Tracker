@@ -856,9 +856,15 @@ class SingleCardView:
                              async def add_side(): await add('side')
                              async def add_extra(): await add('extra')
 
-                             ui.button('Add to Main', on_click=add_main).props('color=positive icon=add')
+                             is_extra = card.is_extra_deck_card()
+
+                             if not is_extra:
+                                 ui.button('Add to Main', on_click=add_main).props('color=positive icon=add')
+
                              ui.button('Add to Side', on_click=add_side).props('color=warning text-color=dark icon=add')
-                             ui.button('Add to Extra', on_click=add_extra).props('color=purple icon=add')
+
+                             if is_extra:
+                                 ui.button('Add to Extra', on_click=add_extra).props('color=purple icon=add')
 
                          self._render_available_sets(card)
 

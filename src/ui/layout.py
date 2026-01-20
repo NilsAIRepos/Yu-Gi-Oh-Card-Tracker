@@ -56,6 +56,15 @@ def create_layout(content_function):
                       min=1, max=100,
                       on_change=change_bulk_page_size).classes('w-full')
 
+            def change_warnings(e):
+                config_manager.set_deck_builder_warnings(e.value)
+                ui.notify('Deck validation settings saved.')
+
+            ui.select({'none': 'No Warnings', 'warning': 'Warning (Default)', 'strict': 'Strict + Warning'},
+                      label='Deck Builder Warnings',
+                      value=config_manager.get_deck_builder_warnings(),
+                      on_change=change_warnings).classes('w-full')
+
             ui.separator().classes('q-my-md')
             ui.label('Data Management').classes('text-subtitle2 text-grey')
 

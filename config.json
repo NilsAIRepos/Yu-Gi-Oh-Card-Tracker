@@ -1,0 +1,7 @@
+{
+  "language": "en",
+  "theme": "dark",
+  "deck_builder_page_size": 9,
+  "bulk_add_page_size": 50,
+  "deck_builder_warnings": "strict"
+}

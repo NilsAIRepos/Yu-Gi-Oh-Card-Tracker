@@ -24,7 +24,8 @@ class ConfigManager:
             "language": "en",
             "theme": "dark",
             "deck_builder_page_size": 9,
-            "bulk_add_page_size": 50
+            "bulk_add_page_size": 50,
+            "deck_builder_warnings": "warning"
         }
 
     def save_config(self):
@@ -51,5 +52,13 @@ class ConfigManager:
     def set_bulk_add_page_size(self, size: int):
         self.config["bulk_add_page_size"] = size
         self.save_config()
+
+    def get_deck_builder_warnings(self) -> str:
+        return self.config.get("deck_builder_warnings", "warning")
+
+    def set_deck_builder_warnings(self, value: str):
+        if value in ['none', 'warning', 'strict']:
+            self.config["deck_builder_warnings"] = value
+            self.save_config()
 
 config_manager = ConfigManager()
