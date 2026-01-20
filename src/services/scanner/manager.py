@@ -4,6 +4,7 @@ import queue
 import time
 import base64
 import asyncio
+import os
 from typing import Optional, Dict, Any, List, Tuple, Union
 
 try:
@@ -49,7 +50,7 @@ class ScannerManager:
         self.cooldown = 0
         self.status_message = "Idle"
         self.latest_normalized_contour: Optional[List[List[float]]] = None
-        self.auto_scan_paused = False
+        self.auto_scan_paused = True # Default to True (Manual Mode Only)
 
         # Sharpness Buffering
         # We store tuples of (frame, contour, sharpness_score)
@@ -200,6 +201,31 @@ class ScannerManager:
                     if self.manual_scan_requested:
                         self._log_debug("WARNING: Manual Scan requested but no video frames received!")
                         self.notification_queue.put(("warning", "No Camera Signal - Cannot Scan"))
+
+                        # FORCE OUTPUT: Generate "NO SIGNAL" image
+                        try:
+                            # Create black 720p image
+                            no_sig_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+                            # Add text
+                            cv2.putText(no_sig_img, "NO SIGNAL / TIMEOUT", (320, 360),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+
+                            # Encode
+                            _, buffer = cv2.imencode('.jpg', no_sig_img)
+                            b64_debug = base64.b64encode(buffer).decode('utf-8')
+                            self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+                            self.debug_state["capture_timestamp"] = time.time()
+                            self.debug_state["scan_result"] = "ERR: No Signal"
+
+                            # Save locally
+                            os.makedirs("debug", exist_ok=True)
+                            filename = f"debug/no_signal_{int(time.time()*1000)}.jpg"
+                            cv2.imwrite(filename, no_sig_img)
+                            logger.info(f"Generated NO SIGNAL image: {filename}")
+
+                        except Exception as e:
+                            logger.error(f"Error generating NO SIGNAL image: {e}")
+
                         self.manual_scan_requested = False # Reset to prevent stuck state
                 continue
 
@@ -248,6 +274,20 @@ class ScannerManager:
 
                     # Capture the RAW frame immediately for feedback
                     debug_frame_raw = frame.copy()
+
+                    # Save to local debug folder
+                    try:
+                        os.makedirs("debug", exist_ok=True)
+                        filename = f"debug/scan_{int(time.time()*1000)}.jpg"
+                        cv2.imwrite(filename, debug_frame_raw)
+                        logger.info(f"Saved debug image to {filename}")
+                    except Exception as e:
+                        logger.error(f"Failed to save debug image: {e}")
+
+                    # Check for Black Image (Camera not ready/covered)
+                    # Mean pixel intensity < 10 (out of 255) is essentially black
+                    is_black_image = np.mean(debug_frame_raw) < 10
+
                     if contour is not None:
                          cv2.drawContours(debug_frame_raw, [contour], -1, (0, 255, 0), 2)
 
@@ -257,7 +297,13 @@ class ScannerManager:
                     self.debug_state["capture_timestamp"] = time.time()
                     logger.info(f"Worker: Manual scan image captured and stored in debug state (Length: {len(self.debug_state['captured_image'])})")
 
-                    if contour is not None:
+                    if is_black_image:
+                         force_scan = False
+                         self.debug_state["scan_result"] = "ERR: Black Image"
+                         self._log_debug("Manual Scan: Black Image Detected")
+                         self.status_message = "Error: Black Image"
+                         self.notification_queue.put(("negative", "Error: Black Image Detected. Check Camera."))
+                    elif contour is not None:
                          force_scan = True
                          self.debug_state["scan_result"] = "Card Detected"
                          self._log_debug("Manual Scan: Proceeding with contour")

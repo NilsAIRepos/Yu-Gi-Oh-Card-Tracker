@@ -2,6 +2,7 @@ from nicegui import ui, app, run
 import logging
 import os
 import asyncio
+import time
 from typing import List, Dict, Any
 from fastapi import UploadFile
 
@@ -222,6 +223,8 @@ class ScanPage:
         self.debug_stats_label = None
         self.debug_log_label = None
         self.last_capture_timestamp = 0.0
+        self.last_updated_src = None
+        self.manual_scan_start_ts = 0.0
 
         # Load available collections
         self.collections = persistence.list_collections()
@@ -298,7 +301,8 @@ class ScanPage:
                  self.debug_drawer_el.classes(remove='translate-x-0', add='translate-x-full')
 
     def trigger_manual_scan(self):
-        logger.info("Button pressed: Manual Scan requested")
+        self.manual_scan_start_ts = time.time()
+        logger.info(f"Button pressed: Manual Scan requested (Start TS: {self.manual_scan_start_ts})")
         scanner_manager.trigger_manual_scan()
         ui.notify("Manual Scan Triggered", type='info')
 
@@ -329,12 +333,33 @@ class ScanPage:
                     current_ts = snapshot.get("capture_timestamp", 0.0)
                     src = snapshot.get("captured_image")
 
-                    # Timestamp-based invalidation
-                    if src and (current_ts > self.last_capture_timestamp):
-                        logger.info(f"UI: New capture detected (TS: {current_ts}). Updating image (Len: {len(src)}).")
+                    # Invalidation:
+                    # 1. Update if timestamp is newer
+                    # 2. Update if content changed (backup)
+                    # 3. Update if we are waiting for a manual scan and this is the "next" picture
+                    should_update = False
+
+                    if src:
+                        # "Next Picture" Logic:
+                        # If we requested a manual scan at T_req, and this image was captured at T_cap,
+                        # and T_cap > T_req, then this IS the manual scan result.
+                        if self.manual_scan_start_ts > 0 and current_ts > self.manual_scan_start_ts:
+                             should_update = True
+                             logger.info(f"UI: Received manual scan response (Req: {self.manual_scan_start_ts}, Cap: {current_ts})")
+                             # Reset wait flag
+                             self.manual_scan_start_ts = 0.0
+
+                        elif current_ts > self.last_capture_timestamp:
+                            should_update = True
+                        elif src != self.last_updated_src:
+                            should_update = True
+                            logger.info(f"UI: Image content changed (TS: {current_ts}). Forcing update.")
+
+                    if should_update:
                         self.captured_img.set_source(src)
                         self.captured_img.update()
                         self.last_capture_timestamp = current_ts
+                        self.last_updated_src = src
 
                     # Update source status label
                     if self.scan_result_label:
@@ -531,7 +556,7 @@ def scan_page():
          ui.label("Controls:").classes('font-bold')
          with ui.row().classes('w-full mb-4 gap-2'):
             ui.button("Force Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('flex-1')
-            ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
+            # ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
 
          ui.label("Captured View:").classes('font-bold')
          page.captured_img = ui.image().classes('w-full h-auto border bg-black mb-2 min-h-[100px]')
