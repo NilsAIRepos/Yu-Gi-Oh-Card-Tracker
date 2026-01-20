@@ -188,13 +188,32 @@ async function getVideoDevices() {
 async function captureSingleFrame() {
     // Try capturing from scanner video first, then debug video if needed
     let videoSource = window.scannerVideo;
+    let usingDebug = false;
+
+    // Check if scanner video is valid and active
     if (!videoSource || videoSource.readyState < 2) {
-        // Fallback or check debug video?
-        // Actually scannerVideo is the master. If it's paused or hidden, it should still work if stream is active.
         if (window.debugVideo && window.debugVideo.readyState >= 2) {
              videoSource = window.debugVideo;
+             usingDebug = true;
         } else {
              return null;
+        }
+    } else {
+        // If scanner video is paused/ended, try debug video
+        if (videoSource.paused || videoSource.ended) {
+             if (window.debugVideo && window.debugVideo.readyState >= 2) {
+                 videoSource = window.debugVideo;
+                 usingDebug = true;
+             }
+        }
+    }
+
+    // Ensure the chosen source is playing
+    if (videoSource.paused) {
+        try {
+            await videoSource.play();
+        } catch (e) {
+            console.error("Failed to resume video for capture:", e);
         }
     }
 
