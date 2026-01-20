@@ -49,9 +49,19 @@ class CardScanner:
         """Basic preprocessing for contour detection."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                      cv2.THRESH_BINARY, 11, 2)
-        thresh = cv2.bitwise_not(thresh)
+
+        # Use Morphological Gradient to detect edges regardless of contrast direction
+        # Using 5x5 kernel to recover gradient magnitude after blurring
+        kernel = np.ones((5, 5), np.uint8)
+        grad = cv2.morphologyEx(blur, cv2.MORPH_GRADIENT, kernel)
+
+        # Low threshold to pick up weak edges (card borders)
+        # Threshold 10 combined with 5x5 kernel detects step edges down to ~12 intensity difference
+        _, thresh = cv2.threshold(grad, 10, 255, cv2.THRESH_BINARY)
+
+        # Close gaps in the border
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
         return thresh
 
     def get_fallback_crop(self, frame) -> np.ndarray:
