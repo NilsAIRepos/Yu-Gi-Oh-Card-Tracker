@@ -98,19 +98,47 @@ class CardScanner:
         if not contours:
             return None
 
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        h_img, w_img = frame.shape[:2]
+        center_x, center_y = w_img // 2, h_img // 2
+
+        # Filter contours by size first to remove noise
+        # Increase min area to avoid detecting small internal boxes (like art box)
+        valid_contours = []
+        for cnt in contours:
+            if cv2.contourArea(cnt) > 25000:
+                 valid_contours.append(cnt)
+
+        contours = valid_contours
+
+        # Central Bias Score: Prioritize large areas near the center
+        def score_contour(cnt):
+            area = cv2.contourArea(cnt)
+
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                cX = int(M["m10"] / M["m00"])
+                cY = int(M["m01"] / M["m00"])
+                # Normalized distance from center (0 to ~1)
+                dist_norm = np.sqrt((cX - center_x)**2 + (cY - center_y)**2) / (np.sqrt(w_img**2 + h_img**2))
+            else:
+                dist_norm = 1.0
+
+            # Score = Area weighted by proximity to center
+            # We penalize distance.
+            return area * (1.0 - dist_norm)
+
+        contours = sorted(contours, key=score_contour, reverse=True)
 
         for cnt in contours[:5]:
-            area = cv2.contourArea(cnt)
-            if area < 10000:
-                continue
-
             hull = cv2.convexHull(cnt)
             peri = cv2.arcLength(hull, True)
             approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
 
+            # Check for 4 corners directly
             if len(approx) == 4:
-                return approx
+                # Validate Aspect Ratio for 4-point polygon
+                # It's harder to get AR from poly, so we check minAreaRect
+                pass # fall through to rect check for consistency
 
             rect = cv2.minAreaRect(hull)
             (center), (w, h), angle = rect
@@ -122,7 +150,9 @@ class CardScanner:
             if ar > 1:
                 ar = 1 / ar
 
-            if 0.55 < ar < 0.85:
+            # Yugioh Card Ratio is ~0.68 (59mm / 86mm)
+            # Stricter bounds to avoid capturing square art boxes or wide table areas
+            if 0.60 < ar < 0.78:
                 box = cv2.boxPoints(rect)
                 box = np.int32(box)
                 return box.reshape(4, 1, 2)
@@ -335,3 +365,85 @@ class CardScanner:
         # roi_set_id_search and roi_desc are no longer used (Full Scan)
 
         return canvas
+
+    def scan_full_frame(self, frame) -> Dict[str, Any]:
+        """
+        Track 2: Scans the entire frame for text without relying on contour detection.
+        Useful when the card is not clearly defined against the background.
+        """
+        # 1. Resize for speed/consistency (max width 1000px)
+        h, w = frame.shape[:2]
+        if w > 1000:
+            scale = 1000 / w
+            frame_resized = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+        else:
+            frame_resized = frame
+
+        # 2. Preprocess
+        gray = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2GRAY)
+
+        # Adaptive Thresholding is robust for variable lighting across the image
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+
+        # 3. OCR
+        # psm 11 = Sparse text (good for finding isolated codes)
+        config = r'--oem 3 --psm 11'
+        data = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
+
+        full_text_list = []
+        matches = []
+
+        # Regex: (3-4 alphanumeric) - (optional Region 2 chars) (3-4 alphanumeric)
+        # Examples: LOB-EN001, SDY-001, BODE-EN050, MP19-EN005
+        pattern = re.compile(r'\b([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})\b')
+
+        num_boxes = len(data['text'])
+        for i in range(num_boxes):
+            word = data['text'][i].strip().upper()
+            if not word: continue
+
+            full_text_list.append(word)
+
+            # Check if this word looks like a set ID
+            m = pattern.search(word)
+            if m:
+                found_id = m.group(1)
+                conf = int(data['conf'][i])
+                if conf == -1: conf = 0
+                matches.append((found_id, conf))
+
+        full_text = " ".join(full_text_list)
+
+        result = {
+            "track_type": "full_frame_ocr",
+            "raw_text": full_text,
+            "set_id": None,
+            "set_id_conf": 0,
+            "language": "EN" # Default
+        }
+
+        # If no exact word match, try searching the joined string (less reliable for confidence)
+        if not matches:
+             m = pattern.search(full_text)
+             if m:
+                 matches.append((m.group(1), 50)) # Arbitrary medium confidence
+
+        if matches:
+            # Pick best confidence
+            matches.sort(key=lambda x: x[1], reverse=True)
+            best_id, best_conf = matches[0]
+            result["set_id"] = best_id
+            result["set_id_conf"] = best_conf
+
+            # Deduce language from ID
+            parts = best_id.split('-')
+            if len(parts) > 1:
+                suffix = parts[1]
+                # If suffix starts with letters, extract them
+                region_match = re.match(r'^([A-Z]{2})', suffix)
+                if region_match:
+                    lang_code = region_match.group(1)
+                    if lang_code in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
+                        result["language"] = lang_code
+
+        return result

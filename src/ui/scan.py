@@ -518,6 +518,19 @@ class ScanPage:
                      ui.label("Art Match Score:").classes('font-bold text-gray-300')
                      ui.label(f"{results.get('match_score', 0)}").classes('text-lg text-white')
 
+            # --- Track 2 Visualization ---
+            track2 = self.debug_report.get('track2')
+            if track2:
+                ui.separator().classes('my-2 bg-gray-600')
+                ui.label("Track 2 (Full Frame):").classes('font-bold text-primary')
+                with ui.column().classes('w-full gap-1 bg-gray-800 p-2 rounded text-sm'):
+                     with ui.row().classes('w-full justify-between'):
+                         ui.label("Found ID:").classes('text-gray-400')
+                         ui.label(f"{track2.get('set_id') or 'None'} ({track2.get('set_id_conf', 0)}%)").classes('font-mono text-white')
+
+                     with ui.expansion('Raw OCR Text', icon='text_fields').classes('w-full bg-gray-700'):
+                         ui.label(track2.get('raw_text', '')).classes('font-mono text-xs break-all')
+
             ui.separator().classes('my-2 bg-gray-600')
             ui.label(f"{results.get('card_name', 'Unknown')}").classes('text-2xl font-bold text-accent text-center w-full')
         else:

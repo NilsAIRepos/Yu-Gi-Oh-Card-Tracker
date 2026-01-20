@@ -236,6 +236,24 @@ class ScannerManager:
         report["results"]["language"] = lang
         report["steps"].append({"name": "Language Detect", "status": "OK", "details": lang})
 
+        # --- Track 2: Full Frame ---
+        t2 = self.scanner.scan_full_frame(frame)
+        report["track2"] = t2
+
+        t2_id = t2.get("set_id")
+        t2_conf = t2.get("set_id_conf", 0)
+
+        if t2_id:
+            report["steps"].append({"name": "Track 2 (Full)", "status": "OK", "details": f"ID: {t2_id} ({t2_conf}%)"})
+        else:
+            report["steps"].append({"name": "Track 2 (Full)", "status": "WARN", "details": "No ID found"})
+
+        # Override if T1 failed
+        if (not set_id or set_id_conf < 60) and t2_id and t2_conf > 60:
+             set_id = t2_id
+             report["results"]["set_id"] = set_id
+             report["steps"].append({"name": "Track Switch", "status": "INFO", "details": "Switched to Track 2"})
+
         # 4. Lookup
         card_info = None
         if set_id:
@@ -377,7 +395,7 @@ class ScannerManager:
                         self.debug_state["capture_timestamp"] = time.time()
 
                     self.status_message = "Processing..."
-                    threading.Thread(target=self._cv_scan_task, args=(target_frame.copy(), target_contour)).start()
+                    threading.Thread(target=self._cv_scan_task, args=(target_frame.copy(), target_contour, force_scan)).start()
 
                 elif self.is_processing:
                     self.status_message = "Analyzing..."
@@ -403,14 +421,15 @@ class ScannerManager:
         self.last_corners = corners
         return dist < self.stability_threshold
 
-    def _cv_scan_task(self, frame, contour):
+    def _cv_scan_task(self, frame, contour, is_manual=False):
         try:
+            # --- Track 1: Geometric Scan (Warp & Crop) ---
             if contour is not None:
                 warped = self.scanner.warp_card(frame, contour)
             else:
                 warped = self.scanner.get_fallback_crop(frame)
 
-            # Debug Images
+            # Debug Images (Track 1)
             roi_viz = self.scanner.debug_draw_rois(warped)
             self.debug_state["warped_image_url"] = self._save_debug_image(roi_viz, "warped_roi")
 
@@ -419,12 +438,12 @@ class ScannerManager:
             self.debug_state["crops"]["set_id"] = self._save_debug_image(set_id_crop, "crop_set_id")
 
             # 1. OCR Set ID
-            set_id, set_id_conf = self.scanner.extract_set_id(warped)
-            self.debug_state["ocr_text"] = set_id
-            self.debug_state["ocr_conf"] = set_id_conf
+            t1_set_id, t1_conf = self.scanner.extract_set_id(warped)
+            self.debug_state["ocr_text"] = t1_set_id
+            self.debug_state["ocr_conf"] = t1_conf
 
             # 2. Detect Language
-            language = self.scanner.detect_language(warped, set_id)
+            t1_lang = self.scanner.detect_language(warped, t1_set_id)
 
             # 3. Detect 1st Edition
             first_ed = self.scanner.detect_first_edition(warped)
@@ -432,14 +451,41 @@ class ScannerManager:
             # 4. Visual Rarity
             visual_rarity = self.scanner.detect_rarity_visual(warped)
 
+            # --- Track 2: Full Frame Scan (Fallback/Parallel) ---
+            # Run if Track 1 is weak OR if this is a manual scan (Debug Mode)
+            # We run it generously to populate debug info as requested
+
+            run_track_2 = (t1_set_id is None) or (t1_conf < 70) or is_manual
+
+            track2_result = None
+            if run_track_2:
+                track2_result = self.scanner.scan_full_frame(frame)
+
+                # Update Debug State
+                self.debug_state["track2_raw"] = track2_result["raw_text"]
+                self.debug_state["track2_set_id"] = track2_result["set_id"]
+                self.debug_state["track2_conf"] = track2_result["set_id_conf"]
+
+            # --- Decision Logic ---
+            final_set_id = t1_set_id
+            final_conf = t1_conf
+            final_lang = t1_lang
+
+            # If Track 1 is weak but Track 2 is strong, switch
+            if (t1_set_id is None or t1_conf < 60) and (track2_result and track2_result["set_id"] and track2_result["set_id_conf"] > 60):
+                final_set_id = track2_result["set_id"]
+                final_conf = track2_result["set_id_conf"]
+                final_lang = track2_result["language"]
+                self._log_debug(f"Switched to Track 2 Result: {final_set_id}")
+
             data = {
-                "set_code": set_id,
-                "language": language,
+                "set_code": final_set_id,
+                "language": final_lang,
                 "first_edition": first_ed,
                 "rarity": "Unknown",
                 "visual_rarity": visual_rarity,
                 "warped_image": warped,
-                "ocr_conf": set_id_conf
+                "ocr_conf": final_conf
             }
 
             self.lookup_queue.put(data)
