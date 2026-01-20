@@ -44,6 +44,7 @@ class UnifiedImportController:
         # Staging
         self.pending_changes: List[PendingChange] = []
         self.successful_imports: List[str] = []
+        self.import_failures: List[str] = [] # Failures during apply phase
 
         # Cardmarket specific
         self.ambiguous_rows: List[Dict[str, Any]] = [] # {row, matches, selected_index}
@@ -136,6 +137,7 @@ class UnifiedImportController:
         self.pending_changes = []
         self.ambiguous_rows = []
         self.failed_rows = []
+        self.import_failures = []
         self.refresh_status_ui()
 
         # Ensure DB is loaded
@@ -432,78 +434,88 @@ class UnifiedImportController:
 
         changes = 0
         self.successful_imports = []
+        self.import_failures = []
         modified_card_ids = set()
 
         for item in self.pending_changes:
-            # 1. Database Update Check
-            # Check if variant exists in ApiCard; if not, add it
-            # We do this to ensure DB consistency for new custom/ambiguous variants
-            variant_exists = False
-            for s in item.api_card.card_sets:
-                if s.set_code == item.set_code and s.set_rarity == item.rarity:
-                    variant_exists = True
-                    # Ensure image_id is preserved if we found an existing match but the item didn't have it set (e.g. from ambiguity resolution)
-                    if item.image_id is None:
-                        item.image_id = s.image_id
-                    break
-
-            if not variant_exists:
-                # Create new variant
-                new_id = str(uuid.uuid4())
-                rarity_abbr = RARITY_ABBREVIATIONS.get(item.rarity, "")
-                rarity_code = f"({rarity_abbr})" if rarity_abbr else ""
-
-                # Try to infer set name/image from other variants in same set
-                set_name = "Custom Set"
-                image_id = item.image_id
-
-                # Look for siblings
-                prefix = item.set_code.split('-')[0]
+            try:
+                # 1. Database Update Check
+                # Check if variant exists in ApiCard; if not, add it
+                # We do this to ensure DB consistency for new custom/ambiguous variants
+                variant_exists = False
                 for s in item.api_card.card_sets:
-                    if s.set_code.startswith(prefix):
-                        set_name = s.set_name
-                        if image_id is None: image_id = s.image_id
+                    if s.set_code == item.set_code and s.set_rarity == item.rarity:
+                        variant_exists = True
+                        # Ensure image_id is preserved if we found an existing match but the item didn't have it set (e.g. from ambiguity resolution)
+                        if item.image_id is None:
+                            item.image_id = s.image_id
                         break
 
-                if image_id is None and item.api_card.card_images:
-                    image_id = item.api_card.card_images[0].id
+                if not variant_exists:
+                    # Create new variant
+                    new_id = str(uuid.uuid4())
+                    rarity_abbr = RARITY_ABBREVIATIONS.get(item.rarity, "")
+                    rarity_code = f"({rarity_abbr})" if rarity_abbr else ""
 
-                new_set = ApiCardSet(
-                    variant_id=new_id,
-                    set_name=set_name,
+                    # Try to infer set name/image from other variants in same set
+                    set_name = "Custom Set"
+                    image_id = item.image_id
+
+                    # Look for siblings
+                    prefix = item.set_code.split('-')[0]
+                    for s in item.api_card.card_sets:
+                        if s.set_code.startswith(prefix):
+                            set_name = s.set_name
+                            if image_id is None: image_id = s.image_id
+                            break
+
+                    if image_id is None and item.api_card.card_images:
+                        image_id = item.api_card.card_images[0].id
+
+                    new_set = ApiCardSet(
+                        variant_id=new_id,
+                        set_name=set_name,
+                        set_code=item.set_code,
+                        set_rarity=item.rarity,
+                        set_rarity_code=rarity_code,
+                        set_price="0.00",
+                        image_id=image_id
+                    )
+                    item.api_card.card_sets.append(new_set)
+                    modified_card_ids.add(item.api_card.id)
+                    # Update item image_id if it was missing
+                    if item.image_id is None:
+                        item.image_id = image_id
+
+                # 2. Collection Update
+                # Determine Quantity Delta
+                delta = item.quantity
+                if self.import_mode == 'SUBTRACT':
+                    delta = -delta
+
+                modified = CollectionEditor.apply_change(
+                    collection=collection,
+                    api_card=item.api_card,
                     set_code=item.set_code,
-                    set_rarity=item.rarity,
-                    set_rarity_code=rarity_code,
-                    set_price="0.00",
-                    image_id=image_id
+                    rarity=item.rarity,
+                    language=item.language,
+                    quantity=delta,
+                    condition=item.condition,
+                    first_edition=item.first_edition,
+                    image_id=item.image_id,
+                    mode='ADD' # We always use ADD mode with pos/neg delta
                 )
-                item.api_card.card_sets.append(new_set)
-                modified_card_ids.add(item.api_card.id)
-                # Update item image_id if it was missing
-                if item.image_id is None:
-                    item.image_id = image_id
-
-            # 2. Collection Update
-            # Determine Quantity Delta
-            delta = item.quantity
-            if self.import_mode == 'SUBTRACT':
-                delta = -delta
-
-            modified = CollectionEditor.apply_change(
-                collection=collection,
-                api_card=item.api_card,
-                set_code=item.set_code,
-                rarity=item.rarity,
-                language=item.language,
-                quantity=delta,
-                condition=item.condition,
-                first_edition=item.first_edition,
-                image_id=item.image_id,
-                mode='ADD' # We always use ADD mode with pos/neg delta
-            )
-            if modified:
-                changes += 1
-                self.successful_imports.append(f"{item.quantity}x {item.api_card.name} ({item.set_code} - {item.rarity})")
+                if modified:
+                    changes += 1
+                    self.successful_imports.append(f"{item.quantity}x {item.api_card.name} ({item.set_code} - {item.rarity})")
+                else:
+                    reason = "No changes applied"
+                    if self.import_mode == 'SUBTRACT':
+                         reason = "Card not found for removal"
+                    self.import_failures.append(f"{item.quantity}x {item.api_card.name} ({item.set_code}): {reason}")
+            except Exception as e:
+                logger.error(f"Import Error for item {item.set_code}: {e}")
+                self.import_failures.append(f"{item.quantity}x {item.api_card.name} ({item.set_code}): {str(e)}")
 
         # Save DB Updates if any
         if modified_card_ids:
@@ -567,6 +579,11 @@ class UnifiedImportController:
         if not self.successful_imports: return
         lines = ["Quantity Name (Set - Rarity)"] + self.successful_imports
         ui.download("\n".join(lines).encode('utf-8'), "import_success.txt")
+
+    def download_import_failures(self):
+        if not self.import_failures: return
+        lines = ["Original Line | Reason"] + self.import_failures
+        ui.download("\n".join(lines).encode('utf-8'), "import_errors.txt")
 
     def open_ambiguity_dialog(self):
         if not self.ambiguous_rows: return
@@ -899,8 +916,13 @@ class UnifiedImportController:
 
             if self.failed_rows:
                 with ui.row().classes('items-center gap-2'):
-                    ui.label(f"Failed Items: {len(self.failed_rows)}").classes('text-negative font-bold text-lg')
+                    ui.label(f"Parsing Failures: {len(self.failed_rows)}").classes('text-negative font-bold text-lg')
                     ui.button("Download Report", on_click=self.download_failures).props('flat color=negative')
+
+            if self.import_failures:
+                with ui.row().classes('items-center gap-2'):
+                    ui.label(f"Import Errors: {len(self.import_failures)}").classes('text-negative font-bold text-lg')
+                    ui.button("Download Report", on_click=self.download_import_failures).props('flat color=negative')
 
             # Update Import Button
             if self.import_btn:
