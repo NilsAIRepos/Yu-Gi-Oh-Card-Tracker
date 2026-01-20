@@ -221,6 +221,7 @@ class ScanPage:
         self.debug_img = None
         self.debug_stats_label = None
         self.debug_log_label = None
+        self.last_capture_timestamp = 0.0
 
         # Load available collections
         self.collections = persistence.list_collections()
@@ -325,14 +326,15 @@ class ScanPage:
 
                 # Update Captured Image (Raw with annotations)
                 if self.captured_img:
+                    current_ts = snapshot.get("capture_timestamp", 0.0)
                     src = snapshot.get("captured_image")
-                    # Force update if source is empty but backend has image
-                    should_update = (src != self.captured_img.source) or (src and not self.captured_img.source)
 
-                    if should_update:
-                        logger.info(f"UI: Setting captured image source (Length: {len(src) if src else 0})")
+                    # Timestamp-based invalidation
+                    if src and (current_ts > self.last_capture_timestamp):
+                        logger.info(f"UI: New capture detected (TS: {current_ts}). Updating image (Len: {len(src)}).")
                         self.captured_img.set_source(src)
                         self.captured_img.update()
+                        self.last_capture_timestamp = current_ts
 
                     # Update source status label
                     if self.scan_result_label:
