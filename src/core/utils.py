@@ -2,11 +2,52 @@ import re
 import hashlib
 from typing import Optional
 
+# Region Code Mapping
+# Maps region codes (both legacy 1-letter and standard 2-letter) to standard Language Codes.
+REGION_TO_LANGUAGE_MAP = {
+    'E': 'EN',
+    'G': 'DE',
+    'F': 'FR',
+    'I': 'IT',
+    'S': 'ES',
+    'P': 'PT',
+    'J': 'JP',
+    'K': 'KR',
+    'AE': 'EN', # Asian English
+    'TC': 'ZH',
+    'SC': 'ZH',
+    # Standard codes map to themselves
+    'EN': 'EN',
+    'DE': 'DE',
+    'FR': 'FR',
+    'IT': 'IT',
+    'ES': 'ES',
+    'PT': 'PT',
+    'JP': 'JP',
+    'KR': 'KR',
+    'ZH': 'ZH'
+}
+
+# Reverse mapping for legacy 1-letter codes.
+# Used when transforming codes to preserve legacy format.
+LANGUAGE_TO_LEGACY_REGION_MAP = {
+    'EN': 'E',
+    'DE': 'G',
+    'FR': 'F',
+    'IT': 'I',
+    'ES': 'S',
+    'PT': 'P',
+    'JP': 'J',
+    'KR': 'K'
+}
+
 def transform_set_code(set_code: str, language: str) -> str:
     """
     Transforms a set code based on the language.
     If the set code contains a region code (e.g. RA01-EN054, LOB-E001), replace it with the target language.
-    If it does not have a region code (e.g. SDY-006), inject the target language code.
+    If the existing set code uses a legacy 1-letter region (e.g. 'E', 'G'), try to use the corresponding
+    1-letter code for the new language (e.g. 'G' for German, 'E' for English).
+    If it does not have a region code (e.g. SDY-006), it remains unchanged.
     """
     lang_code = language.upper()
 
@@ -15,9 +56,24 @@ def transform_set_code(set_code: str, language: str) -> str:
     match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
     if match:
         prefix = match.group(1)
-        # region = match.group(2) # discarded
+        region = match.group(2).upper()
         number = match.group(3)
-        return f"{prefix}-{lang_code}{number}"
+
+        new_region_code = lang_code
+
+        # Check if the existing region is a legacy 1-letter code
+        # But we only want to switch to 1-letter if the target language SUPPORTS it.
+        # And usually we only do this if the original was 1-letter?
+        # Requirement: "SDK-E001" (1-letter) -> DE -> "SDK-G001" (1-letter)
+        # Requirement: "SDK-EN001" (2-letter) -> DE -> "SDK-DE001" (2-letter)
+
+        # Check if original was 1-letter and in our map (to avoid treating random 1-letter typos as legacy)
+        if len(region) == 1 and region in REGION_TO_LANGUAGE_MAP:
+             # Try to find legacy code for target language
+             if lang_code in LANGUAGE_TO_LEGACY_REGION_MAP:
+                 new_region_code = LANGUAGE_TO_LEGACY_REGION_MAP[lang_code]
+
+        return f"{prefix}-{new_region_code}{number}"
 
     # Case 2: Code-Number (e.g. SDY-006) - No region code
     # As per requirements, codes without region identifiers should remain unchanged.
@@ -56,32 +112,7 @@ def extract_language_code(set_code: str) -> str:
     match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
     if match:
         region = match.group(2).upper()
-
-        # Legacy/Region Mapping
-        mapping = {
-            'E': 'EN',
-            'G': 'DE',
-            'F': 'FR',
-            'I': 'IT',
-            'S': 'ES',
-            'P': 'PT',
-            'J': 'JP',
-            'K': 'KR',
-            'AE': 'EN', # Asian English
-            'TC': 'ZH',
-            'SC': 'ZH',
-            # Standard codes map to themselves
-            'EN': 'EN',
-            'DE': 'DE',
-            'FR': 'FR',
-            'IT': 'IT',
-            'ES': 'ES',
-            'PT': 'PT',
-            'JP': 'JP',
-            'KR': 'KR'
-        }
-
-        return mapping.get(region, 'EN') # Default to EN if unknown region or unmapped
+        return REGION_TO_LANGUAGE_MAP.get(region, 'EN') # Default to EN if unknown region or unmapped
 
     # Case 2: No region code (e.g. SDY-006) -> Usually EN (NA print)
     return 'EN'
