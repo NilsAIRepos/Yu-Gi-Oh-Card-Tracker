@@ -60,6 +60,7 @@ class ScannerManager:
         self.debug_state = {
             "logs": [],
             "captured_image": None,
+            "capture_timestamp": 0.0,
             "scan_result": "N/A",
             "warped_image": None,
             "ocr_text": None,
@@ -253,6 +254,7 @@ class ScannerManager:
                     _, buffer = cv2.imencode('.jpg', debug_frame_raw)
                     b64_debug = base64.b64encode(buffer).decode('utf-8')
                     self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+                    self.debug_state["capture_timestamp"] = time.time()
                     logger.info(f"Worker: Manual scan image captured and stored in debug state (Length: {len(self.debug_state['captured_image'])})")
 
                     if contour is not None:
@@ -336,6 +338,7 @@ class ScannerManager:
                          _, buffer = cv2.imencode('.jpg', debug_frame)
                          b64_debug = base64.b64encode(buffer).decode('utf-8')
                          self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+                         self.debug_state["capture_timestamp"] = time.time()
 
                     self.status_message = "Processing..."
                     self._log_debug(f"Starting Processing (Force: {force_scan})")
