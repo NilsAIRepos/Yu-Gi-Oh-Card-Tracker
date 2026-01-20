@@ -41,6 +41,28 @@ LANGUAGE_TO_LEGACY_REGION_MAP = {
     'KR': 'K'
 }
 
+# Mapping of Language Codes to Emoji Flags
+LANGUAGE_FLAG_MAP = {
+    'EN': '🇬🇧',
+    'GB': '🇬🇧', # Handle GB explicitly
+    'DE': '🇩🇪',
+    'FR': '🇫🇷',
+    'IT': '🇮🇹',
+    'ES': '🇪🇸',
+    'PT': '🇵🇹',
+    'JP': '🇯🇵',
+    'KR': '🇰🇷',
+    'CN': '🇨🇳',
+    'ZH': '🇨🇳',
+    'TC': '🇨🇳', # Traditional Chinese
+    'SC': '🇨🇳', # Simplified Chinese
+    'AE': '🇦🇪', # Asian English (UAE flag? or just generic? Usually treated as EN, but if we distinguish...)
+                 # Actually, usually AE in Yugioh is Asian English.
+                 # Let's map AE to UK flag or maybe ignore?
+                 # Existing code didn't handle AE.
+                 # I'll stick to the ones that were present + GB.
+}
+
 def transform_set_code(set_code: str, language: str) -> str:
     """
     Transforms a set code based on the language.

@@ -5,7 +5,7 @@ from src.core.models import Collection, CollectionCard, CollectionVariant, Colle
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
-from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, LANGUAGE_FLAG_MAP
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.services.collection_editor import CollectionEditor
@@ -920,7 +920,6 @@ class CollectionPage:
                               ui.label('-').classes('text-gray-600')
 
     def render_collectors_list(self, items: List[CollectorRow]):
-        flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷', 'CN': '🇨🇳'}
         cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
 
         headers = ['Image', 'Name', 'Set', 'Rarity', 'Cond', '1st', 'Lang', 'Price', 'Owned']
@@ -950,7 +949,9 @@ class CollectionPage:
 
                     ui.label(cond_map.get(item.condition, item.condition[:2].upper())).classes('text-xs font-bold text-yellow-500')
                     ui.label("1st" if item.first_edition else "").classes('text-xs font-bold text-orange-400')
-                    ui.label(flag_map.get(item.language, item.language)).classes('text-lg')
+
+                    flag = LANGUAGE_FLAG_MAP.get(item.language.upper(), item.language)
+                    ui.label(flag).classes('text-lg')
 
                     ui.label(f"${item.price:.2f}").classes('text-sm text-green-400')
 
@@ -961,7 +962,6 @@ class CollectionPage:
                               ui.label('-').classes('text-gray-600')
 
     def render_collectors_grid(self, items: List[CollectorRow]):
-        flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷', 'CN': '🇨🇳'}
         cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
 
         with ui.grid(columns='repeat(auto-fill, minmax(160px, 1fr))').classes('w-full gap-4'):
@@ -980,7 +980,7 @@ class CollectionPage:
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if img_src: ui.image(img_src).classes('w-full h-full object-cover')
 
-                        flag = flag_map.get(item.language, item.language)
+                        flag = LANGUAGE_FLAG_MAP.get(item.language.upper(), item.language)
                         ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
 
                         if item.is_owned:

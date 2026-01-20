@@ -5,7 +5,7 @@ from src.core.config import config_manager
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.services.collection_editor import CollectionEditor
-from src.core.utils import generate_variant_id, normalize_set_code, extract_language_code
+from src.core.utils import generate_variant_id, normalize_set_code, extract_language_code, LANGUAGE_FLAG_MAP
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.ui.components.structure_deck_dialog import StructureDeckDialog
@@ -1117,8 +1117,7 @@ class BulkAddPage:
             for item in items:
                 img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
 
-                flag_map = {'EN': '🇬🇧', 'DE': '🇩🇪', 'FR': '🇫🇷', 'IT': '🇮🇹', 'ES': '🇪🇸', 'PT': '🇵🇹', 'JP': '🇯🇵', 'KR': '🇰🇷'}
-                flag = flag_map.get(item.language, item.language)
+                flag = LANGUAGE_FLAG_MAP.get(item.language.upper(), item.language)
                 cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
                 cond_short = cond_map.get(item.condition, item.condition[:2].upper())
 
