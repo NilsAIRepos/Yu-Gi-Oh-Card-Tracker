@@ -132,8 +132,15 @@ class CardmarketParser:
                 # Let's return them as a special error row?
                 # Or just ignore assuming they are garbage/headers.
                 # Given strict requirements, maybe we should log invalid lines that LOOK like data.
-                if re.match(r'^\d+\s', line): # Starts with a number, likely a card line that failed regex
-                    logger.warning(f"Failed to parse potential card line: {line}")
+
+                # Check for potential card lines that failed regex
+                # Heuristic: Starts with a number, but ignore likely Zip Codes or large numbers (Header addresses)
+                # Max reasonable quantity for a single line is usually < 1000.
+                m_pot = re.match(r'^(\d+)\s', line)
+                if m_pot:
+                    qty = int(m_pot.group(1))
+                    if qty < 1000:
+                        logger.warning(f"Failed to parse potential card line: {line}")
                     # We could add a 'failed' row type if needed, but for now let's just log.
 
         return rows
