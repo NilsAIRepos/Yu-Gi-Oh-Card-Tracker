@@ -93,6 +93,9 @@ class ScannerManager:
         logger.info(f"Scanner started (Client-Side Mode)")
 
     def stop(self):
+        if not self.running:
+            return
+
         self.running = False
         if self.thread:
             self.thread.join(timeout=2.0)
@@ -104,6 +107,15 @@ class ScannerManager:
         self.latest_normalized_contour = None
         self.stability_buffer.clear()
         logger.info("Scanner stopped")
+
+    def set_auto_scan(self, enabled: bool):
+        self.auto_scan_paused = not enabled
+        if enabled:
+            self.debug_state["captured_image_url"] = None
+            self.debug_state["scan_result"] = "N/A"
+            self._log_debug("Automatic Scan Resumed")
+        else:
+             self._log_debug("Automatic Scan Paused")
 
     def push_frame(self, frame_data: Union[str, bytes]):
         """Receives a frame from the client."""

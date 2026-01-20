@@ -189,6 +189,23 @@ async function captureSingleFrame() {
     canvas.getContext('2d').drawImage(videoSource, 0, 0);
     return canvas.toDataURL('image/jpeg', 0.95);
 }
+
+function reattachScannerVideo() {
+    window.scannerVideo = document.getElementById('scanner-video');
+    window.overlayCanvas = document.getElementById('overlay-canvas');
+    if (window.overlayCanvas) {
+        window.overlayCtx = window.overlayCanvas.getContext('2d');
+        if (window.scannerVideo) {
+             window.overlayCanvas.width = window.scannerVideo.videoWidth;
+             window.overlayCanvas.height = window.scannerVideo.videoHeight;
+        }
+    }
+
+    if (window.scannerVideo && window.scannerStream) {
+        window.scannerVideo.srcObject = window.scannerStream;
+        window.scannerVideo.play().catch(console.error);
+    }
+}
 </script>
 """
 
@@ -203,6 +220,7 @@ class ScanPage:
         self.camera_select = None
         self.start_btn = None
         self.stop_btn = None
+        self.auto_scan_switch = None
         self.is_active = False
 
         # Debug Lab State
@@ -233,6 +251,14 @@ class ScanPage:
         scanner_manager.stop()
         self.start_btn.visible = True
         self.stop_btn.visible = False
+
+    def on_tab_change(self, e):
+        # e.value is the tab object or value.
+        # Checking by label name is tricky if value is object.
+        # But we can rely on the tab names we assigned in scan_page function if we had access.
+        # Alternatively, we just check if it's the live scan tab.
+        # However, e.value is the ui.tab instance.
+        pass # Logic handled in scan_page closure
 
     def remove_card(self, index):
         if 0 <= index < len(self.scanned_cards):
@@ -506,7 +532,11 @@ def scan_page():
 
     ui.add_head_html(JS_CAMERA_CODE)
 
-    with ui.tabs().classes('w-full') as tabs:
+    def handle_tab_change(e):
+        if e.value == 'Live Scan':
+            ui.run_javascript('reattachScannerVideo()')
+
+    with ui.tabs(on_change=handle_tab_change).classes('w-full') as tabs:
         live_tab = ui.tab('Live Scan')
         debug_tab = ui.tab('Debug Lab')
 
@@ -523,6 +553,10 @@ def scan_page():
                 page.start_btn = ui.button('Start', on_click=page.start_camera).props('icon=videocam')
                 page.stop_btn = ui.button('Stop', on_click=page.stop_camera).props('icon=videocam_off color=negative')
                 page.stop_btn.visible = False
+
+                ui.separator().props('vertical')
+                page.auto_scan_switch = ui.switch('Auto Scan', on_change=lambda e: scanner_manager.set_auto_scan(e.value))
+                page.auto_scan_switch.value = not scanner_manager.auto_scan_paused
 
                 ui.space()
                 ui.button('Add to Collection', on_click=page.commit_cards).props('color=primary icon=save')
