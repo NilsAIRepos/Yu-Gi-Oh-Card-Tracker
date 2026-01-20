@@ -105,9 +105,6 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
 
             # Pass 2: Fuzzy Matches (for unassigned sets)
             for idx, cset in enumerate(card.card_sets):
-                if idx in assignments:
-                    continue # Already matched exactly
-
                 target_variant_id = cset.variant_id
                 norm_api = normalize_set_code(cset.set_code)
 
@@ -122,7 +119,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         fuzzy_matches.append(var)
 
                 if fuzzy_matches:
-                    assignments[idx] = fuzzy_matches
+                    existing = assignments.get(idx, [])
+                    assignments[idx] = existing + fuzzy_matches
                     for m in fuzzy_matches:
                         processed_variant_ids.add(m.variant_id)
 
