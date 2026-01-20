@@ -240,27 +240,54 @@ class UnifiedImportController:
             # Construct Target Set Code (Standard format preferred for new entries)
             target_code = f"{row.set_prefix}-{row.language}{row.number}"
 
-            # 1. Try Exact Matches (Standard, Legacy)
+            # 1. Try Exact Matches (Standard, Legacy, Regionless)
             exact_candidates = [target_code]
             legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(row.language)
             if legacy_char:
                 exact_candidates.append(f"{row.set_prefix}-{legacy_char}{row.number}")
+            exact_candidates.append(f"{row.set_prefix}-{row.number}")
 
-            # We do NOT add the regionless code (prefix-number) here as an exact candidate.
-            # If we did, an input like "LOB-DE001" would match a normalized "LOB-001" key in the DB
-            # and import as "LOB-001" instead of "LOB-DE001".
-            # By skipping it here, we fall through to the Base Code logic, which preserves the Target Code.
+            found_exact_matches = []
+            seen_exact_vars = set()
 
-            found_exact = False
             for cand in exact_candidates:
                 if cand in self.db_lookup:
-                    matches = [m for m in self.db_lookup[cand] if m['rarity'] == row.set_rarity]
-                    if matches:
-                        self._add_pending_from_match(row, matches[0], override_set_code=cand)
-                        found_exact = True
-                        break
+                    # Filter: Only accept variants that explicitly match the candidate code
+                    # (Prevent bucket lookups from returning normalization-mapped variants)
+                    matches = [
+                        m for m in self.db_lookup[cand]
+                        if m['rarity'] == row.set_rarity and m['variant'].set_code == cand
+                    ]
 
-            if found_exact: continue
+                    for m in matches:
+                        if m['variant'].variant_id not in seen_exact_vars:
+                            found_exact_matches.append({
+                                'match': m,
+                                'set_code': cand
+                            })
+                            seen_exact_vars.add(m['variant'].variant_id)
+
+            if found_exact_matches:
+                if len(found_exact_matches) == 1:
+                    m_data = found_exact_matches[0]
+                    self._add_pending_from_match(row, m_data['match'], override_set_code=m_data['set_code'])
+                else:
+                    # Ambiguity among Exact Matches (e.g. LOB-EN091 vs LOB-E091)
+                    ambig_matches = []
+                    for fm in found_exact_matches:
+                        ambig_matches.append({
+                            'code': fm['set_code'],
+                            'card': fm['match']['card'],
+                            'variant': fm['match']['variant']
+                        })
+
+                    self.ambiguous_rows.append({
+                        'row': row,
+                        'matches': ambig_matches,
+                        'selected_index': 0,
+                        'target_code': target_code
+                    })
+                continue
 
             # 2. No Exact Match -> Try Base Code (Normalized)
             base_code = f"{row.set_prefix}-{row.number}"
