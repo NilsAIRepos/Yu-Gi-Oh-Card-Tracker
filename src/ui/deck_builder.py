@@ -594,6 +594,11 @@ class DeckBuilderPage:
              res.sort(key=lambda x: get_price(x), reverse=reverse)
         elif key == 'Quantity':
              res.sort(key=lambda x: get_qty(x), reverse=reverse)
+        elif key == 'Set Code':
+             def get_set_code(x):
+                 if x.card_sets: return x.card_sets[0].set_code
+                 return ""
+             res.sort(key=get_set_code, reverse=reverse)
 
         if self.state['only_owned'] and self.state['reference_collection']:
              owned_ids = set(c.card_id for c in self.state['reference_collection'].cards)
@@ -1383,7 +1388,7 @@ class DeckBuilderPage:
                                      sort_btn.props(f'icon={"arrow_downward" if self.state["sort_descending"] else "arrow_upward"}')
                                  await self.apply_filters()
 
-                             ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Quantity'],
+                             ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Quantity', 'Set Code'],
                                        value=self.state['sort_by'], on_change=on_sort_change) \
                                        .props('dense options-dense').classes('w-24 text-xs')
 

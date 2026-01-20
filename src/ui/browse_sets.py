@@ -531,6 +531,20 @@ class BrowseSetsPage:
              res.sort(key=lambda x: get_price(x), reverse=desc)
         elif key == 'Owned':
              res.sort(key=lambda x: get_qty(x), reverse=desc)
+        elif key == 'Set Code':
+             current_set_prefix = self.state.get('selected_set', '').split('-')[0].lower() if is_cons else ""
+             def get_set_code(x):
+                 if is_cons:
+                     # For consolidated, try to find the matching set code for current set
+                     if x.api_card.card_sets:
+                         for s in x.api_card.card_sets:
+                             if s.set_code.split('-')[0].lower() == current_set_prefix:
+                                 return s.set_code
+                         return x.api_card.card_sets[0].set_code
+                     return ""
+                 else:
+                     return x.set_code
+             res.sort(key=get_set_code, reverse=desc)
 
         self.state['detail_filtered_rows'] = res
         self.state['detail_page'] = 1
@@ -797,7 +811,7 @@ class BrowseSetsPage:
                 ui.input(placeholder='Search Sets...', on_change=on_search) \
                     .bind_value(self.state, 'search_query').props('debounce=300 icon=search dark clearable').classes('w-64')
 
-                ui.select(['Name', 'Date', 'Card Count'], label='Sort', value=self.state['sort_by'],
+                ui.select(['Name', 'Date', 'Card Count', 'Code'], label='Sort', value=self.state['sort_by'],
                         on_change=lambda e: self.update_filter('sort_by', e.value)) \
                         .classes('w-32').props('dark')
 
@@ -1103,7 +1117,7 @@ class BrowseSetsPage:
                 self.state['detail_sort'] = e.value
                 await self.apply_detail_filters()
 
-            ui.select(['Name', 'Rarity', 'Price', 'Owned'], label='Sort', value=self.state['detail_sort'], on_change=on_detail_sort).props('dark').classes('w-40')
+            ui.select(['Name', 'Rarity', 'Price', 'Owned', 'Set Code'], label='Sort', value=self.state['detail_sort'], on_change=on_detail_sort).props('dark').classes('w-40')
 
             async def toggle_detail_sort():
                 self.state['detail_sort_desc'] = not self.state['detail_sort_desc']

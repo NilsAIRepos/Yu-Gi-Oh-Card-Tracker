@@ -152,5 +152,34 @@ class TestFilters(unittest.TestCase):
         res = self.page.state['filtered_items']
         self.assertEqual(res[0].api_card.atk, 2000)
 
+    def test_sort_set_code(self):
+        from src.core.models import ApiCardSet
+
+        c1 = ApiCard(id=1, name="A", type="Monster", frameType="normal", desc="..")
+        c1.card_sets = [ApiCardSet(set_name="Set A", set_code="LOB-002", set_rarity="Common")]
+
+        c2 = ApiCard(id=2, name="B", type="Monster", frameType="normal", desc="..")
+        c2.card_sets = [ApiCardSet(set_name="Set B", set_code="LOB-001", set_rarity="Common")]
+
+        vm1 = CardViewModel(c1, 0, False)
+        vm2 = CardViewModel(c2, 0, False)
+
+        self.page.state['cards_consolidated'] = [vm1, vm2]
+        self.page.state['filter_card_type'] = []
+        self.page.state['view_scope'] = 'consolidated'
+
+        # Sort Set Code Asc
+        self.page.state['sort_by'] = 'Set Code'
+        self.page.state['sort_descending'] = False
+        asyncio.run(self.page.apply_filters())
+        res = self.page.state['filtered_items']
+        self.assertEqual(res[0].api_card.id, 2) # LOB-001 < LOB-002
+
+        # Sort Set Code Desc
+        self.page.state['sort_descending'] = True
+        asyncio.run(self.page.apply_filters())
+        res = self.page.state['filtered_items']
+        self.assertEqual(res[0].api_card.id, 1) # LOB-002 > LOB-001
+
 if __name__ == '__main__':
     unittest.main()

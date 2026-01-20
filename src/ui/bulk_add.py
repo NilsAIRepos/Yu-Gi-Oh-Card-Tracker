@@ -729,7 +729,7 @@ class BulkAddPage:
         elif key == 'DEF': res.sort(key=lambda x: (getattr(x.api_card, 'def_', None) or -1), reverse=reverse)
         elif key == 'Level': res.sort(key=lambda x: (x.api_card.level or -1), reverse=reverse)
         elif key == 'Price': res.sort(key=lambda x: x.price, reverse=reverse)
-        elif key == 'Set': res.sort(key=lambda x: x.set_code, reverse=reverse)
+        elif key == 'Set Code': res.sort(key=lambda x: x.set_code, reverse=reverse)
         elif key == 'Newest': res.sort(key=lambda x: x.api_card.id, reverse=reverse)
 
         self.state['library_filtered'] = res
@@ -835,7 +835,7 @@ class BulkAddPage:
         elif key == 'ATK': res.sort(key=lambda x: (x.api_card.atk or -1), reverse=reverse)
         elif key == 'DEF': res.sort(key=lambda x: (getattr(x.api_card, 'def_', None) or -1), reverse=reverse)
         elif key == 'Level': res.sort(key=lambda x: (x.api_card.level or -1), reverse=reverse)
-        elif key == 'Set': res.sort(key=lambda x: x.set_code, reverse=reverse)
+        elif key == 'Set Code': res.sort(key=lambda x: x.set_code, reverse=reverse)
         elif key == 'Quantity': res.sort(key=lambda x: x.quantity, reverse=reverse)
         elif key == 'Newest': res.sort(key=lambda x: x.api_card.id, reverse=reverse)
 
@@ -1241,7 +1241,7 @@ class BulkAddPage:
                         ui.separator().props('vertical')
 
                         # Sort
-                        lib_sort_opts = ['Name', 'ATK', 'DEF', 'Level', 'Set', 'Price', 'Newest']
+                        lib_sort_opts = ['Name', 'ATK', 'DEF', 'Level', 'Set Code', 'Price', 'Newest']
                         async def on_lib_sort(e):
                             self.state['library_sort_by'] = e.value
                             persistence.save_ui_state({'bulk_library_sort_by': e.value})
@@ -1286,7 +1286,7 @@ class BulkAddPage:
                         ui.separator().props('vertical')
 
                         # Sort
-                        col_sort_opts = ['Name', 'ATK', 'DEF', 'Level', 'Set', 'Quantity', 'Newest']
+                        col_sort_opts = ['Name', 'ATK', 'DEF', 'Level', 'Set Code', 'Quantity', 'Newest']
                         async def on_col_sort(e):
                             self.col_state['sort_by'] = e.value
                             persistence.save_ui_state({'bulk_collection_sort_by': e.value})

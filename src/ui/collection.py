@@ -608,6 +608,16 @@ class CollectionPage:
              res.sort(key=lambda x: get_price(x), reverse=reverse)
         elif key == 'Quantity':
              res.sort(key=lambda x: get_qty(x), reverse=reverse)
+        elif key == 'Set Code':
+            if self.state['view_scope'] == 'consolidated':
+                # Sort by the first set code found
+                def get_set_code(x):
+                    if x.api_card.card_sets:
+                         return x.api_card.card_sets[0].set_code
+                    return ""
+                res.sort(key=get_set_code, reverse=reverse)
+            else:
+                res.sort(key=lambda x: x.set_code, reverse=reverse)
 
         self.state['filtered_items'] = res
         if reset_page:
@@ -1116,7 +1126,7 @@ class CollectionPage:
                 await self.apply_filters()
 
             with ui.row().classes('items-center gap-1'):
-                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Quantity'], value=self.state['sort_by'], label='Sort',
+                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Quantity', 'Set Code'], value=self.state['sort_by'], label='Sort',
                         on_change=on_sort_change).classes('w-32'):
                     ui.tooltip('Choose how to sort the displayed cards')
 
