@@ -18,7 +18,6 @@ In an era where every app demands an account, a subscription, and an internet co
 ### Why OpenYuGi?
 
 *   **🔒 Privacy First**: No login. No telemetry. No cloud sync. Your collection lives in plain text JSON files on your hard drive. You are the sole owner of your inventory.
-*   **⚡ Blazing Fast**: Built with a reactive local server, the interface responds instantly. No loading spinners while fetching data from a remote server.
 *   **🛠 Hacker Friendly**: The entire application is built on Python and readable text files. Want to write a script to analyze your card values? You can parse your own data in seconds.
 *   **♾️ Forever Free**: As an open-source project, OpenYuGi will never charge you to manage your own cards.
 
@@ -190,6 +189,16 @@ The scanner pipeline (OpenCV -> Contour Detection -> Perspective Transform -> Te
 ## 🏗 Architecture & Data Model
 
 For developers and power users who want to touch the metal.
+
+### Data Sources & APIs
+OpenYuGi relies on powerful external APIs to provide accurate data without maintaining a massive centralized server.
+
+*   **YGOPRODeck API**:
+    *   **Role**: Primary source for Card Data, Card Images, and Set Information.
+    *   **Usage**: The app downloads a local database cache (`card_db.json`) from YGOPRODeck.
+*   **Yugipedia**:
+    *   **Role**: Source for **Structure Deck** import data.
+    *   **Usage**: The `YugipediaService` parses wiki pages to allow you to bulk-import entire Structure Decks (including bonus cards) with a single click.
 
 ### Directory Structure
 ```
