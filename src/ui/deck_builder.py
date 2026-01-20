@@ -1,6 +1,6 @@
 from nicegui import ui, run
 from src.core.persistence import persistence
-from src.core.changelog_manager import changelog_manager
+from src.core.changelog_manager import changelog_manager, ChangelogManager
 from src.core.models import Deck, Collection
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.banlist_service import banlist_service
@@ -150,6 +150,8 @@ class DeckBuilderPage:
 
         self.search_results_container = None
         self.deck_area_container = None
+
+        self.deck_changelog_manager = ChangelogManager(os.path.join("data", "changelogs", "decks"))
 
     def calculate_hierarchical_usage(self, target_zone: str) -> Dict[int, int]:
         """
@@ -415,7 +417,7 @@ class DeckBuilderPage:
         if from_zone:
             card_data['from_zone'] = from_zone
 
-        changelog_manager.log_change(filename, action, card_data, quantity)
+        self.deck_changelog_manager.log_change(filename, action, card_data, quantity)
         self.render_header.refresh() # Update Undo button state
 
     async def add_card_to_deck(self, card_id: int, quantity: int, target: str):
@@ -816,7 +818,7 @@ class DeckBuilderPage:
             has_history = False
             deck_filename = f"{self.state['current_deck_name']}.ydk" if self.state['current_deck_name'] else None
             if deck_filename:
-                 last = changelog_manager.get_last_change(deck_filename)
+                 last = self.deck_changelog_manager.get_last_change(deck_filename)
                  has_history = last is not None
 
             undo_btn = ui.button('Undo', icon='undo', on_click=self.undo_last_action).props('flat round color=white')
@@ -1267,7 +1269,7 @@ class DeckBuilderPage:
         if not self.state['current_deck_name']: return
         filename = f"{self.state['current_deck_name']}.ydk"
 
-        last_change = changelog_manager.undo_last_change(filename)
+        last_change = self.deck_changelog_manager.undo_last_change(filename)
         if not last_change:
             ui.notify("Nothing to undo.", type='warning')
             return
