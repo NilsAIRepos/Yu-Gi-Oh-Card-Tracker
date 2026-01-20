@@ -608,12 +608,21 @@ class UnifiedImportController:
                             render_rows()
                             ui.notify(f"Updated {count} rows", type='info')
 
-                    ui.button("Set 2-Letter (-EN)", on_click=lambda: apply_bulk_region(r'-[A-Za-z]{2}\d+')).props('outline dense size=sm')
-                    ui.button("Set 1-Letter (-E)", on_click=lambda: apply_bulk_region(r'-[A-Za-z]\d+')).props('outline dense size=sm')
-                    ui.button("Set No-Letter (-001)", on_click=lambda: apply_bulk_region(r'-\d+')).props('outline dense size=sm')
+                    ui.button("Set 2-Letter (-EN)", on_click=lambda: apply_bulk_region(r'-[A-Za-z]{2}\d+')).props('outline dense size=sm color=white')
+                    ui.button("Set 1-Letter (-E)", on_click=lambda: apply_bulk_region(r'-[A-Za-z]\d+')).props('outline dense size=sm color=white')
+                    ui.button("Set No-Letter (-001)", on_click=lambda: apply_bulk_region(r'-\d+')).props('outline dense size=sm color=white')
 
             # Declare container ref
             rows_container = None
+
+            def render_printings_content(siblings):
+                with ui.column().classes('p-2 gap-1'):
+                    ui.label("Known Printings").classes('text-xs font-bold text-gray-400 uppercase mb-1')
+                    if siblings:
+                         for s in siblings:
+                              ui.label(f"{s['code']} - {s['rarity']}").classes('text-sm whitespace-nowrap')
+                    else:
+                        ui.label("No known siblings").classes('text-sm italic text-gray-500')
 
             def get_valid_rarities(item):
                 """
@@ -677,16 +686,16 @@ class UnifiedImportController:
                                 ui.label(f"Orig: {row.set_prefix} | {row.language} | {row.rarity_abbr}").classes('text-xs text-grey-5')
 
                             # 3. Set Code Dropdown
-                            def update_code(e, it=item):
+                            def update_code(e, it):
                                 it['selected_set_code'] = e.value
                                 render_rows() # Re-render to update rarity options
 
                             ui.select(options=code_opts, value=item['selected_set_code'],
-                                      on_change=lambda e: update_code(e)) \
+                                      on_change=lambda e, i=item: update_code(e, i)) \
                                       .classes('w-1/4').props('dark dense options-dense')
 
                             # 4. Rarity Control (Dropdown or Static)
-                            def update_rarity(e, it=item):
+                            def update_rarity(e, it):
                                 it['selected_rarity'] = e.value
 
                             if len(valid_rarities) <= 1:
@@ -695,20 +704,15 @@ class UnifiedImportController:
                                     ui.label(item['selected_rarity']).classes('text-sm font-bold bg-gray-700 px-2 py-1 rounded text-gray-300')
                             else:
                                 ui.select(options=valid_rarities, value=item['selected_rarity'],
-                                          on_change=lambda e: update_rarity(e)) \
+                                          on_change=lambda e, i=item: update_rarity(e, i)) \
                                           .classes('w-1/4').props('dark dense options-dense')
 
                             # 5. Info Icon (Expandable Overview)
                             with ui.button(icon='info').props('flat round dense size=sm color=info'):
-                                ui.tooltip('Show all printings')
+                                with ui.tooltip().classes('bg-gray-900 border border-gray-700'):
+                                    render_printings_content(item['all_siblings'])
                                 with ui.menu().classes('bg-gray-900 border border-gray-700'):
-                                    with ui.column().classes('p-2 gap-1'):
-                                        ui.label("Known Printings").classes('text-xs font-bold text-gray-400 uppercase mb-1')
-                                        if item['all_siblings']:
-                                            for s in item['all_siblings']:
-                                                 ui.label(f"{s['code']} - {s['rarity']}").classes('text-sm whitespace-nowrap')
-                                        else:
-                                            ui.label("No known siblings").classes('text-sm italic text-gray-500')
+                                    render_printings_content(item['all_siblings'])
 
 
             def toggle_all(e):
