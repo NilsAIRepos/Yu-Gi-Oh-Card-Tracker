@@ -222,9 +222,8 @@ class UnifiedImportController:
 
         # 2. Resolve
         # Build Lookup for efficiency (Exact + Normalized)
-        row_langs = set(row.language for row in rows)
-        required_langs = {l.lower() for l in row_langs}
-        required_langs.add('en')  # Always load EN for fallback
+        # We ONLY load the English database to ensure consistent naming and data.
+        required_langs = {'en'}
 
         self.db_lookup = {}
         for db_lang in required_langs:
@@ -421,17 +420,25 @@ class UnifiedImportController:
                     # we can safely import it using the input Set Code (e.g. LOB-G020) as a custom variant.
                     # This avoids the Ambiguity Dialog for clear-cut Legacy imports.
 
-                    # Find sibling matching rarity
-                    sibling_match = next((s for s in all_siblings if s['rarity'] == row.set_rarity), None)
+                    # Find sibling matching rarity AND belonging to the identified card
+                    sibling_match = next((s for s in all_siblings if s['rarity'] == row.set_rarity and s['card'].id == card.id), None)
 
                     if sibling_match:
                         # Determine best Set Code dynamically
                         # Using Number Pattern Analysis to distinguish Legacy shifts (e.g. LOB-G020 vs LOB-EN026)
                         best_code = self._deduce_best_set_code(row, all_siblings, std_target, legacy_candidate)
 
+                        # Verify Best Code for Collision
+                        # If best_code exists in DB but points to a DIFFERENT card, do not use it.
+                        if best_code in self.db_lookup:
+                            linked_card_ids = {e['card'].id for e in self.db_lookup[best_code]}
+                            if card.id not in linked_card_ids:
+                                logger.info(f"Ignored best_code {best_code} for Name Fallback due to collision.")
+                                best_code = None # Fallback to sibling's code
+
                         # Add to Pending
                         self._add_pending_from_match(row, sibling_match, override_set_code=best_code)
-                        logger.info(f"Auto-Resolved Name Fallback: {row.name} ({best_code})")
+                        logger.info(f"Auto-Resolved Name Fallback: {row.name} ({best_code if best_code else sibling_match['code']})")
                         continue
 
             # 4. Determine Valid Set Code Options
@@ -439,7 +446,27 @@ class UnifiedImportController:
             valid_code_options = set()
             for m in compatible_matches:
                 valid_code_options.add(m['code'])
+
+            # Filter Target Codes for Collisions
+            # If a target code exists in DB but points to a card NOT in compatible_matches, it's a collision.
+            compatible_card_ids = {m['card'].id for m in compatible_matches}
+
             for t in target_codes:
+                if t in self.db_lookup:
+                    # Code exists in DB. Check if it points to any compatible card.
+                    # If NONE of the cards associated with this code are in compatible_matches, exclude it.
+                    db_entries = self.db_lookup[t]
+                    has_compatible_link = False
+                    for entry in db_entries:
+                        if entry['card'].id in compatible_card_ids:
+                            has_compatible_link = True
+                            break
+
+                    if not has_compatible_link:
+                        # Collision detected (e.g. LOB-DE091 is Silver Bow, but we are looking for Lesser Dragon)
+                        logger.info(f"Excluded target code {t} due to collision with different card.")
+                        continue
+
                 valid_code_options.add(t)
 
             valid_code_options = sorted(list(valid_code_options))
@@ -677,7 +704,8 @@ class UnifiedImportController:
                 )
                 if modified:
                     changes += 1
-                    self.successful_imports.append(f"{item.quantity}x {item.api_card.name} ({item.set_code} - {item.rarity})")
+                    edition_str = "1st Edition" if item.first_edition else "Unlimited"
+                    self.successful_imports.append(f"{item.quantity}x {item.api_card.name} ({item.set_code} - {item.rarity}) - {item.condition} {edition_str}")
                 else:
                     reason = "No changes applied"
                     if self.import_mode == 'SUBTRACT':
