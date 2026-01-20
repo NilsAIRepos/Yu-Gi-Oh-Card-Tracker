@@ -263,6 +263,12 @@ class ScanPage:
         if result:
             self.add_scanned_card(result)
 
+        # Check for notifications
+        note = scanner_manager.get_latest_notification()
+        if note:
+             type_, msg = note
+             ui.notify(msg, type=type_)
+
         # 6. Update Debug Info
         if self.debug_mode:
             snapshot = scanner_manager.get_debug_snapshot()

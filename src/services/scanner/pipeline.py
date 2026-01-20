@@ -67,8 +67,28 @@ class CardScanner:
             peri = cv2.arcLength(cnt, True)
             approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
 
+            # Preference 1: Perfect 4-sided polygon
             if len(approx) == 4:
                 return approx
+
+            # Preference 2: Robust Fallback (Rotated Rectangle)
+            # Handles cards with rounded corners or slight occlusion
+            rect = cv2.minAreaRect(cnt)
+            (center), (w, h), angle = rect
+
+            if w == 0 or h == 0:
+                continue
+
+            ar = w / h
+            if ar > 1:
+                ar = 1 / ar
+
+            # Yugioh Card Ratio is ~0.68. Allow tolerance (0.55 - 0.85)
+            if 0.55 < ar < 0.85:
+                box = cv2.boxPoints(rect)
+                box = np.int32(box)
+                # Reshape to match approxPolyDP output format (4, 1, 2)
+                return box.reshape(4, 1, 2)
 
         return None
 

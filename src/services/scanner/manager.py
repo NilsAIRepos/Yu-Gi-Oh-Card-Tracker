@@ -4,7 +4,7 @@ import queue
 import time
 import base64
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 try:
     import numpy as np
@@ -38,6 +38,7 @@ class ScannerManager:
         self.input_queue = queue.Queue(maxsize=1) # Frames from Client
         self.lookup_queue = queue.Queue() # From CV Thread -> Main Loop
         self.result_queue = queue.Queue() # From Main Loop -> UI
+        self.notification_queue = queue.Queue() # Notifications -> UI
 
         self.thread: Optional[threading.Thread] = None
 
@@ -139,6 +140,13 @@ class ScannerManager:
         except queue.Empty:
             return None
 
+    def get_latest_notification(self) -> Optional[Tuple[str, str]]:
+        """Returns the latest notification (type, message)."""
+        try:
+            return self.notification_queue.get_nowait()
+        except queue.Empty:
+            return None
+
     def get_live_contour(self) -> Optional[List[List[float]]]:
         """Returns the latest detected card contour as normalized coordinates (0.0-1.0)."""
         return self.latest_normalized_contour
@@ -192,6 +200,8 @@ class ScannerManager:
                     else:
                          self.debug_state["scan_result"] = "No Card Found"
                          self._log_debug("Manual Scan: No contour detected")
+                         self.status_message = "Scan Failed: No Card Detected"
+                         self.notification_queue.put(("warning", "Manual Scan: No Card Detected"))
 
                 if contour is not None:
                     area = cv2.contourArea(contour)
@@ -241,6 +251,8 @@ class ScannerManager:
                     if contour is not None:
                         cv2.drawContours(debug_frame, [contour], -1, (0, 255, 0), 2)
                     else:
+                        # Draw Red Border to indicate failure clearly
+                        cv2.rectangle(debug_frame, (0, 0), (width-1, height-1), (0, 0, 255), 10)
                         cv2.putText(debug_frame, "NO CARD FOUND", (50, height // 2),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
 
