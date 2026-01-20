@@ -222,9 +222,10 @@ class ScannerManager:
         set_id_crop = self.scanner.get_roi_crop(warped, "set_id")
         report["crops"]["set_id"] = self._save_debug_image(set_id_crop, "crop_set_id")
 
-        set_id, set_id_conf = self.scanner.extract_set_id(warped)
+        set_id, set_id_conf, set_id_raw = self.scanner.extract_set_id(warped)
         report["results"]["set_id"] = set_id
         report["results"]["set_id_conf"] = set_id_conf
+        report["track1_raw"] = set_id_raw
 
         if set_id:
              report["steps"].append({"name": "OCR Set ID", "status": "OK", "details": f"ID: {set_id}, Conf: {set_id_conf:.1f}"})
@@ -438,9 +439,10 @@ class ScannerManager:
             self.debug_state["crops"]["set_id"] = self._save_debug_image(set_id_crop, "crop_set_id")
 
             # 1. OCR Set ID
-            t1_set_id, t1_conf = self.scanner.extract_set_id(warped)
+            t1_set_id, t1_conf, t1_raw = self.scanner.extract_set_id(warped)
             self.debug_state["ocr_text"] = t1_set_id
             self.debug_state["ocr_conf"] = t1_conf
+            self.debug_state["track1_raw"] = t1_raw
 
             # 2. Detect Language
             t1_lang = self.scanner.detect_language(warped, t1_set_id)

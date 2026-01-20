@@ -184,8 +184,8 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def extract_set_id(self, warped) -> Tuple[Optional[str], int]:
-        """Extracts the Set ID using OCR. Returns (set_id, confidence)."""
+    def extract_set_id(self, warped) -> Tuple[Optional[str], int, str]:
+        """Extracts the Set ID using OCR. Returns (set_id, confidence, raw_text)."""
         # scan full image instead of ROI to be robust against bad crops
         roi = warped
 
@@ -211,7 +211,7 @@ class CardScanner:
             # Try to find confidence for this specific match
             confs = [int(c) for c in data['conf'] if int(c) != -1]
             avg_conf = sum(confs) / len(confs) if confs else 0
-            return found_text, avg_conf
+            return found_text, avg_conf, text
 
         # Fallback liberal match
         match = re.search(r'([A-Z0-9]+-[A-Z0-9]+)', text)
@@ -219,9 +219,9 @@ class CardScanner:
             found_text = match.group(1)
             confs = [int(c) for c in data['conf'] if int(c) != -1]
             avg_conf = sum(confs) / len(confs) if confs else 0
-            return found_text, avg_conf
+            return found_text, avg_conf, text
 
-        return None, 0
+        return None, 0, text
 
     def detect_first_edition(self, warped) -> bool:
         """Checks for '1st Edition' text using OCR."""
@@ -371,10 +371,14 @@ class CardScanner:
         Track 2: Scans the entire frame for text without relying on contour detection.
         Useful when the card is not clearly defined against the background.
         """
-        # 1. Resize for speed/consistency (max width 1000px)
+        # 1. Resize strategy
+        # For small text like Set IDs, higher resolution is better.
+        # But full 1080p+ might be slow.
+        # A width of 1500px is a good balance for full-frame text detection.
         h, w = frame.shape[:2]
-        if w > 1000:
-            scale = 1000 / w
+        target_width = 1500
+        if w != target_width:
+            scale = target_width / w
             frame_resized = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
         else:
             frame_resized = frame
@@ -382,13 +386,33 @@ class CardScanner:
         # 2. Preprocess
         gray = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2GRAY)
 
-        # Adaptive Thresholding is robust for variable lighting across the image
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        # Use CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # This brings out details in dark/bright areas better than global equalization
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(gray)
+
+        # Denoise before thresholding to reduce salt-and-pepper noise
+        # h=10 is strength, 7/21 are window sizes
+        denoised = cv2.fastNlMeansDenoising(enhanced, None, 10, 7, 21)
+
+        # Adaptive Thresholding
+        thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
 
         # 3. OCR
         # psm 11 = Sparse text (good for finding isolated codes)
         config = r'--oem 3 --psm 11'
-        data = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
+
+        # Try OCR on both the Thresholded image AND the Enhanced Grayscale
+        # Sometimes thresholding destroys characters that grayscale preserves
+
+        results_pool = []
+
+        # Pass 1: Thresholded
+        data_thresh = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
+        results_pool.append(data_thresh)
+
+        # Pass 2: Enhanced Grayscale (only if Pass 1 fails? No, let's run both for robustness)
+        # (Optional optimization: only run if Pass 1 yields no ID)
 
         full_text_list = []
         matches = []
@@ -397,20 +421,24 @@ class CardScanner:
         # Examples: LOB-EN001, SDY-001, BODE-EN050, MP19-EN005
         pattern = re.compile(r'\b([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})\b')
 
-        num_boxes = len(data['text'])
-        for i in range(num_boxes):
-            word = data['text'][i].strip().upper()
-            if not word: continue
+        # Combine results from all passes
+        for data in results_pool:
+            num_boxes = len(data['text'])
+            for i in range(num_boxes):
+                word = data['text'][i].strip().upper()
+                if not word: continue
 
-            full_text_list.append(word)
+                # Avoid adding duplicates to full text list just for display cleanliness
+                if word not in full_text_list:
+                    full_text_list.append(word)
 
-            # Check if this word looks like a set ID
-            m = pattern.search(word)
-            if m:
-                found_id = m.group(1)
-                conf = int(data['conf'][i])
-                if conf == -1: conf = 0
-                matches.append((found_id, conf))
+                # Check if this word looks like a set ID
+                m = pattern.search(word)
+                if m:
+                    found_id = m.group(1)
+                    conf = int(data['conf'][i])
+                    if conf == -1: conf = 0
+                    matches.append((found_id, conf))
 
         full_text = " ".join(full_text_list)
 

@@ -510,6 +510,12 @@ class ScanPage:
                      color = 'text-green-400' if conf > 60 else 'text-red-400'
                      ui.label(f"{conf:.1f}%").classes(f'font-mono text-lg {color}')
 
+                # Track 1 Raw Text
+                t1_raw = self.debug_report.get('track1_raw')
+                if t1_raw:
+                    with ui.expansion('Track 1 Raw Text', icon='text_fields').classes('w-full bg-gray-800 text-xs'):
+                        ui.label(t1_raw).classes('font-mono break-all')
+
                 with ui.row().classes('w-full justify-between items-center'):
                      ui.label("Language:").classes('font-bold text-gray-300')
                      ui.label(f"{results.get('language', 'N/A')}").classes('text-lg text-white')
