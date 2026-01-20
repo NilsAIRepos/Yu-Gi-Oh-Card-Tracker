@@ -467,8 +467,6 @@ class DeckBuilderPage:
 
             # If Warning Mode: Notify but proceed
             if setting == 'warning' and has_errors:
-                 # Just refresh to ensure icons are up to date
-                 self.refresh_deck_area()
                  ui.notify("Deck saved with validation warnings.", type='warning')
 
         try:
