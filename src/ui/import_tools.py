@@ -59,6 +59,16 @@ class UnifiedImportController:
         self.undo_btn = None
         self.collection_select = None
 
+        # Load persisted selection
+        saved_state = persistence.load_ui_state()
+        last_col = saved_state.get('import_last_collection')
+        if last_col and last_col in self.collections:
+            self.selected_collection = last_col
+
+    def on_collection_change(self, e):
+        self.selected_collection = e.value
+        persistence.save_ui_state({'import_last_collection': e.value})
+
     def refresh_collections(self):
         self.collections = persistence.list_collections()
         if self.collection_select:
@@ -978,7 +988,7 @@ def import_tools_page():
                     options=controller.collections,
                     label="Target Collection",
                     value=controller.selected_collection,
-                    on_change=lambda e: setattr(controller, 'selected_collection', e.value)
+                    on_change=controller.on_collection_change
                 ).classes('w-64').props('dark')
 
                 def open_new_col_dialog():
