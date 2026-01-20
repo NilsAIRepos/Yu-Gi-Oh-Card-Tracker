@@ -333,20 +333,25 @@ class UnifiedImportController:
                 ratio = difflib.SequenceMatcher(None, input_name, db_name).ratio()
                 is_match = ratio >= threshold
 
-                # 2. Secondary Check (ID-Based Localization)
-                if not is_match and row.language.lower() != m['lang'].lower():
-                    # Try to find the card in the row's language to verify name
+                # 2. Secondary Check (ID-Based English Verification)
+                # Since Cardmarket PDF exports always use English names (even for non-English cards),
+                # we must verify against the English DB name if the match came from a non-English DB.
+                if not is_match and m['lang'] != 'en':
                     try:
-                        # Access localized DB (loaded in cache)
-                        localized_card = ygo_service.get_card(m['card'].id, row.language.lower())
-                        if localized_card:
-                            local_name = localized_card.name.lower().strip()
-                            ratio_local = difflib.SequenceMatcher(None, input_name, local_name).ratio()
-                            if ratio_local >= threshold:
+                        # Load English DB to verify identity
+                        english_card = await ygo_service.load_card_database('en')
+                        # Find by ID (Optimization: this scan is repeated, could be faster with dict, but acceptable for import)
+                        # Actually ygo_service.get_card uses cached list scan.
+                        en_card = ygo_service.get_card(m['card'].id, 'en')
+
+                        if en_card:
+                            en_name = en_card.name.lower().strip()
+                            ratio_en = difflib.SequenceMatcher(None, input_name, en_name).ratio()
+                            if ratio_en >= threshold:
                                 is_match = True
-                                logger.info(f"Verified translation match via ID: {row.name} == {localized_card.name} (ID {m['card'].id})")
+                                # logger.info(f"Verified English match via ID: {row.name} == {en_card.name} (ID {m['card'].id})")
                     except Exception as e:
-                        logger.warning(f"Failed to lookup localized card: {e}")
+                        logger.warning(f"Failed to lookup English card: {e}")
 
                 if not is_match:
                      logger.warning(f"Rejected mismatch ({row.language}/{m['lang']}): {row.name} vs {m['card'].name} ({ratio:.2f} < {threshold})")
