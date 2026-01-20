@@ -7,3 +7,4 @@ Pillow
 opencv-python
 pytesseract
 langdetect
+pypdf

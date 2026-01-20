@@ -5,7 +5,7 @@ import uuid
 # --- Collection Models ---
 
 class CollectionEntry(BaseModel):
-    condition: Literal["Mint", "Near Mint", "Played", "Damaged"] = "Near Mint"
+    condition: Literal["Mint", "Near Mint", "Excellent", "Good", "Light Played", "Played", "Poor", "Damaged"] = "Near Mint"
     language: str = "EN"
     first_edition: bool = False
     quantity: int = 1
