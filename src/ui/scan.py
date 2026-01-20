@@ -222,6 +222,7 @@ class ScanPage:
         self.debug_stats_label = None
         self.debug_log_label = None
         self.last_capture_timestamp = 0.0
+        self.last_updated_src = None
 
         # Load available collections
         self.collections = persistence.list_collections()
@@ -329,12 +330,21 @@ class ScanPage:
                     current_ts = snapshot.get("capture_timestamp", 0.0)
                     src = snapshot.get("captured_image")
 
-                    # Timestamp-based invalidation
-                    if src and (current_ts > self.last_capture_timestamp):
-                        logger.info(f"UI: New capture detected (TS: {current_ts}). Updating image (Len: {len(src)}).")
+                    # Invalidation: Update if timestamp is newer OR if content changed
+                    # This ensures we don't miss updates even if timestamp logic is quirky
+                    should_update = False
+                    if src:
+                        if current_ts > self.last_capture_timestamp:
+                            should_update = True
+                        elif src != self.last_updated_src:
+                            should_update = True
+                            logger.info(f"UI: Image content changed (TS: {current_ts}). Forcing update.")
+
+                    if should_update:
                         self.captured_img.set_source(src)
                         self.captured_img.update()
                         self.last_capture_timestamp = current_ts
+                        self.last_updated_src = src
 
                     # Update source status label
                     if self.scan_result_label:
