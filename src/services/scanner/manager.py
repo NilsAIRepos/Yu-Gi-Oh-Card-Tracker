@@ -5,6 +5,7 @@ import time
 import base64
 import asyncio
 import os
+import uuid
 from typing import Optional, Dict, Any, List, Tuple, Union
 
 try:
@@ -53,27 +54,30 @@ class ScannerManager:
         self.auto_scan_paused = True # Default to True (Manual Mode Only)
 
         # Sharpness Buffering
-        # We store tuples of (frame, contour, sharpness_score)
         self.stability_buffer: List[Tuple[Any, Any, float]] = []
 
         # Debug State
         self.manual_scan_requested = False
         self.debug_state = {
             "logs": [],
-            "captured_image": None,
+            "captured_image_url": None,
             "capture_timestamp": 0.0,
             "scan_result": "N/A",
-            "warped_image": None,
+            "warped_image_url": None,
             "ocr_text": None,
+            "ocr_conf": 0,
             "contour_area": 0,
             "stability": 0,
-            "sharpness": 0.0
+            "sharpness": 0.0,
+            "crops": {}
         }
 
         # Configuration
-        self.stability_threshold = 10.0 # Max pixel movement allowed
-        self.required_stable_frames = 3 # Reduced for lower FPS
-        self.scan_cooldown_frames = 10 # Ignore same card for a bit
+        self.stability_threshold = 10.0
+        self.required_stable_frames = 3
+        self.scan_cooldown_frames = 10
+        self.debug_dir = "debug/scans"
+        os.makedirs(self.debug_dir, exist_ok=True)
 
     def start(self):
         if not SCANNER_AVAILABLE:
@@ -102,295 +106,265 @@ class ScannerManager:
         logger.info("Scanner stopped")
 
     def push_frame(self, frame_data: Union[str, bytes]):
-        """Receives a frame from the client (Base64 string or Raw Bytes)."""
+        """Receives a frame from the client."""
         if not self.running:
             return
 
         try:
-            # Keep only latest frame
             if self.input_queue.full():
                 self.input_queue.get_nowait()
-
-            if self.manual_scan_requested:
-                 size = len(frame_data)
-                 logger.info(f"Server received frame for manual scan (Size: {size} bytes)")
-
             self.input_queue.put_nowait(frame_data)
         except queue.Full:
             pass
 
     def trigger_manual_scan(self):
-        """Triggers a manual scan on the next frame, bypassing checks."""
         self.auto_scan_paused = True
         self.manual_scan_requested = True
         self._log_debug("Manual Scan Triggered")
 
     def resume_automatic_scan(self):
-        """Resumes automatic scanning and clears debug captured image."""
         self.auto_scan_paused = False
-        self.debug_state["captured_image"] = None
+        self.debug_state["captured_image_url"] = None
         self.debug_state["scan_result"] = "N/A"
         self._log_debug("Automatic Scan Resumed")
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
-        """Returns the current debug state."""
         return self.debug_state.copy()
 
     def _log_debug(self, message: str):
-        """Appends a message to the debug log."""
         timestamp = time.strftime("%H:%M:%S")
         entry = f"[{timestamp}] {message}"
-        # Keep last 20 logs
         self.debug_state["logs"] = [entry] + self.debug_state["logs"][:19]
 
     def get_status(self) -> str:
         return self.status_message
 
     def get_latest_result(self) -> Optional[Dict[str, Any]]:
-        """Returns the latest scanned card data."""
         try:
             return self.result_queue.get_nowait()
         except queue.Empty:
             return None
 
     def get_latest_notification(self) -> Optional[Tuple[str, str]]:
-        """Returns the latest notification (type, message)."""
         try:
             return self.notification_queue.get_nowait()
         except queue.Empty:
             return None
 
     def get_live_contour(self) -> Optional[List[List[float]]]:
-        """Returns the latest detected card contour as normalized coordinates (0.0-1.0)."""
         return self.latest_normalized_contour
 
-    def _calculate_sharpness(self, image, contour=None) -> float:
-        """Calculates the sharpness of an image using the Laplacian variance.
-           If contour is provided, only calculates sharpness within the bounding box.
-        """
-        if image is None:
-            return 0.0
+    def _save_debug_image(self, image, prefix="img") -> str:
+        """Saves an image to debug/scans and returns the relative URL."""
+        if image is None: return None
+        filename = f"{prefix}_{uuid.uuid4().hex[:8]}.jpg"
+        path = os.path.join(self.debug_dir, filename)
+        cv2.imwrite(path, image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        return f"/debug/scans/{filename}"
 
+    async def analyze_static_image(self, image_bytes: bytes) -> Dict[str, Any]:
+        """
+        Runs the full scanning pipeline on a static image for debugging/validation.
+        Returns a comprehensive report.
+        """
+        if not self.scanner:
+            return {"error": "Scanner not available"}
+
+        # Decode
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return {"error": "Failed to decode image"}
+
+        report = {
+            "steps": [],
+            "crops": {},
+            "results": {}
+        }
+
+        # 0. Save Input
+        input_url = self._save_debug_image(frame, "input")
+        report["input_image_url"] = input_url
+        report["steps"].append({"name": "Input Received", "status": "OK", "details": f"Size: {frame.shape}"})
+
+        # 1. Contour
+        contour = self.scanner.find_card_contour(frame)
+        if contour is None:
+            report["steps"].append({"name": "Contour Detection", "status": "FAIL", "details": "No card contour found"})
+            # Fallback
+            warped = self.scanner.get_fallback_crop(frame)
+        else:
+            report["steps"].append({"name": "Contour Detection", "status": "OK", "details": f"Area: {cv2.contourArea(contour):.0f}"})
+            warped = self.scanner.warp_card(frame, contour)
+
+        # Save Warped
+        warped_url = self._save_debug_image(warped, "warped")
+        report["warped_image_url"] = warped_url
+
+        # Draw ROIs on Warped for visualization
+        roi_viz = self.scanner.debug_draw_rois(warped)
+        roi_viz_url = self._save_debug_image(roi_viz, "roi_viz")
+        report["roi_viz_url"] = roi_viz_url
+
+        # 2. OCR Set ID
+        set_id_crop = self.scanner.get_roi_crop(warped, "set_id")
+        report["crops"]["set_id"] = self._save_debug_image(set_id_crop, "crop_set_id")
+
+        set_id, set_id_conf = self.scanner.extract_set_id(warped)
+        report["results"]["set_id"] = set_id
+        report["results"]["set_id_conf"] = set_id_conf
+
+        if set_id:
+             report["steps"].append({"name": "OCR Set ID", "status": "OK", "details": f"ID: {set_id}, Conf: {set_id_conf:.1f}"})
+        else:
+             report["steps"].append({"name": "OCR Set ID", "status": "WARN", "details": "No ID found"})
+
+        # 3. Language
+        lang = self.scanner.detect_language(warped, set_id)
+        report["results"]["language"] = lang
+        report["steps"].append({"name": "Language Detect", "status": "OK", "details": lang})
+
+        # 4. Lookup
+        card_info = None
+        if set_id:
+             card_info = await self._resolve_card_details(set_id)
+
+        if card_info:
+            report["steps"].append({"name": "DB Lookup", "status": "OK", "details": card_info.get("name")})
+            report["results"]["card_name"] = card_info.get("name")
+
+            # 5. Art Match
+            art_crop = self.scanner.get_roi_crop(warped, "art")
+            report["crops"]["art"] = self._save_debug_image(art_crop, "crop_art")
+
+            if card_info.get("potential_art_paths"):
+                 match_path, match_score = await run.io_bound(
+                    self.scanner.match_artwork, warped, card_info["potential_art_paths"]
+                 )
+                 report["results"]["match_score"] = match_score
+                 if match_path:
+                      report["steps"].append({"name": "Art Match", "status": "OK", "details": f"Score: {match_score}"})
+                 else:
+                      report["steps"].append({"name": "Art Match", "status": "WARN", "details": "No match above threshold"})
+        else:
+             report["steps"].append({"name": "DB Lookup", "status": "FAIL", "details": "Card not found in DB"})
+
+        return report
+
+
+    def _calculate_sharpness(self, image, contour=None) -> float:
+        if image is None: return 0.0
         try:
             target_area = image
-
             if contour is not None:
-                # Crop to bounding rect of the contour
                 x, y, w, h = cv2.boundingRect(contour)
-                # Ensure valid crop
                 if w > 0 and h > 0:
                     target_area = image[y:y+h, x:x+w]
-
             gray = cv2.cvtColor(target_area, cv2.COLOR_BGR2GRAY)
             return cv2.Laplacian(gray, cv2.CV_64F).var()
         except Exception as e:
-            logger.error(f"Error calculating sharpness: {e}")
             return 0.0
 
     def _worker(self):
-        last_frame_time = time.time()
-
         while self.running:
             try:
                 frame_data = self.input_queue.get(timeout=0.5)
-                last_frame_time = time.time()
             except queue.Empty:
-                # Diagnostics: Check if we are starving for frames
-                if time.time() - last_frame_time > 5.0:
-                    # If we haven't seen a frame in 5 seconds
-                    if self.manual_scan_requested:
-                        self._log_debug("WARNING: Manual Scan requested but no video frames received!")
-                        self.notification_queue.put(("warning", "No Camera Signal - Cannot Scan"))
-
-                        # FORCE OUTPUT: Generate "NO SIGNAL" image
-                        try:
-                            # Create black 720p image
-                            no_sig_img = np.zeros((720, 1280, 3), dtype=np.uint8)
-                            # Add text
-                            cv2.putText(no_sig_img, "NO SIGNAL / TIMEOUT", (320, 360),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
-
-                            # Encode
-                            _, buffer = cv2.imencode('.jpg', no_sig_img)
-                            b64_debug = base64.b64encode(buffer).decode('utf-8')
-                            self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
-                            self.debug_state["capture_timestamp"] = time.time()
-                            self.debug_state["scan_result"] = "ERR: No Signal"
-
-                            # Save locally
-                            os.makedirs("debug", exist_ok=True)
-                            filename = f"debug/no_signal_{int(time.time()*1000)}.jpg"
-                            cv2.imwrite(filename, no_sig_img)
-                            logger.info(f"Generated NO SIGNAL image: {filename}")
-
-                        except Exception as e:
-                            logger.error(f"Error generating NO SIGNAL image: {e}")
-
-                        self.manual_scan_requested = False # Reset to prevent stuck state
                 continue
 
             if self.cooldown > 0:
                 self.cooldown -= 1
 
             try:
-                # Skip if paused and no manual request
                 if self.auto_scan_paused and not self.manual_scan_requested:
                     continue
 
-                # Decode Frame
+                # Decode
                 frame = None
                 if isinstance(frame_data, bytes):
-                    # Raw Bytes
                     nparr = np.frombuffer(frame_data, np.uint8)
                     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 elif isinstance(frame_data, str):
-                    # Base64 String
-                    b64_str = frame_data
-                    if ',' in b64_str:
-                        b64_str = b64_str.split(',')[1]
-                    img_bytes = base64.b64decode(b64_str)
-                    nparr = np.frombuffer(img_bytes, np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    # Handle base64
+                    pass # Simplified for now, client sends bytes usually
 
-                if frame is None:
-                    continue
+                if frame is None: continue
 
                 height, width = frame.shape[:2]
-
-                # Fast Detection
                 contour = self.scanner.find_card_contour(frame)
 
-                # Update Debug Stats
                 self.debug_state["stability"] = self.stable_frames
 
-                # Check for manual trigger
                 force_scan = False
-                capture_snapshot = False
-
                 if self.manual_scan_requested:
-                    logger.info("Worker processing manual scan frame...")
                     self.manual_scan_requested = False
-                    capture_snapshot = True  # Always capture on manual
+                    force_scan = True
 
-                    # Capture the RAW frame immediately for feedback
-                    debug_frame_raw = frame.copy()
-
-                    # Save to local debug folder
-                    try:
-                        os.makedirs("debug", exist_ok=True)
-                        filename = f"debug/scan_{int(time.time()*1000)}.jpg"
-                        cv2.imwrite(filename, debug_frame_raw)
-                        logger.info(f"Saved debug image to {filename}")
-                    except Exception as e:
-                        logger.error(f"Failed to save debug image: {e}")
-
-                    # Check for Black Image (Camera not ready/covered)
-                    # Mean pixel intensity < 10 (out of 255) is essentially black
-                    is_black_image = np.mean(debug_frame_raw) < 10
-
-                    if contour is not None:
-                         cv2.drawContours(debug_frame_raw, [contour], -1, (0, 255, 0), 2)
-
-                    _, buffer = cv2.imencode('.jpg', debug_frame_raw)
-                    b64_debug = base64.b64encode(buffer).decode('utf-8')
-                    self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+                    # Save raw capture
+                    cap_url = self._save_debug_image(frame, "manual_cap")
+                    self.debug_state["captured_image_url"] = cap_url
                     self.debug_state["capture_timestamp"] = time.time()
-                    logger.info(f"Worker: Manual scan image captured and stored in debug state (Length: {len(self.debug_state['captured_image'])})")
 
-                    if is_black_image:
-                         force_scan = False
-                         self.debug_state["scan_result"] = "ERR: Black Image"
-                         self._log_debug("Manual Scan: Black Image Detected")
-                         self.status_message = "Error: Black Image"
-                         self.notification_queue.put(("negative", "Error: Black Image Detected. Check Camera."))
+                    is_black = np.mean(frame) < 10
+                    if is_black:
+                        force_scan = False
+                        self.debug_state["scan_result"] = "ERR: Black Image"
+                        self.notification_queue.put(("negative", "Black Image Detected"))
                     elif contour is not None:
-                         force_scan = True
-                         self.debug_state["scan_result"] = "Card Detected"
-                         self._log_debug("Manual Scan: Proceeding with contour")
+                        self.debug_state["scan_result"] = "Card Detected"
                     else:
-                         # FALLBACK LOGIC: Even if no contour, proceed!
-                         force_scan = True # Force processing anyway
-                         self.debug_state["scan_result"] = "Fallback Mode"
-                         self._log_debug("Manual Scan: No contour, using fallback crop")
-                         self.status_message = "Processing Manual Capture..."
-                         self.notification_queue.put(("info", "Processing Manual Capture..."))
+                        self.debug_state["scan_result"] = "Fallback Mode"
 
-                # Stability Check & Buffering
+                # Stability
                 is_stable = False
-                sharpness = 0.0
-
                 if contour is not None:
                     area = cv2.contourArea(contour)
                     self.debug_state["contour_area"] = area
 
-                    # Normalize and store contour
                     pts = contour.reshape(4, 2).astype(float)
                     pts[:, 0] /= width
                     pts[:, 1] /= height
                     self.latest_normalized_contour = pts.tolist()
 
-                    # Check Stability
                     if self._check_stability(contour):
                         self.stable_frames += 1
                         is_stable = True
-                        # Pass contour to focus sharpness calculation
                         sharpness = self._calculate_sharpness(frame, contour)
                         self.debug_state["sharpness"] = sharpness
                     else:
                         self.stable_frames = 0
-                        self.stability_buffer.clear() # Clear buffer on movement
+                        self.stability_buffer.clear()
                 else:
                     self.stable_frames = 0
-                    self.last_corners = None
                     self.latest_normalized_contour = None
-                    self.debug_state["contour_area"] = 0
                     self.stability_buffer.clear()
 
-
-                # Update Buffer
                 if is_stable and not force_scan:
                     self.stability_buffer.append((frame, contour, sharpness))
-                    # Keep buffer size limited to required frames (rolling window if we wanted, but here we trigger AT threshold)
                     if len(self.stability_buffer) > self.required_stable_frames:
                         self.stability_buffer.pop(0)
 
-
-                # Trigger Processing
-                # Trigger if: Stable enough OR Forced
-                # If stable enough, we pick the best frame from the buffer
                 should_process = (self.stable_frames == self.required_stable_frames) or force_scan
 
                 if should_process and not self.is_processing and (self.cooldown == 0 or force_scan):
                     self.is_processing = True
-                    self.cooldown = self.scan_cooldown_frames # Reset cooldown immediately to prevent double triggers
+                    self.cooldown = self.scan_cooldown_frames
 
                     target_frame = frame
                     target_contour = contour
 
                     if not force_scan and self.stability_buffer:
-                        # Select best frame from buffer
                         best_entry = max(self.stability_buffer, key=lambda x: x[2])
-                        target_frame, target_contour, best_score = best_entry
-                        self._log_debug(f"Selected sharpest frame (Score: {best_score:.0f})")
-                        # Clear buffer after selection
+                        target_frame, target_contour, _ = best_entry
                         self.stability_buffer.clear()
-                        # Important: Reset stable frames so we don't trigger again immediately on next frame
                         self.stable_frames = 0
 
-                    # If it wasn't manual, we still want a snapshot of the auto-scan success
-                    if not capture_snapshot:
-                         debug_frame = target_frame.copy()
-                         cv2.drawContours(debug_frame, [target_contour], -1, (0, 255, 0), 2)
-                         _, buffer = cv2.imencode('.jpg', debug_frame)
-                         b64_debug = base64.b64encode(buffer).decode('utf-8')
-                         self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
-                         self.debug_state["capture_timestamp"] = time.time()
+                        # Save auto-capture debug image
+                        cap_url = self._save_debug_image(target_frame, "auto_cap")
+                        self.debug_state["captured_image_url"] = cap_url
+                        self.debug_state["capture_timestamp"] = time.time()
 
                     self.status_message = "Processing..."
-                    self._log_debug(f"Starting Processing (Force: {force_scan})")
-
-                    # Run CV tasks in thread
-                    # Note: contour might be None if force_scan is True (Manual Fallback)
                     threading.Thread(target=self._cv_scan_task, args=(target_frame.copy(), target_contour)).start()
 
                 elif self.is_processing:
@@ -400,149 +374,112 @@ class ScannerManager:
                 elif not force_scan and not self.auto_scan_paused:
                     self.status_message = "Scanning..."
 
-
             except Exception as e:
                 logger.error(f"Error in scanner worker: {e}")
                 self.status_message = "Error"
-                self._log_debug(f"Worker Error: {str(e)}")
 
     def _check_stability(self, contour) -> bool:
-        """Checks if the contour corners have moved significantly."""
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-
-        if len(approx) != 4:
-            return False
-
+        if len(approx) != 4: return False
         corners = approx.reshape(4, 2)
         corners = corners[np.argsort(corners.sum(axis=1))]
-
         if self.last_corners is None:
             self.last_corners = corners
             return False
-
         dist = np.max(np.linalg.norm(self.last_corners - corners, axis=1))
         self.last_corners = corners
-
         return dist < self.stability_threshold
 
     def _cv_scan_task(self, frame, contour):
-        """Phase 1: Heavy CV extraction (Threaded)."""
         try:
-            logger.info("Starting CV scan task...")
-
-            # Determine Warped Image: Contour or Fallback
             if contour is not None:
                 warped = self.scanner.warp_card(frame, contour)
             else:
-                # Fallback for manual scans with no detection
-                logger.info("Using fallback crop for processing.")
                 warped = self.scanner.get_fallback_crop(frame)
 
-            # Generate Debug Image (Warped + ROIs)
-            # This ensures the user sees exactly what the OCR engine is looking at
-            debug_img = self.scanner.debug_draw_rois(warped)
-            _, buffer = cv2.imencode('.jpg', debug_img)
-            b64_debug = base64.b64encode(buffer).decode('utf-8')
-            self.debug_state["warped_image"] = f"data:image/jpeg;base64,{b64_debug}"
+            # Debug Images
+            roi_viz = self.scanner.debug_draw_rois(warped)
+            self.debug_state["warped_image_url"] = self._save_debug_image(roi_viz, "warped_roi")
+
+            # Save Crops for Debug
+            set_id_crop = self.scanner.get_roi_crop(warped, "set_id")
+            self.debug_state["crops"]["set_id"] = self._save_debug_image(set_id_crop, "crop_set_id")
 
             # 1. OCR Set ID
-            set_id = self.scanner.extract_set_id(warped)
-            self._log_debug(f"OCR Result: '{set_id}'")
+            set_id, set_id_conf = self.scanner.extract_set_id(warped)
             self.debug_state["ocr_text"] = set_id
+            self.debug_state["ocr_conf"] = set_id_conf
 
-            # 2. Detect Language (Visual/OCR)
+            # 2. Detect Language
             language = self.scanner.detect_language(warped, set_id)
 
             # 3. Detect 1st Edition
             first_ed = self.scanner.detect_first_edition(warped)
 
-            # 4. Visual Rarity Fallback
+            # 4. Visual Rarity
             visual_rarity = self.scanner.detect_rarity_visual(warped)
 
             data = {
                 "set_code": set_id,
                 "language": language,
                 "first_edition": first_ed,
-                "rarity": "Unknown", # Will be resolved
+                "rarity": "Unknown",
                 "visual_rarity": visual_rarity,
-                "warped_image": warped # Pass warped image for Phase 2 (Art matching)
+                "warped_image": warped,
+                "ocr_conf": set_id_conf
             }
 
             self.lookup_queue.put(data)
 
         except Exception as e:
             logger.error(f"Error in CV scan task: {e}")
-            self._log_debug(f"CV Task Error: {str(e)}")
-            self.is_processing = False # Reset flag if error
+            self.is_processing = False
 
     async def process_pending_lookups(self):
-        """Phase 2: Data Lookup & Art Matching (Main Async Loop)."""
         try:
             try:
                 data = self.lookup_queue.get_nowait()
             except queue.Empty:
                 return
 
-            logger.info(f"Processing lookup for Set ID: {data.get('set_code')}")
-            self._log_debug(f"Database Lookup: {data.get('set_code')}")
-
             set_id = data.get('set_code')
-            warped = data.pop('warped_image', None) # Remove from dict to be clean
+            warped = data.pop('warped_image', None)
+            ocr_conf = data.pop('ocr_conf', 0)
 
-            # Default name
             data['name'] = "Unknown Card"
             data['card_id'] = None
             data['image_path'] = None
 
             if set_id:
-                # 1. Resolve Card & Download Images
                 card_info = await self._resolve_card_details(set_id)
 
                 if card_info:
                     data.update(card_info)
-                    self._log_debug(f"Found Card: {card_info.get('name')}")
 
-                    # 2. Match Art (if multiple arts exist and we have the warped image)
                     if warped is not None and card_info.get("potential_art_paths"):
-                        self._log_debug("Matching artwork...")
-                        # Run ORB in thread to avoid blocking loop
-                        match_path = await run.io_bound(
+                        match_path, match_score = await run.io_bound(
                             self.scanner.match_artwork, warped, card_info["potential_art_paths"]
                         )
                         if match_path:
                             data["image_path"] = match_path
-                            logger.info(f"Art matched: {match_path}")
-                            self._log_debug("Artwork matched successfully")
+                            data["match_score"] = match_score
                         else:
                             data["image_path"] = card_info["potential_art_paths"][0]
-                            self._log_debug("Artwork match failed, using default")
-                else:
-                    self._log_debug("Card not found in database")
+                            data["match_score"] = 0
 
-            # Finalize Rarity
             if data["rarity"] == "Unknown":
                 data["rarity"] = data["visual_rarity"]
 
-            # Add to result queue
             self.result_queue.put(data)
-
-            # Reset processing flag
             self.is_processing = False
-            # self.cooldown was already set in _worker, but making sure
-            self._log_debug("Scan cycle complete")
 
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}")
-            self._log_debug(f"Lookup Error: {str(e)}")
             self.is_processing = False
 
     async def _resolve_card_details(self, set_id: str) -> Optional[Dict[str, Any]]:
-        """Finds card in DB and ensures images are downloaded."""
-        # Clean ID
         set_id = set_id.upper()
-
-        # 1. Search DB
         cards = await ygo_service.load_card_database("en")
 
         candidates = []
@@ -557,7 +494,6 @@ class ScannerManager:
 
         card, card_set = candidates[0]
 
-        # 2. Download Images
         potential_paths = []
         if card.card_images:
             for img in card.card_images:

@@ -54,6 +54,7 @@ def db_editor():
 # Serve images
 app.add_static_files('/images', 'data/images')
 app.add_static_files('/sets', 'data/sets')
+app.add_static_files('/debug', 'debug')
 
 # Handle Chrome DevTools probe to prevent 404 warnings
 @app.get('/.well-known/appspecific/com.chrome.devtools.json')

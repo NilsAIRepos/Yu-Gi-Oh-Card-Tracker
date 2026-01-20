@@ -1,9 +1,9 @@
-from nicegui import ui, app, run
+from nicegui import ui, app, run, events
 import logging
 import os
 import asyncio
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 
 from src.services.scanner.manager import scanner_manager, SCANNER_AVAILABLE
@@ -14,11 +14,9 @@ from src.services.ygo_api import ygo_service
 logger = logging.getLogger(__name__)
 
 # API Endpoint for Frame Upload
-# Defined at module level so it registers with the global app
 @app.post("/api/scanner/upload_frame")
 async def upload_frame(file: UploadFile):
     try:
-        # Read raw bytes from the uploaded file
         content = await file.read()
         scanner_manager.push_frame(content)
         return {"status": "received", "size": len(content)}
@@ -26,10 +24,9 @@ async def upload_frame(file: UploadFile):
         logger.error(f"Error receiving frame: {e}")
         return {"status": "error", "message": str(e)}
 
-# Client-Side Camera Logic
+# Client-Side Camera Logic (High Quality)
 JS_CAMERA_CODE = """
 <script>
-// Use window globals to persist state across re-renders
 window.scannerVideo = null;
 window.scannerStream = null;
 window.overlayCanvas = null;
@@ -42,44 +39,32 @@ function initScanner() {
     if (window.overlayCanvas) {
         window.overlayCtx = window.overlayCanvas.getContext('2d');
     }
-    console.warn("Scanner JS Loaded - If you see this, console logs are working.");
 }
 
 async function startCamera(deviceId, uploadUrl) {
     if (!window.scannerVideo) initScanner();
+    if (!window.scannerVideo) return false;
 
-    // Explicit check
-    if (!window.scannerVideo) {
-        console.error("startCamera: Video element not found!");
-        return false;
-    }
+    if (window.scannerStream) stopCamera();
 
-    if (window.scannerStream) {
-        stopCamera();
-    }
     try {
         const constraints = {
             video: {
                 deviceId: deviceId ? { exact: deviceId } : undefined,
-                width: { ideal: 1280 },
-                height: { ideal: 720 }
+                width: { ideal: 1920 },
+                height: { ideal: 1080 }
             }
         };
         window.scannerStream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (window.scannerVideo) {
-            window.scannerVideo.srcObject = window.scannerStream;
-            await window.scannerVideo.play();
+        window.scannerVideo.srcObject = window.scannerStream;
+        await window.scannerVideo.play();
 
-            // Sync canvas size to video size
-            if (window.overlayCanvas) {
-                window.overlayCanvas.width = window.scannerVideo.videoWidth;
-                window.overlayCanvas.height = window.scannerVideo.videoHeight;
-            }
+        if (window.overlayCanvas) {
+            window.overlayCanvas.width = window.scannerVideo.videoWidth;
+            window.overlayCanvas.height = window.scannerVideo.videoHeight;
         }
 
-        // Start Streaming Loop
         startStreamingLoop(uploadUrl);
-
         return true;
     } catch (err) {
         console.error("Error accessing camera:", err);
@@ -104,32 +89,17 @@ function stopCamera() {
 function startStreamingLoop(uploadUrl) {
     if (window.streamInterval) clearInterval(window.streamInterval);
     window.isStreaming = true;
-
-    // Create a reuseable canvas for processing frames
     const procCanvas = document.createElement('canvas');
     const procCtx = procCanvas.getContext('2d');
 
     window.streamInterval = setInterval(() => {
         try {
-            if (!window.isStreaming) return;
-            if (!window.scannerVideo || window.scannerVideo.readyState < 2) return;
+            if (!window.isStreaming || !window.scannerVideo || window.scannerVideo.readyState < 2) return;
 
-            // Downscaling Logic
-            const maxDim = 800;
-            let w = window.scannerVideo.videoWidth;
-            let h = window.scannerVideo.videoHeight;
-
+            // Full Resolution Capture
+            const w = window.scannerVideo.videoWidth;
+            const h = window.scannerVideo.videoHeight;
             if (w === 0 || h === 0) return;
-
-            if (w > maxDim || h > maxDim) {
-                if (w > h) {
-                    h = Math.round(h * (maxDim / w));
-                    w = maxDim;
-                } else {
-                    w = Math.round(w * (maxDim / h));
-                    h = maxDim;
-                }
-            }
 
             procCanvas.width = w;
             procCanvas.height = h;
@@ -139,10 +109,9 @@ function startStreamingLoop(uploadUrl) {
                 if (blob) {
                      const formData = new FormData();
                      formData.append('file', blob);
-                     // Fire and forget upload
                      fetch(uploadUrl, { method: 'POST', body: formData }).catch(e => console.error("Frame upload failed:", e));
                 }
-            }, 'image/jpeg', 0.6);
+            }, 'image/jpeg', 0.95); // High Quality
 
         } catch (err) {
             console.error("Client: captureFrame exception:", err);
@@ -152,28 +121,17 @@ function startStreamingLoop(uploadUrl) {
 
 function drawOverlay(points) {
     if (!window.overlayCanvas || !window.overlayCtx || !window.scannerVideo) return;
-
-    // Ensure canvas dimensions match video
-    if (window.overlayCanvas.width !== window.scannerVideo.videoWidth ||
-        window.overlayCanvas.height !== window.scannerVideo.videoHeight) {
-        window.overlayCanvas.width = window.scannerVideo.videoWidth;
-        window.overlayCanvas.height = window.scannerVideo.videoHeight;
-    }
-
     const w = window.overlayCanvas.width;
     const h = window.overlayCanvas.height;
-
     window.overlayCtx.clearRect(0, 0, w, h);
 
     if (!points || points.length < 4) return;
-
     window.overlayCtx.beginPath();
     window.overlayCtx.moveTo(points[0][0] * w, points[0][1] * h);
     for (let i = 1; i < points.length; i++) {
         window.overlayCtx.lineTo(points[i][0] * w, points[i][1] * h);
     }
     window.overlayCtx.closePath();
-
     window.overlayCtx.strokeStyle = '#00FF00';
     window.overlayCtx.lineWidth = 4;
     window.overlayCtx.stroke();
@@ -186,18 +144,24 @@ function clearOverlay() {
 }
 
 async function getVideoDevices() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-        return [];
-    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
     try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         return devices
             .filter(device => device.kind === 'videoinput')
             .map(device => ({ label: device.label || 'Camera ' + (devices.indexOf(device) + 1), value: device.deviceId }));
     } catch (e) {
-        console.error(e);
         return [];
     }
+}
+
+async function captureSingleFrame() {
+    if (!window.scannerVideo || window.scannerVideo.readyState < 2) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = window.scannerVideo.videoWidth;
+    canvas.height = window.scannerVideo.videoHeight;
+    canvas.getContext('2d').drawImage(window.scannerVideo, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.95);
 }
 </script>
 """
@@ -206,257 +170,47 @@ class ScanPage:
     def __init__(self):
         self.scanned_cards: List[Dict[str, Any]] = []
         self.target_collection_file = None
-        self.list_container = None
-        self.start_btn = None
-        self.stop_btn = None
-        self.status_label = None
-        self.camera_select = None
-        self.is_active = False
-
-        # Debug UI
-        self.debug_mode = False
-        self.debug_drawer_el = None
-        self.debug_switch = None
-        self.captured_img = None
-        self.scan_result_label = None
-        self.debug_img = None
-        self.debug_stats_label = None
-        self.debug_log_label = None
-        self.last_capture_timestamp = 0.0
-        self.last_updated_src = None
-        self.manual_scan_start_ts = 0.0
-
-        # Load available collections
         self.collections = persistence.list_collections()
         if self.collections:
             self.target_collection_file = self.collections[0]
 
-    async def init_cameras(self):
-        """Fetches video devices from client."""
-        try:
-            # Verify JS loaded
-            js_loaded = await ui.run_javascript('window.scanner_js_loaded', timeout=5.0)
-            if not js_loaded:
-                ui.notify("Scanner JavaScript failed to load. Try refreshing.", type='negative')
-                logger.error("Scanner JS not loaded.")
-                return
+        self.camera_select = None
+        self.start_btn = None
+        self.stop_btn = None
+        self.is_active = False
 
+        # Debug Lab State
+        self.debug_report = {}
+        self.debug_loading = False
+
+    async def init_cameras(self):
+        try:
+            js_loaded = await ui.run_javascript('window.scanner_js_loaded', timeout=5.0)
+            if not js_loaded: return
             devices = await ui.run_javascript('getVideoDevices()')
             if devices and self.camera_select:
                 self.camera_select.options = {d['value']: d['label'] for d in devices}
                 if not self.camera_select.value and devices:
                     self.camera_select.value = devices[0]['value']
-        except Exception as e:
-            logger.error(f"Error fetching cameras: {e}")
-            ui.notify(f"Camera initialization failed: {e}", type='negative')
+        except: pass
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
-
-        # Hardcoded endpoint for now, or derive from window.location if needed (relative path works)
-        upload_url = "/api/scanner/upload_frame"
-
-        try:
-            # Increase timeout to 60s for permission dialogs
-            success = await ui.run_javascript(f'startCamera("{device_id}", "{upload_url}")', timeout=60.0)
-            logger.info(f"startCamera JS returned: {success}")
-
-            if success:
-                scanner_manager.start()
-                self.start_btn.visible = False
-                self.stop_btn.visible = True
-            else:
-                ui.notify("Failed to access camera. Check permissions.", type='negative')
-        except Exception as e:
-            logger.error(f"Error starting camera: {e}")
-            ui.notify("Camera start timed out or failed.", type='negative')
-            # If it failed but maybe partially worked, ensure we don't leave UI in weird state
-            # But here we assume failure means start button should remain visible.
+        if await ui.run_javascript(f'startCamera("{device_id}", "/api/scanner/upload_frame")'):
+            scanner_manager.start()
+            self.start_btn.visible = False
+            self.stop_btn.visible = True
 
     async def stop_camera(self):
-        try:
-            await ui.run_javascript('stopCamera()')
-        except Exception as e:
-            logger.error(f"Error stopping camera: {e}")
-
+        await ui.run_javascript('stopCamera()')
         scanner_manager.stop()
         self.start_btn.visible = True
         self.stop_btn.visible = False
-        if self.status_label:
-            self.status_label.text = "Status: Idle"
-
-    def toggle_debug_mode(self, e):
-        # e might be a ChangeEvent or just a dummy object if called manually
-        if hasattr(e, 'value'):
-             self.debug_mode = e.value
-
-        # Update switch if we triggered from elsewhere (like close button)
-        if self.debug_switch and self.debug_switch.value != self.debug_mode:
-             self.debug_switch.value = self.debug_mode
-
-        if self.debug_drawer_el:
-             if self.debug_mode:
-                 self.debug_drawer_el.classes(remove='translate-x-full', add='translate-x-0')
-             else:
-                 self.debug_drawer_el.classes(remove='translate-x-0', add='translate-x-full')
-
-    def trigger_manual_scan(self):
-        self.manual_scan_start_ts = time.time()
-        logger.info(f"Button pressed: Manual Scan requested (Start TS: {self.manual_scan_start_ts})")
-        scanner_manager.trigger_manual_scan()
-        ui.notify("Manual Scan Triggered", type='info')
-
-    def resume_auto_scan(self):
-        scanner_manager.resume_automatic_scan()
-        ui.notify("Automatic Scan Resumed", type='positive')
-
-    async def update_loop(self):
-        """
-        Main loop for updating UI based on Scanner Manager state.
-        Note: Frame capture is now handled via direct client POST uploads.
-        This loop is responsible for:
-        1. Fetching status updates
-        2. Drawing overlays (based on processed contours)
-        3. Polling for results
-        """
-        if not self.is_active:
-            return
-
-        try:
-            # 1. Update Debug Info (PRIORITY)
-            # Moved to top to ensure immediate feedback on manual scans, even if processing blocks
-            if self.debug_mode:
-                snapshot = scanner_manager.get_debug_snapshot()
-
-                # Update Captured Image (Raw with annotations)
-                if self.captured_img:
-                    current_ts = snapshot.get("capture_timestamp", 0.0)
-                    src = snapshot.get("captured_image")
-
-                    # Invalidation:
-                    # 1. Update if timestamp is newer
-                    # 2. Update if content changed (backup)
-                    # 3. Update if we are waiting for a manual scan and this is the "next" picture
-                    should_update = False
-
-                    if src:
-                        # "Next Picture" Logic:
-                        # If we requested a manual scan at T_req, and this image was captured at T_cap,
-                        # and T_cap > T_req, then this IS the manual scan result.
-                        if self.manual_scan_start_ts > 0 and current_ts > self.manual_scan_start_ts:
-                             should_update = True
-                             logger.info(f"UI: Received manual scan response (Req: {self.manual_scan_start_ts}, Cap: {current_ts})")
-                             # Reset wait flag
-                             self.manual_scan_start_ts = 0.0
-
-                        elif current_ts > self.last_capture_timestamp:
-                            should_update = True
-                        elif src != self.last_updated_src:
-                            should_update = True
-                            logger.info(f"UI: Image content changed (TS: {current_ts}). Forcing update.")
-
-                    if should_update:
-                        self.captured_img.set_source(src)
-                        self.captured_img.update()
-                        self.last_capture_timestamp = current_ts
-                        self.last_updated_src = src
-
-                    # Update source status label
-                    if self.scan_result_label:
-                        self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')} (Img Len: {len(src) if src else 0})"
-
-                # Update Result Label (Backup if image logic failed)
-                if self.scan_result_label:
-                    self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')}"
-
-                # Update Warped Image
-                if snapshot.get("warped_image") and self.debug_img:
-                    self.debug_img.set_source(snapshot["warped_image"])
-                    self.debug_img.update()
-
-                # Update Stats
-                if self.debug_stats_label:
-                    stats = f"Stability: {snapshot.get('stability', 0)}\n" \
-                            f"Contour Area: {snapshot.get('contour_area', 0):.0f}\n" \
-                            f"Sharpness: {snapshot.get('sharpness', 0.0):.1f}\n" \
-                            f"OCR: {snapshot.get('ocr_text', 'N/A')}"
-                    self.debug_stats_label.text = stats
-
-                # Update Logs
-                if self.debug_log_label and snapshot.get("logs"):
-                    self.debug_log_label.text = "\n".join(snapshot["logs"])
-
-            # 2. Status Update
-            if self.status_label:
-                self.status_label.text = f"Status: {scanner_manager.get_status()}"
-
-            # 3. Process Logic (Backend)
-            # This can block/await while resolving cards, so it must happen AFTER critical UI updates
-            await scanner_manager.process_pending_lookups()
-
-            # 4. Draw Overlay (from latest server processing)
-            # The contour lags slightly behind the video, but usually acceptable
-            contour = scanner_manager.get_live_contour()
-            if contour:
-                await ui.run_javascript(f'drawOverlay({contour})')
-            else:
-                await ui.run_javascript('clearOverlay()')
-
-            # 5. Check for new results
-            result = scanner_manager.get_latest_result()
-            if result:
-                self.add_scanned_card(result)
-
-            # 6. Check for notifications
-            note = scanner_manager.get_latest_notification()
-            if note:
-                type_, msg = note
-                ui.notify(msg, type=type_)
-
-        except Exception as e:
-            logger.error(f"Error in ScanPage update_loop: {e}")
-
-    def add_scanned_card(self, data: Dict[str, Any]):
-        self.scanned_cards.insert(0, data)
-        self.render_list.refresh()
-        ui.notify(f"Scanned: {data.get('name', 'Unknown')}", type='positive')
-
-    @ui.refreshable
-    def render_list(self):
-        if not self.list_container:
-            return
-
-        with self.list_container:
-            self.list_container.clear()
-
-            if not self.scanned_cards:
-                ui.label("No cards scanned yet.").classes('text-gray-500 italic')
-                return
-
-            for i, card in enumerate(self.scanned_cards):
-                with ui.card().classes('w-full mb-2 p-2 flex flex-row items-center gap-4'):
-                    # Image
-                    img_path = card.get('image_path')
-                    if img_path:
-                         filename = os.path.basename(img_path)
-                         ui.image(f'/images/{filename}').classes('w-16 h-24 object-contain')
-                    else:
-                        ui.icon('image', size='lg').classes('text-gray-400 w-16 h-24')
-
-                    with ui.column().classes('flex-grow'):
-                        ui.label(card.get('name', 'Unknown')).classes('font-bold')
-                        ui.label(f"{card.get('set_code')} • {card.get('rarity')} • {card.get('language')}").classes('text-sm text-gray-400')
-                        if card.get('first_edition'):
-                            ui.badge('1st Ed', color='amber')
-
-                    with ui.row():
-                        ui.button(icon='delete', color='negative', flat=True,
-                                  on_click=lambda idx=i: self.remove_card(idx))
 
     def remove_card(self, index):
         if 0 <= index < len(self.scanned_cards):
             self.scanned_cards.pop(index)
-            self.render_list.refresh()
+            self.render_live_list.refresh()
 
     async def commit_cards(self):
         if not self.target_collection_file:
@@ -516,108 +270,216 @@ class ScanPage:
 
             ui.notify(f"Added {count} cards to {collection.name}", type='positive')
             self.scanned_cards.clear()
-            self.render_list.refresh()
+            self.render_live_list.refresh()
 
         except Exception as e:
             logger.error(f"Error saving collection: {e}")
             ui.notify(f"Error saving collection: {e}", type='negative')
 
+    async def handle_debug_upload(self, e: events.UploadEvent):
+        self.debug_loading = True
+        self.render_debug_lab.refresh()
+        try:
+            content = e.content.read()
+            report = await scanner_manager.analyze_static_image(content)
+            self.debug_report = report
+        except Exception as err:
+            ui.notify(f"Analysis failed: {err}", type='negative')
+        self.debug_loading = False
+        self.render_debug_lab.refresh()
+
+    async def handle_debug_capture(self):
+        self.debug_loading = True
+        self.render_debug_lab.refresh()
+        try:
+            # Capture frame from client
+            data_url = await ui.run_javascript('captureSingleFrame()')
+            if not data_url:
+                ui.notify("Camera not active or ready", type='warning')
+                self.debug_loading = False
+                self.render_debug_lab.refresh()
+                return
+
+            # Convert Data URL to bytes
+            import base64
+            header, encoded = data_url.split(",", 1)
+            content = base64.b64decode(encoded)
+
+            report = await scanner_manager.analyze_static_image(content)
+            self.debug_report = report
+        except Exception as err:
+            ui.notify(f"Capture failed: {err}", type='negative')
+
+        self.debug_loading = False
+        self.render_debug_lab.refresh()
+
+    async def update_loop(self):
+        if not self.is_active: return
+
+        # Live Overlay
+        contour = scanner_manager.get_live_contour()
+        if contour:
+            await ui.run_javascript(f'drawOverlay({contour})')
+        else:
+            await ui.run_javascript('clearOverlay()')
+
+        # Live Results
+        result = scanner_manager.get_latest_result()
+        if result:
+            self.scanned_cards.insert(0, result)
+            self.render_live_list.refresh()
+            ui.notify(f"Scanned: {result.get('name')}", type='positive')
+
+        # Notifications
+        note = scanner_manager.get_latest_notification()
+        if note:
+             ui.notify(note[1], type=note[0])
+
+    @ui.refreshable
+    def render_live_list(self):
+        if not self.scanned_cards:
+            ui.label("No cards scanned.").classes('text-gray-400 italic')
+            return
+
+        for i, card in enumerate(self.scanned_cards):
+            with ui.card().classes('w-full mb-2 p-2 flex flex-row items-center gap-4'):
+                if card.get('image_path'):
+                    ui.image(f"/images/{os.path.basename(card['image_path'])}").classes('w-12 h-16 object-contain')
+                with ui.column().classes('flex-grow'):
+                    ui.label(card.get('name', 'Unknown')).classes('font-bold')
+                    ui.label(f"{card.get('set_code')}").classes('text-xs text-gray-500')
+
+                # Delete Button
+                ui.button(icon='delete', color='negative', flat=True,
+                          on_click=lambda idx=i: self.remove_card(idx))
+
+    @ui.refreshable
+    def render_debug_lab(self):
+        if self.debug_loading:
+            ui.spinner(size='lg')
+            return
+
+        with ui.grid(columns=3).classes('w-full gap-4'):
+            # Column 1: Input & Controls
+            with ui.column().classes('p-4 border rounded'):
+                ui.label("1. Input Source").classes('text-xl font-bold mb-4')
+                ui.upload(label="Upload Image", on_upload=self.handle_debug_upload, auto_upload=True).props('accept=.jpg,.png').classes('w-full')
+                ui.separator()
+                ui.button("Capture from Camera", on_click=self.handle_debug_capture, icon='camera_alt').classes('w-full')
+
+                if self.debug_report.get('input_image_url'):
+                    ui.label("Input Image:").classes('font-bold mt-4')
+                    ui.image(self.debug_report['input_image_url']).classes('w-full h-auto border')
+
+            # Column 2: Visual Pipeline
+            with ui.column().classes('p-4 border rounded'):
+                ui.label("2. Visual Analysis").classes('text-xl font-bold mb-4')
+
+                if self.debug_report.get('warped_image_url'):
+                    ui.label("Warped & Pre-processed:").classes('font-bold')
+                    ui.image(self.debug_report['warped_image_url']).classes('w-full h-auto border mb-2')
+
+                if self.debug_report.get('roi_viz_url'):
+                    ui.label("ROI Visualization:").classes('font-bold')
+                    ui.image(self.debug_report['roi_viz_url']).classes('w-full h-auto border mb-2')
+
+                crops = self.debug_report.get('crops', {})
+                if crops.get('set_id'):
+                    ui.label("Set ID Crop:").classes('font-bold')
+                    ui.image(crops['set_id']).classes('h-16 border mb-2')
+
+                if crops.get('art'):
+                    ui.label("Art Crop:").classes('font-bold')
+                    ui.image(crops['art']).classes('w-32 h-32 object-contain border')
+
+            # Column 3: Logic & Logs
+            with ui.column().classes('p-4 border rounded'):
+                ui.label("3. Pipeline Results").classes('text-xl font-bold mb-4')
+
+                results = self.debug_report.get('results', {})
+                if results:
+                    with ui.row().classes('w-full justify-between'):
+                         ui.label("Set ID:").classes('font-bold')
+                         ui.label(f"{results.get('set_id', 'N/A')}").classes('font-mono')
+
+                    with ui.row().classes('w-full justify-between'):
+                         ui.label("OCR Conf:").classes('font-bold')
+                         conf = results.get('set_id_conf', 0)
+                         color = 'text-green-600' if conf > 60 else 'text-red-600'
+                         ui.label(f"{conf:.1f}%").classes(f'font-mono {color}')
+
+                    with ui.row().classes('w-full justify-between'):
+                         ui.label("Language:").classes('font-bold')
+                         ui.label(f"{results.get('language', 'N/A')}")
+
+                    with ui.row().classes('w-full justify-between'):
+                         ui.label("Art Match Score:").classes('font-bold')
+                         ui.label(f"{results.get('match_score', 0)}")
+
+                    ui.separator().classes('my-2')
+                    ui.label(f"Final Card: {results.get('card_name', 'Unknown')}").classes('text-lg font-bold text-primary')
+
+                ui.label("Pipeline Steps:").classes('font-bold mt-4')
+                steps = self.debug_report.get('steps', [])
+                with ui.scroll_area().classes('h-64 border p-2 bg-gray-50'):
+                    for step in steps:
+                        icon = 'check_circle' if step['status'] == 'OK' else 'error'
+                        color = 'green' if step['status'] == 'OK' else 'red'
+                        with ui.row().classes('items-center gap-2 mb-1'):
+                            ui.icon(icon, color=color)
+                            ui.label(f"{step['name']}: {step['details']}").classes('text-sm')
 
 def scan_page():
-    # Helper to clean up on exit
     def cleanup():
         scanner_manager.stop()
         page.is_active = False
 
     app.on_disconnect(cleanup)
-
     page = ScanPage()
     page.is_active = True
 
     if not SCANNER_AVAILABLE:
         ui.label("Scanner dependencies not found.").classes('text-red-500 text-xl font-bold')
-        ui.label("Please install opencv-python, pytesseract, and langdetect.").classes('text-gray-400')
         return
 
-    # Inject Client-Side JS
     ui.add_head_html(JS_CAMERA_CODE)
 
-    # Debug Drawer (Simulated)
-    # Using fixed positioning to overlay on top of everything.
-    # Initially hidden off-screen (translate-x-full).
-    with ui.element('div').classes('fixed top-0 right-0 h-full w-96 bg-gray-100 text-gray-900 shadow-xl z-[2000] p-4 transition-transform duration-300 transform translate-x-full border-l flex flex-col') as drawer_el:
-         page.debug_drawer_el = drawer_el
+    with ui.tabs().classes('w-full') as tabs:
+        live_tab = ui.tab('Live Scan')
+        debug_tab = ui.tab('Debug Lab')
 
-         with ui.row().classes('w-full items-center justify-between mb-4'):
-             ui.label("Scanner Debug").classes('text-xl font-bold')
-             # Close button using a value wrapper to mimic event
-             ui.button(icon='close', on_click=lambda: page.toggle_debug_mode(type('obj', (object,), {'value': False}))).props('flat round dense text-color=gray-900')
+    with ui.tab_panels(tabs, value=live_tab).classes('w-full h-full'):
 
-         ui.label("Controls:").classes('font-bold')
-         with ui.row().classes('w-full mb-4 gap-2'):
-            ui.button("Force Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('flex-1')
-            # ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
+        # --- TAB 1: LIVE SCAN ---
+        with ui.tab_panel(live_tab):
+            with ui.row().classes('w-full gap-4 items-center mb-4'):
+                if page.collections:
+                    ui.select(options=page.collections, value=page.target_collection_file, label='Collection',
+                              on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-48')
 
-         ui.label("Captured View:").classes('font-bold')
-         page.captured_img = ui.image().classes('w-full h-auto border bg-black mb-2 min-h-[100px]')
-         page.scan_result_label = ui.label("Result: N/A").classes('text-sm font-bold mb-4')
+                page.camera_select = ui.select(options={}, label='Camera').classes('w-48')
+                page.start_btn = ui.button('Start', on_click=page.start_camera).props('icon=videocam')
+                page.stop_btn = ui.button('Stop', on_click=page.stop_camera).props('icon=videocam_off color=negative')
+                page.stop_btn.visible = False
 
-         ui.label("Warped View:").classes('font-bold')
-         page.debug_img = ui.image().classes('w-full h-auto border bg-black mb-4 min-h-[100px]')
+                ui.space()
+                ui.button('Add to Collection', on_click=page.commit_cards).props('color=primary icon=save')
 
-         ui.label("Stats:").classes('font-bold')
-         page.debug_stats_label = ui.label("Waiting...").classes('text-sm font-mono mb-4 whitespace-pre-wrap bg-white text-black p-2 border rounded w-full')
+            with ui.row().classes('w-full h-[calc(100vh-250px)] gap-4'):
+                # Camera View
+                with ui.card().classes('flex-1 h-full p-0 overflow-hidden relative bg-black'):
+                    ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
+                    ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
 
-         ui.label("Logs:").classes('font-bold')
-         with ui.scroll_area().classes('flex-grow border bg-white p-2 w-full'):
-             page.debug_log_label = ui.label().classes('text-xs font-mono whitespace-pre-wrap text-black')
+                # List View
+                with ui.column().classes('w-96 h-full'):
+                    ui.label("Recent Scans").classes('text-xl font-bold')
+                    with ui.scroll_area().classes('w-full flex-grow border rounded p-2'):
+                        page.render_live_list()
 
-    with ui.row().classes('w-full gap-4 items-center mb-4'):
-        ui.label('Card Scanner').classes('text-2xl font-bold')
+        # --- TAB 2: DEBUG LAB ---
+        with ui.tab_panel(debug_tab):
+             page.render_debug_lab()
 
-        # Collection Select
-        if not page.collections:
-            ui.label("No collections found. Please create one first.").classes('text-red-400')
-        else:
-            ui.select(options=page.collections, value=page.target_collection_file, label='Target Collection',
-                      on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-64')
-
-        # Camera Select
-        page.camera_select = ui.select(options={}, label='Camera').classes('w-48')
-
-        page.start_btn = ui.button('Start Camera', on_click=page.start_camera).props('icon=videocam')
-        page.stop_btn = ui.button('Stop Camera', on_click=page.stop_camera).props('icon=videocam_off flat color=negative')
-        page.stop_btn.visible = False # Initial state
-
-        page.debug_switch = ui.switch('Debug Mode', on_change=page.toggle_debug_mode)
-
-        ui.space()
-        ui.button('Add Scanned Cards', on_click=page.commit_cards).props('color=primary icon=save')
-
-    with ui.row().classes('w-full h-[calc(100vh-150px)] gap-4'):
-        # Left: Camera
-        with ui.card().classes('flex-1 min-w-0 h-full p-0 overflow-hidden relative bg-black'):
-            # Video Element
-            ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
-
-            # Canvas Overlay
-            ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
-
-            # Overlay Status
-            with ui.column().classes('absolute bottom-4 left-4 p-2 bg-black/50 rounded'):
-                page.status_label = ui.label("Status: Idle").classes('text-white text-sm')
-                ui.label("Place card in center.").classes('text-white text-sm')
-
-        # Right: List
-        with ui.column().classes('flex-1 min-w-0 h-full'):
-            ui.label('Session Scanned Cards').classes('text-xl font-bold mb-2')
-
-            with ui.scroll_area().classes('w-full flex-grow border rounded p-2'):
-                 page.list_container = ui.column().classes('w-full')
-                 page.render_list()
-
-    # Init Cameras after delay
     ui.timer(1.0, page.init_cameras, once=True)
-
-    # Start update timer
     ui.timer(0.1, page.update_loop)

@@ -7,6 +7,7 @@ try:
     import cv2
     import numpy as np
     import pytesseract
+    from pytesseract import Output
     from langdetect import detect, LangDetectException
 except ImportError:
     pass  # Handled in __init__.py
@@ -19,17 +20,14 @@ class CardScanner:
         self.height = 875
 
         # Region of Interest (ROI) definitions (x, y, w, h) based on 600x875
-        # Note: These are initial approximations and may need tuning.
-        # Y coordinate 605 is approx just below the artwork box.
 
         # Set ID: Usually mid-right, below artwork
-        # Broaden the search area significantly for more robust detection
-        self.roi_set_id_search = (300, 580, 290, 80) # Broad search area
+        self.roi_set_id_search = (300, 580, 290, 80)
 
         # 1st Edition: Usually mid-left, below artwork
         self.roi_1st_ed = (20, 595, 180, 45)
 
-        # Description Box: Bottom area (skipping ATK/DEF line)
+        # Description Box: Bottom area
         self.roi_desc = (35, 650, 530, 180)
 
         # Art Area: The main artwork box
@@ -38,34 +36,33 @@ class CardScanner:
         # Name Area: Top of the card
         self.roi_name = (30, 25, 480, 50)
 
+        # Map for helper access
+        self.rois = {
+            "set_id": self.roi_set_id_search,
+            "first_ed": self.roi_1st_ed,
+            "desc": self.roi_desc,
+            "art": self.roi_art,
+            "name": self.roi_name
+        }
+
     def preprocess_image(self, frame):
         """Basic preprocessing for contour detection."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        # Adaptive thresholding often works better for varying lighting
         thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                       cv2.THRESH_BINARY, 11, 2)
-        # Invert because contours are found on white
         thresh = cv2.bitwise_not(thresh)
         return thresh
 
     def get_fallback_crop(self, frame) -> np.ndarray:
-        """
-        Creates a 'center crop' of the frame assuming the user has the card roughly in the middle.
-        This serves as a backup when contour detection fails.
-        """
+        """Creates a 'center crop' of the frame."""
         h_frame, w_frame = frame.shape[:2]
-
-        # Target aspect ratio
         target_ar = self.width / self.height # ~0.68
 
-        # Define a crop box in the center, taking up ~60% of height or width
-        # This is a heuristic.
         crop_h = int(h_frame * 0.7)
         crop_w = int(crop_h * target_ar)
 
         if crop_w > w_frame:
-            # Constrain by width if needed
             crop_w = int(w_frame * 0.8)
             crop_h = int(crop_w / target_ar)
 
@@ -73,10 +70,15 @@ class CardScanner:
         y_start = (h_frame - crop_h) // 2
 
         crop = frame[y_start:y_start+crop_h, x_start:x_start+crop_w]
-
-        # Resize to standard processing size
         resized = cv2.resize(crop, (self.width, self.height))
         return resized
+
+    def get_roi_crop(self, warped, roi_name: str) -> Optional[np.ndarray]:
+        """Returns the cropped image for a specific ROI."""
+        if roi_name not in self.rois:
+            return None
+        x, y, w, h = self.rois[roi_name]
+        return warped[y:y+h, x:x+w]
 
     def find_card_contour(self, frame) -> Optional[np.ndarray]:
         """Finds the largest rectangular contour that looks like a card."""
@@ -86,26 +88,20 @@ class CardScanner:
         if not contours:
             return None
 
-        # Sort by area
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
-        for cnt in contours[:5]: # Check top 5
+        for cnt in contours[:5]:
             area = cv2.contourArea(cnt)
-            if area < 10000: # Minimum area threshold
+            if area < 10000:
                 continue
 
-            # IMPROVEMENT: Use Convex Hull to wrap fingers/occlusions
             hull = cv2.convexHull(cnt)
-
-            # Try to approximate the hull to 4 points
             peri = cv2.arcLength(hull, True)
             approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
 
-            # Preference 1: Perfect 4-sided polygon from hull
             if len(approx) == 4:
                 return approx
 
-            # Preference 2: Robust Fallback (Rotated Rectangle from Hull)
             rect = cv2.minAreaRect(hull)
             (center), (w, h), angle = rect
 
@@ -116,11 +112,9 @@ class CardScanner:
             if ar > 1:
                 ar = 1 / ar
 
-            # Yugioh Card Ratio is ~0.68. Allow tolerance (0.55 - 0.85)
             if 0.55 < ar < 0.85:
                 box = cv2.boxPoints(rect)
                 box = np.int32(box)
-                # Reshape to match approxPolyDP output format (4, 1, 2)
                 return box.reshape(4, 1, 2)
 
         return None
@@ -150,42 +144,45 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def extract_set_id(self, warped) -> Optional[str]:
-        """Extracts the Set ID (e.g., LOB-EN001) using OCR."""
-        # Use broadened search area
+    def extract_set_id(self, warped) -> Tuple[Optional[str], int]:
+        """Extracts the Set ID using OCR. Returns (set_id, confidence)."""
         x, y, w, h = self.roi_set_id_search
         roi = warped[y:y+h, x:x+w]
 
-        # Preprocess ROI for OCR
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # Resize to improve OCR accuracy
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        # Threshold
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        # Configure Tesseract
-        # psm 6 = Assume a single uniform block of text (better for multi-line search if crop is messy)
-        # psm 11 = Sparse text (can also work)
-        # We try psm 11 first as it finds text scattered in image
         config = r'--oem 3 --psm 11'
-        text = pytesseract.image_to_string(thresh, config=config)
 
-        # Cleanup
-        text = text.strip().upper()
+        # Get data to find confidence of the matched word
+        data = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
 
-        # Regex for standard Set ID: 3-4 chars, hyphen, optional region (2 chars), 3 digits
-        # Examples: SDK-001, LOB-EN001, MP19-EN005
-        # Improved regex to be more robust
+        text = " ".join(data['text']).strip().upper()
+
+        # Regex for standard Set ID
+        # Looking for pattern in the full text
         match = re.search(r'([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})', text)
         if match:
-            return match.group(1)
+            found_text = match.group(1)
+            # Try to find confidence for this specific match
+            # This is tricky because image_to_data splits by words.
+            # We'll just take the average confidence of all non-empty words as a proxy
+            # or try to match the specific words.
+            # For now, average confidence of confident words (>0) is a decent metric.
+            confs = [int(c) for c in data['conf'] if int(c) != -1]
+            avg_conf = sum(confs) / len(confs) if confs else 0
+            return found_text, avg_conf
 
         # Fallback liberal match
         match = re.search(r'([A-Z0-9]+-[A-Z0-9]+)', text)
         if match:
-            return match.group(1)
+            found_text = match.group(1)
+            confs = [int(c) for c in data['conf'] if int(c) != -1]
+            avg_conf = sum(confs) / len(confs) if confs else 0
+            return found_text, avg_conf
 
-        return None
+        return None, 0
 
     def detect_first_edition(self, warped) -> bool:
         """Checks for '1st Edition' text using OCR."""
@@ -199,32 +196,27 @@ class CardScanner:
         config = r'--oem 3 --psm 7'
         text = pytesseract.image_to_string(thresh, config=config).lower()
 
-        # Check for variations
         if '1st' in text or 'edition' in text:
             return True
         return False
 
     def detect_language(self, warped, set_id: Optional[str]) -> str:
         """Determines card language."""
-        # 1. Fast check via Set ID
         if set_id:
             parts = set_id.split('-')
             if len(parts) > 1:
-                # E.g., LOB-EN001 -> EN, LOB-DE001 -> DE
                 suffix = parts[1][:2]
                 if suffix in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
                     return suffix
 
-        # 2. Fallback: OCR Description
         x, y, w, h = self.roi_desc
         roi = warped[y:y+h, x:x+w]
-
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
         text = pytesseract.image_to_string(thresh)
         if len(text) < 10:
-            return "EN" # Default
+            return "EN"
 
         try:
             lang = detect(text)
@@ -232,24 +224,23 @@ class CardScanner:
         except LangDetectException:
             return "EN"
 
-    def match_artwork(self, warped, reference_paths: List[str]) -> Optional[str]:
+    def match_artwork(self, warped, reference_paths: List[str]) -> Tuple[Optional[str], int]:
         """
-        Matches the card artwork against a list of local reference images using ORB.
-        Returns the path of the best matching image.
+        Matches the card artwork against local reference images.
+        Returns (best_image_path, score). Score is number of good matches.
         """
         if not reference_paths:
-            return None
+            return None, 0
 
         orb = cv2.ORB_create()
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
-        # Extract Art ROI from warped
         x, y, w, h = self.roi_art
         scan_art = warped[y:y+h, x:x+w]
         scan_kp, scan_des = orb.detectAndCompute(scan_art, None)
 
         if scan_des is None:
-            return None
+            return None, 0
 
         best_match_count = 0
         best_image_path = None
@@ -260,34 +251,18 @@ class CardScanner:
                 if ref_img is None:
                     continue
 
-                # Resize ref to match ROI approximately? ORB is scale invariant-ish but helping it helps.
-                # But reference images are likely full card images. We should crop them too?
-                # Assumption: Reference images are full cards.
-                # If they are full cards, we should crop them using the same ROI if possible,
-                # OR just match against the whole thing. Cropping is safer if the ref is standard.
-                # However, if ref is just the artwork (from API), we don't crop.
-                # The prompt says: "Load local reference images for the specific Set ID... Download missing pictures... after identifying set code."
-                # API images are usually full cards.
-
-                # Try to crop ref if it looks like a full card (approx aspect ratio)
                 h_ref, w_ref = ref_img.shape[:2]
-                if 1.4 < h_ref / w_ref < 1.6: # It's a full card
-                    # Scale to our size
+                if 1.4 < h_ref / w_ref < 1.6: # Full card
                     ref_resized = cv2.resize(ref_img, (self.width, self.height))
                     ref_art = ref_resized[y:y+h, x:x+w]
                     kp, des = orb.detectAndCompute(ref_art, None)
                 else:
-                    # Maybe it's just artwork? Use as is.
                     kp, des = orb.detectAndCompute(ref_img, None)
 
                 if des is None:
                     continue
 
                 matches = bf.match(scan_des, des)
-                # Sort matches by distance
-                matches = sorted(matches, key=lambda x: x.distance)
-
-                # Count "good" matches (distance < 50 is a common heuristic)
                 good_matches = [m for m in matches if m.distance < 60]
                 count = len(good_matches)
 
@@ -298,29 +273,22 @@ class CardScanner:
             except Exception as e:
                 logger.error(f"Error matching artwork for {ref_path}: {e}")
 
-        # threshold for a valid match?
-        if best_match_count > 10: # Arbitrary threshold
-            return best_image_path
+        if best_match_count > 10:
+            return best_image_path, best_match_count
 
-        return None
+        return None, 0
 
     def detect_rarity_visual(self, warped) -> str:
-        """
-        Visual fallback for rarity detection using color masking on the name.
-        Returns 'Gold', 'Silver', or 'Common'.
-        """
+        """Visual fallback for rarity detection."""
         x, y, w, h = self.roi_name
         roi = warped[y:y+h, x:x+w]
-
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-        # Gold Mask (approximate)
         lower_gold = np.array([10, 100, 100])
         upper_gold = np.array([40, 255, 255])
         mask_gold = cv2.inRange(hsv, lower_gold, upper_gold)
 
-        # Silver Mask
-        lower_silver = np.array([0, 0, 150]) # Low saturation, high value
+        lower_silver = np.array([0, 0, 150])
         upper_silver = np.array([180, 50, 255])
         mask_silver = cv2.inRange(hsv, lower_silver, upper_silver)
 
@@ -329,37 +297,27 @@ class CardScanner:
         total_pixels = w * h
 
         if gold_pixels > total_pixels * 0.05:
-            return "Gold Rare" # or Ultra/Gold
+            return "Gold Rare"
         elif silver_pixels > total_pixels * 0.05:
-            return "Secret Rare" # or Secret/Silver
+            return "Secret Rare"
 
         return "Common"
 
     def debug_draw_rois(self, image=None):
-        """Draws ROIs on the provided image (or a blank one)."""
+        """Draws ROIs on the provided image."""
         if image is not None:
              canvas = image.copy()
         else:
              canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
-        # Helper to draw
         def draw_roi(roi, color):
             x, y, w, h = roi
             cv2.rectangle(canvas, (x, y), (x + w, y + h), color, 2)
 
-        # Draw Set ID ROI (Green)
         draw_roi(self.roi_set_id_search, (0, 255, 0))
-
-        # Draw 1st Ed ROI (Blue)
         draw_roi(self.roi_1st_ed, (255, 0, 0))
-
-        # Draw Name ROI (Yellow)
         draw_roi(self.roi_name, (0, 255, 255))
-
-        # Draw Art ROI (Magenta)
         draw_roi(self.roi_art, (255, 0, 255))
-
-        # Draw Desc ROI (White)
         draw_roi(self.roi_desc, (255, 255, 255))
 
         return canvas
