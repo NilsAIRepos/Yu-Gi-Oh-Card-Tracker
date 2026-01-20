@@ -552,6 +552,254 @@ class BulkAddPage:
     # (I will include the full class content in write_file to ensure consistency)
 
     # Copying previous methods for completeness...
+    async def process_batch_add(self, entries: List[LibraryEntry]):
+        if not self.current_collection_obj or not self.state['selected_collection']:
+            ui.notify("No collection selected", type='negative')
+            return
+
+        lang = self.state['default_language']
+        cond = self.state['default_condition']
+        first = self.state['default_first_ed']
+
+        processed_changes = []
+        added_count = 0
+        collection = self.current_collection_obj
+
+        for entry in entries:
+            variant_id = generate_variant_id(entry.api_card.id, entry.set_code, entry.rarity, entry.image_id)
+
+            CollectionEditor.apply_change(
+                collection=collection,
+                api_card=entry.api_card,
+                set_code=entry.set_code,
+                rarity=entry.rarity,
+                language=lang,
+                quantity=1,
+                condition=cond,
+                first_edition=first,
+                image_id=entry.image_id,
+                variant_id=variant_id,
+                mode='ADD'
+            )
+
+            processed_changes.append({
+                'action': 'ADD',
+                'quantity': 1,
+                'card_data': {
+                    'card_id': entry.api_card.id,
+                    'name': entry.api_card.name,
+                    'set_code': entry.set_code,
+                    'rarity': entry.rarity,
+                    'image_id': entry.image_id,
+                    'language': lang,
+                    'condition': cond,
+                    'first_edition': first,
+                    'variant_id': variant_id
+                }
+            })
+            added_count += 1
+
+        if processed_changes:
+            await run.io_bound(persistence.save_collection, collection, self.state['selected_collection'])
+
+            changelog_manager.log_batch_change(
+                self.state['selected_collection'],
+                f"Bulk Added {added_count} cards",
+                processed_changes
+            )
+
+            ui.notify(f"Added {added_count} cards", type='positive')
+            self.render_header.refresh()
+            await self.load_collection_data()
+        else:
+            ui.notify("No cards to add.", type='warning')
+
+    async def process_batch_remove(self, entries: List[BulkCollectionEntry]):
+        if not self.current_collection_obj or not self.state['selected_collection']:
+            return
+
+        processed_changes = []
+        removed_count = 0
+        collection = self.current_collection_obj
+
+        for entry in entries:
+            qty_to_remove = entry.quantity
+            if qty_to_remove <= 0: continue
+
+            CollectionEditor.apply_change(
+                collection=collection,
+                api_card=entry.api_card,
+                set_code=entry.set_code,
+                rarity=entry.rarity,
+                language=entry.language,
+                quantity=-qty_to_remove,
+                condition=entry.condition,
+                first_edition=entry.first_edition,
+                image_id=entry.image_id,
+                variant_id=entry.variant_id,
+                mode='ADD'
+            )
+
+            processed_changes.append({
+                'action': 'REMOVE',
+                'quantity': qty_to_remove,
+                'card_data': {
+                    'card_id': entry.api_card.id,
+                    'name': entry.api_card.name,
+                    'set_code': entry.set_code,
+                    'rarity': entry.rarity,
+                    'image_id': entry.image_id,
+                    'language': entry.language,
+                    'condition': entry.condition,
+                    'first_edition': entry.first_edition,
+                    'variant_id': entry.variant_id
+                }
+            })
+            removed_count += qty_to_remove
+
+        if processed_changes:
+            await run.io_bound(persistence.save_collection, collection, self.state['selected_collection'])
+
+            changelog_manager.log_batch_change(
+                self.state['selected_collection'],
+                f"Bulk Removed {len(processed_changes)} entries",
+                processed_changes
+            )
+
+            ui.notify(f"Removed {len(processed_changes)} entries", type='positive')
+            self.render_header.refresh()
+            await self.load_collection_data()
+        else:
+            ui.notify("No cards to remove.", type='warning')
+
+    def is_library_filtered(self):
+        s = self.state
+        if s['library_search_text'].strip(): return True
+        if s['filter_set']: return True
+        if s['filter_rarity']: return True
+        if s['filter_attr']: return True
+        if s['filter_monster_race']: return True
+        if s['filter_st_race']: return True
+        if s['filter_archetype']: return True
+        if s['filter_monster_category']: return True
+        if s['filter_level'] is not None: return True
+
+        if s['filter_atk_min'] > 0 or s['filter_atk_max'] < 5000: return True
+        if s['filter_def_min'] > 0 or s['filter_def_max'] < 5000: return True
+        if s['filter_price_min'] > 0.0 or s['filter_price_max'] < 1000.0: return True
+        if s['filter_ownership_min'] > 0 or s['filter_ownership_max'] < 100: return True
+
+        if set(s['filter_card_type']) != {'Monster', 'Spell', 'Trap'}: return True
+        if s['filter_condition']: return True
+        if s['filter_owned_lang']: return True
+
+        return False
+        if s['filter_set']: return True
+        if s['filter_rarity']: return True
+        if s['filter_attr']: return True
+        if s['filter_monster_race']: return True
+        if s['filter_st_race']: return True
+        if s['filter_archetype']: return True
+        if s['filter_monster_category']: return True
+        if s['filter_level'] is not None: return True
+
+        if s['filter_atk_min'] > 0 or s['filter_atk_max'] < 5000: return True
+        if s['filter_def_min'] > 0 or s['filter_def_max'] < 5000: return True
+        if s['filter_price_min'] > 0.0 or s['filter_price_max'] < 1000.0: return True
+        if s['filter_ownership_min'] > 0 or s['filter_ownership_max'] < 100: return True
+
+        if set(s['filter_card_type']) != {'Monster', 'Spell', 'Trap'}: return True
+        if s['filter_condition']: return True
+        if s['filter_owned_lang']: return True
+
+        return False
+
+    def is_collection_filtered(self):
+        s = self.col_state
+        if s['search_text'].strip(): return True
+        if s['filter_set']: return True
+        if s['filter_rarity']: return True
+        if s['filter_attr']: return True
+        if s['filter_monster_race']: return True
+        if s['filter_st_race']: return True
+        if s['filter_archetype']: return True
+        if s['filter_monster_category']: return True
+        if s['filter_level'] is not None: return True
+
+        if s['filter_atk_min'] > 0 or s['filter_atk_max'] < 5000: return True
+        if s['filter_def_min'] > 0 or s['filter_def_max'] < 5000: return True
+        if s['filter_price_min'] > 0.0 or s['filter_price_max'] < 1000.0: return True
+        if s['filter_ownership_min'] > 0 or s['filter_ownership_max'] < 100: return True
+
+        if set(s['filter_card_type']) != {'Monster', 'Spell', 'Trap'}: return True
+        if s['filter_condition']: return True
+        if s['filter_owned_lang']: return True
+
+        return False
+
+    async def show_double_confirmation(self, count, callback, action_label):
+        self.warning_dialog.clear()
+        with self.warning_dialog, ui.card():
+             ui.label("WARNING: NO FILTERS ACTIVE").classes('text-h6 text-red font-bold')
+             ui.label(f"You are about to {action_label} {count} items (ENTIRE SET).")
+             ui.label("This cannot be easily undone.")
+             with ui.row().classes('justify-end'):
+                 ui.button("Cancel", on_click=self.warning_dialog.close).props('flat')
+                 async def on_ok():
+                     self.warning_dialog.close()
+                     await callback()
+                 ui.button(f"I UNDERSTAND - {action_label}", on_click=on_ok).props('color=red')
+        self.warning_dialog.open()
+
+    async def on_add_all_click(self):
+        count = len(self.state['library_filtered'])
+        if count == 0:
+            ui.notify("No cards to add.", type='warning')
+            return
+
+        async def execute():
+             await self.process_batch_add(self.state['library_filtered'])
+
+        with ui.dialog() as d, ui.card():
+             ui.label("Confirm Bulk Add").classes('text-h6')
+             ui.label(f"Add {count} filtered cards to collection?")
+             with ui.row().classes('justify-end'):
+                 ui.button("Cancel", on_click=d.close).props('flat')
+                 async def on_confirm():
+                     d.close()
+                     await asyncio.sleep(0.2)
+                     if not self.is_library_filtered():
+                         await self.show_double_confirmation(count, execute, "ADD ALL")
+                     else:
+                         await execute()
+                 ui.button("Add", on_click=on_confirm).props('color=positive')
+        d.open()
+
+    async def on_remove_all_click(self):
+        count = len(self.col_state['collection_filtered'])
+        if count == 0:
+            ui.notify("No cards to remove.", type='warning')
+            return
+
+        async def execute():
+             await self.process_batch_remove(self.col_state['collection_filtered'])
+
+        with ui.dialog() as d, ui.card():
+             ui.label("Confirm Bulk Remove").classes('text-h6')
+             ui.label(f"Remove {count} filtered entries from collection?")
+             ui.label("(This will set their quantity to 0)").classes('text-caption text-gray-400')
+             with ui.row().classes('justify-end'):
+                 ui.button("Cancel", on_click=d.close).props('flat')
+                 async def on_confirm():
+                     d.close()
+                     await asyncio.sleep(0.2)
+                     if not self.is_collection_filtered():
+                         await self.show_double_confirmation(count, execute, "REMOVE ALL")
+                     else:
+                         await execute()
+                 ui.button("Remove All", on_click=on_confirm).props('color=negative')
+        d.open()
+
     async def on_collection_change(self, new_val):
         self.state['selected_collection'] = new_val
         persistence.save_ui_state({'bulk_selected_collection': new_val})
@@ -1211,6 +1459,7 @@ class BulkAddPage:
                  self.collection_filter_pane = FilterPane(self.col_state, self.apply_collection_filters, lambda: [self.collection_filter_pane.reset_ui_elements(), self.apply_collection_filters()])
                  self.collection_filter_pane.build()
 
+        self.warning_dialog = ui.dialog()
         self.render_header()
 
         with ui.row().classes('w-full h-[calc(100vh-140px)] gap-4 flex-nowrap relative z-[60]').props('id="bulk-add-container"').on('card_drop', self.handle_drop):
@@ -1220,6 +1469,7 @@ class BulkAddPage:
                 with ui.row().classes('w-full p-2 bg-gray-900 border-b border-gray-800 items-center justify-between gap-2 flex-nowrap overflow-x-auto'):
                     ui.label('Library').classes('text-h6 font-bold')
                     with ui.row().classes('items-center gap-1 flex-nowrap'):
+                        ui.button("Add All", on_click=self.on_add_all_click).props('flat dense color=positive size=sm')
                         async def on_search(e):
                             self.state['library_search_text'] = e.value
                             await self.apply_library_filters()
@@ -1265,6 +1515,7 @@ class BulkAddPage:
                 with ui.row().classes('w-full p-2 bg-gray-900 border-b border-gray-800 items-center justify-between gap-2 flex-nowrap overflow-x-auto'):
                     ui.label('Collection').classes('text-h6 font-bold')
                     with ui.row().classes('items-center gap-1 flex-nowrap'):
+                        ui.button("Remove All", on_click=self.on_remove_all_click).props('flat dense color=negative size=sm')
                         async def on_col_search(e):
                             self.col_state['search_text'] = e.value
                             await self.apply_collection_filters()
