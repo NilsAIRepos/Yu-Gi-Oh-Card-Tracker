@@ -326,12 +326,19 @@ class ScanPage:
                 # Update Captured Image (Raw with annotations)
                 if self.captured_img:
                     src = snapshot.get("captured_image")
-                    if src != self.captured_img.source:  # Minimal update check
-                        # logger.info(f"UI: Setting captured image source (Length: {len(src) if src else 0})")
+                    # Force update if source is empty but backend has image
+                    should_update = (src != self.captured_img.source) or (src and not self.captured_img.source)
+
+                    if should_update:
+                        logger.info(f"UI: Setting captured image source (Length: {len(src) if src else 0})")
                         self.captured_img.set_source(src)
                         self.captured_img.update()
 
-                # Update Result Label
+                    # Update source status label
+                    if self.scan_result_label:
+                        self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')} (Img Len: {len(src) if src else 0})"
+
+                # Update Result Label (Backup if image logic failed)
                 if self.scan_result_label:
                     self.scan_result_label.text = f"Result: {snapshot.get('scan_result', 'N/A')}"
 
