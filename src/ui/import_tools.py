@@ -59,6 +59,16 @@ class UnifiedImportController:
         self.undo_btn = None
         self.collection_select = None
 
+        # Load persisted selection
+        saved_state = persistence.load_ui_state()
+        last_col = saved_state.get('import_last_collection')
+        if last_col and last_col in self.collections:
+            self.selected_collection = last_col
+
+    def on_collection_change(self, e):
+        self.selected_collection = e.value
+        persistence.save_ui_state({'import_last_collection': e.value})
+
     def refresh_collections(self):
         self.collections = persistence.list_collections()
         if self.collection_select:
@@ -562,8 +572,45 @@ class UnifiedImportController:
         if not self.ambiguous_rows: return
 
         with ui.dialog() as dialog, ui.card().classes('w-full max-w-6xl bg-dark border border-gray-700'):
-            ui.label("Resolve Ambiguities").classes('text-h6')
-            ui.label("Cards with missing Set Code/Rarity combinations or multiple matches.").classes('text-caption text-grey')
+            with ui.row().classes('w-full justify-between items-center'):
+                with ui.column().classes('gap-0'):
+                    ui.label("Resolve Ambiguities").classes('text-h6')
+                    ui.label("Cards with missing Set Code/Rarity combinations or multiple matches.").classes('text-caption text-grey')
+
+                # Bulk Actions
+                with ui.row().classes('gap-2'):
+                    def apply_bulk_region(regex_pattern):
+                        count = 0
+                        for item in self.ambiguous_rows:
+                            if not item['include']: continue
+                            # Find matching option
+                            # Check Targets
+                            found = None
+                            for t in item['target_codes']:
+                                if re.search(regex_pattern, t):
+                                    found = t
+                                    break
+                            # Check Matches
+                            if not found:
+                                for m in item['matches']:
+                                    if re.search(regex_pattern, m['code']):
+                                        found = m['code']
+                                        break
+
+                            if found:
+                                item['selected_set_code'] = found
+                                # Sanitize Rarity Immediately
+                                valid = get_valid_rarities(item)
+                                if item['selected_rarity'] not in valid and valid:
+                                    item['selected_rarity'] = valid[0]
+                                count += 1
+                        if count > 0:
+                            render_rows()
+                            ui.notify(f"Updated {count} rows", type='info')
+
+                    ui.button("Set 2-Letter (-EN)", on_click=lambda: apply_bulk_region(r'-[A-Za-z]{2}\d+')).props('outline dense size=sm')
+                    ui.button("Set 1-Letter (-E)", on_click=lambda: apply_bulk_region(r'-[A-Za-z]\d+')).props('outline dense size=sm')
+                    ui.button("Set No-Letter (-001)", on_click=lambda: apply_bulk_region(r'-\d+')).props('outline dense size=sm')
 
             # Declare container ref
             rows_container = None
@@ -571,18 +618,17 @@ class UnifiedImportController:
             def get_valid_rarities(item):
                 """
                 Returns available rarities based on the selected set code.
-                - If set code is Existing (in compatible matches): Return ONLY that variant's rarity.
+                - If set code is Existing (in compatible matches): Return rarity of matches with that code.
                 - If set code is New (Target): Return ALL rarities found in ANY sibling (all_siblings).
                 """
                 selected_code = item['selected_set_code']
 
                 # Check if selected code is an existing compatible match
-                existing_match = next((m for m in item['matches'] if m['code'] == selected_code), None)
+                # Gather all matches with this code (handle potential duplicates in DB with diff rarities)
+                matches_for_code = [m for m in item['matches'] if m['code'] == selected_code]
 
-                if existing_match:
-                    # Existing variant: Can only have its defined rarity
-                    # We return a dict or list. Since select expects options...
-                    return [existing_match['rarity']]
+                if matches_for_code:
+                    return sorted(list({m['rarity'] for m in matches_for_code}))
 
                 # New/Target Code: Can borrow rarity from any sibling
                 # Collect all unique rarities from all_siblings
@@ -639,13 +685,31 @@ class UnifiedImportController:
                                       on_change=lambda e: update_code(e)) \
                                       .classes('w-1/4').props('dark dense options-dense')
 
-                            # 4. Rarity Dropdown
+                            # 4. Rarity Control (Dropdown or Static)
                             def update_rarity(e, it=item):
                                 it['selected_rarity'] = e.value
 
-                            ui.select(options=valid_rarities, value=item['selected_rarity'],
-                                      on_change=lambda e: update_rarity(e)) \
-                                      .classes('w-1/4').props('dark dense options-dense')
+                            if len(valid_rarities) <= 1:
+                                # Static Text
+                                with ui.row().classes('w-1/4 items-center gap-2'):
+                                    ui.label(item['selected_rarity']).classes('text-sm font-bold bg-gray-700 px-2 py-1 rounded text-gray-300')
+                            else:
+                                ui.select(options=valid_rarities, value=item['selected_rarity'],
+                                          on_change=lambda e: update_rarity(e)) \
+                                          .classes('w-1/4').props('dark dense options-dense')
+
+                            # 5. Info Icon (Expandable Overview)
+                            with ui.button(icon='info').props('flat round dense size=sm color=info'):
+                                ui.tooltip('Show all printings')
+                                with ui.menu().classes('bg-gray-900 border border-gray-700'):
+                                    with ui.column().classes('p-2 gap-1'):
+                                        ui.label("Known Printings").classes('text-xs font-bold text-gray-400 uppercase mb-1')
+                                        if item['all_siblings']:
+                                            for s in item['all_siblings']:
+                                                 ui.label(f"{s['code']} - {s['rarity']}").classes('text-sm whitespace-nowrap')
+                                        else:
+                                            ui.label("No known siblings").classes('text-sm italic text-gray-500')
+
 
             def toggle_all(e):
                 for item in self.ambiguous_rows:
@@ -924,7 +988,7 @@ def import_tools_page():
                     options=controller.collections,
                     label="Target Collection",
                     value=controller.selected_collection,
-                    on_change=lambda e: setattr(controller, 'selected_collection', e.value)
+                    on_change=controller.on_collection_change
                 ).classes('w-64').props('dark')
 
                 def open_new_col_dialog():
@@ -955,7 +1019,7 @@ def import_tools_page():
                     ui.toggle({
                         'ADD': 'Add to Collection',
                         'SUBTRACT': 'Remove from Collection'
-                    }, value='ADD', on_change=lambda e: setattr(controller, 'import_mode', e.value)).props('dark color=red')
+                    }, value='ADD', on_change=lambda e: [setattr(controller, 'import_mode', e.value), controller.refresh_status_ui()]).props('dark color=red')
 
             # Row 4: Upload Area
             # Note: We can't easily change props of ui.upload after creation dynamically in a clean way
