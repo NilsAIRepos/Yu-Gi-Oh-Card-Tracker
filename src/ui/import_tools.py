@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from src.core.persistence import persistence
 from src.core.models import Collection, ApiCard, ApiCardSet
-from src.core.utils import LANGUAGE_TO_LEGACY_REGION_MAP
+from src.core.utils import LANGUAGE_TO_LEGACY_REGION_MAP, normalize_set_code
 from src.services.ygo_api import ygo_service
 from src.services.collection_editor import CollectionEditor
 from src.services.cardmarket_parser import CardmarketParser, ParsedRow
@@ -34,8 +34,13 @@ class UnifiedImportController:
         self.import_type: str = 'JSON' # 'JSON' or 'CARDMARKET'
         self.import_mode: str = 'ADD'  # 'ADD' or 'SUBTRACT'
 
+        # State for Re-scan
+        self.last_uploaded_content: Optional[bytes] = None
+        self.last_uploaded_filename: str = ""
+
         # Staging
         self.pending_changes: List[PendingChange] = []
+        self.successful_imports: List[str] = []
 
         # Cardmarket specific
         self.ambiguous_rows: List[Dict[str, Any]] = [] # {row, matches, selected_index}
@@ -79,12 +84,6 @@ class UnifiedImportController:
         ui.notify(f"Created collection: {name}", type='positive')
 
     async def handle_upload(self, e: events.UploadEventArguments):
-        # Clear previous state
-        self.pending_changes = []
-        self.ambiguous_rows = []
-        self.failed_rows = []
-        self.refresh_status_ui()
-
         ui.notify("Processing file...", type='info')
 
         # Robust File Extraction (Fixes AttributeError on NiceGUI 3.5+)
@@ -106,19 +105,37 @@ class UnifiedImportController:
             if not content:
                 raise ValueError("Empty file content")
 
+            # Save for re-scan
+            self.last_uploaded_content = content
+            self.last_uploaded_filename = filename
+
+            await self.process_current_file()
+
         except Exception as ex:
             logger.error(f"Upload Error: {ex}")
             ui.notify(f"Error reading file: {ex}", type='negative')
+
+    async def process_current_file(self):
+        if not self.last_uploaded_content:
             return
+
+        # Clear previous state
+        self.pending_changes = []
+        self.ambiguous_rows = []
+        self.failed_rows = []
+        self.refresh_status_ui()
 
         # Ensure DB is loaded
         await ygo_service.load_card_database()
 
         # Dispatch
-        if self.import_type == 'JSON':
-            await self.process_json(content)
-        else:
-            await self.process_cardmarket(content, filename)
+        try:
+            if self.import_type == 'JSON':
+                await self.process_json(self.last_uploaded_content)
+            else:
+                await self.process_cardmarket(self.last_uploaded_content, self.last_uploaded_filename)
+        except Exception as e:
+             ui.notify(f"Processing Error: {e}", type='negative')
 
         self.refresh_status_ui()
 
@@ -188,76 +205,107 @@ class UnifiedImportController:
             return
 
         # 2. Resolve
-        # Build Lookup for efficiency
-        languages = set(row.language for row in rows)
-        if not languages: languages = {'EN'}
+        # Build Lookup for efficiency (Exact + Normalized)
+        row_langs = set(row.language for row in rows)
+        required_langs = {l.lower() for l in row_langs}
+        required_langs.add('en')  # Always load EN for fallback
 
         self.db_lookup = {}
-        for lang in languages:
-             db_lang = lang.lower()
-             cards = await ygo_service.load_card_database(db_lang)
+        for db_lang in required_langs:
+             try:
+                 cards = await ygo_service.load_card_database(db_lang)
+             except Exception:
+                 logger.warning(f"Could not load DB for language: {db_lang}")
+                 continue
+
              for card in cards:
                  for s in card.card_sets:
                      code = s.set_code
-                     # Key by Normalized Set Code (Upper)
-                     # We store multiple matches per code (rarities)
-                     if code not in self.db_lookup: self.db_lookup[code] = []
+                     entry = {'rarity': s.set_rarity, 'card': card, 'variant': s}
 
-                     # Avoid dupes
-                     exists = any(x['variant'].variant_id == s.variant_id for x in self.db_lookup[code])
-                     if not exists:
-                         self.db_lookup[code].append({'rarity': s.set_rarity, 'card': card, 'variant': s})
+                     # Key 1: Exact Code
+                     if code not in self.db_lookup: self.db_lookup[code] = []
+                     if not any(x['variant'].variant_id == s.variant_id for x in self.db_lookup[code]):
+                         self.db_lookup[code].append(entry)
+
+                     # Key 2: Base Code (Normalized)
+                     base_code = normalize_set_code(code)
+                     if base_code != code:
+                         if base_code not in self.db_lookup: self.db_lookup[base_code] = []
+                         if not any(x['variant'].variant_id == s.variant_id for x in self.db_lookup[base_code]):
+                             self.db_lookup[base_code].append(entry)
 
         # Match Rows
         for row in rows:
-            candidates = []
-            # Standard: PREFIX-LANG###
-            candidates.append(f"{row.set_prefix}-{row.language}{row.number}")
-            # No Region: PREFIX-###
-            candidates.append(f"{row.set_prefix}-{row.number}")
-            # Legacy: PREFIX-L###
+            # Construct Target Set Code (Standard format preferred for new entries)
+            target_code = f"{row.set_prefix}-{row.language}{row.number}"
+
+            # 1. Try Exact Matches (Standard, Legacy)
+            exact_candidates = [target_code]
             legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(row.language)
             if legacy_char:
-                candidates.append(f"{row.set_prefix}-{legacy_char}{row.number}")
+                exact_candidates.append(f"{row.set_prefix}-{legacy_char}{row.number}")
 
-            potential_matches = []
-            seen_codes = set()
+            # We do NOT add the regionless code (prefix-number) here as an exact candidate.
+            # If we did, an input like "LOB-DE001" would match a normalized "LOB-001" key in the DB
+            # and import as "LOB-001" instead of "LOB-DE001".
+            # By skipping it here, we fall through to the Base Code logic, which preserves the Target Code.
 
-            for code in candidates:
-                if code in self.db_lookup:
-                    for entry in self.db_lookup[code]:
-                        # Rarity Check
-                        if entry['rarity'] == row.set_rarity:
-                            # Unique key for match list
-                            uid = f"{code}_{entry['variant'].variant_id}"
-                            if uid not in seen_codes:
-                                potential_matches.append({
-                                    'code': code,
-                                    'card': entry['card'],
-                                    'variant': entry['variant']
-                                })
-                                seen_codes.add(uid)
+            found_exact = False
+            for cand in exact_candidates:
+                if cand in self.db_lookup:
+                    matches = [m for m in self.db_lookup[cand] if m['rarity'] == row.set_rarity]
+                    if matches:
+                        self._add_pending_from_match(row, matches[0], override_set_code=cand)
+                        found_exact = True
+                        break
 
-            if len(potential_matches) == 1:
-                self._add_pending_from_match(row, potential_matches[0])
-            elif len(potential_matches) > 1:
-                # Check if they are effectively the same (same variant_id)
-                first_vid = potential_matches[0]['variant'].variant_id
-                if all(m['variant'].variant_id == first_vid for m in potential_matches):
-                    self._add_pending_from_match(row, potential_matches[0])
+            if found_exact: continue
+
+            # 2. No Exact Match -> Try Base Code (Normalized)
+            base_code = f"{row.set_prefix}-{row.number}"
+
+            if base_code in self.db_lookup:
+                matches = [m for m in self.db_lookup[base_code] if m['rarity'] == row.set_rarity]
+
+                if not matches:
+                    self.failed_rows.append(row)
+                    continue
+
+                if len(matches) == 1:
+                    # Auto-Match: Use the existing variant data but create as target_code
+                    self._add_pending_from_match(row, matches[0], override_set_code=target_code)
                 else:
-                    self.ambiguous_rows.append({
-                        'row': row,
-                        'matches': potential_matches,
-                        'selected_index': 0
-                    })
+                    # Ambiguity: Multiple variants map to this base code
+                    ambig_matches = []
+                    seen_vars = set()
+                    for m in matches:
+                        # Deduplicate if same variant ID (e.g. from multiple DB loads/keys)
+                        if m['variant'].variant_id in seen_vars: continue
+                        seen_vars.add(m['variant'].variant_id)
+
+                        ambig_matches.append({
+                            'code': m['variant'].set_code,
+                            'card': m['card'],
+                            'variant': m['variant']
+                        })
+
+                    if len(ambig_matches) == 1:
+                        self._add_pending_from_match(row, {'card': ambig_matches[0]['card'], 'variant': ambig_matches[0]['variant'], 'code': ambig_matches[0]['code']}, override_set_code=target_code)
+                    else:
+                        self.ambiguous_rows.append({
+                            'row': row,
+                            'matches': ambig_matches,
+                            'selected_index': 0,
+                            'target_code': target_code
+                        })
             else:
                 self.failed_rows.append(row)
 
-    def _add_pending_from_match(self, row: ParsedRow, match: Dict):
+    def _add_pending_from_match(self, row: ParsedRow, match: Dict, override_set_code: Optional[str] = None):
         self.pending_changes.append(PendingChange(
             api_card=match['card'],
-            set_code=match['code'], # Use the matched code
+            set_code=override_set_code if override_set_code else match['code'],
             rarity=match['variant'].set_rarity,
             quantity=row.quantity,
             condition=row.set_condition,
@@ -292,6 +340,7 @@ class UnifiedImportController:
             self.undo_btn.update()
 
         changes = 0
+        self.successful_imports = []
         for item in self.pending_changes:
             # Determine Quantity Delta
             delta = item.quantity
@@ -310,7 +359,9 @@ class UnifiedImportController:
                 image_id=item.image_id,
                 mode='ADD' # We always use ADD mode with pos/neg delta
             )
-            if modified: changes += 1
+            if modified:
+                changes += 1
+                self.successful_imports.append(f"{item.quantity}x {item.api_card.name} ({item.set_code} - {item.rarity})")
 
         if changes > 0 or (changes == 0 and self.import_mode == 'ADD'):
             # Note: 0 changes might happen if subtract removes non-existent cards, but we still save/notify
@@ -348,6 +399,11 @@ class UnifiedImportController:
             lines.append(f"{row.original_line} | No matching set code found in DB for {row.set_prefix}-{row.language}{row.number}")
         ui.download("\n".join(lines).encode('utf-8'), "import_failures.txt")
 
+    def download_success_report(self):
+        if not self.successful_imports: return
+        lines = ["Quantity Name (Set - Rarity)"] + self.successful_imports
+        ui.download("\n".join(lines).encode('utf-8'), "import_success.txt")
+
     def open_ambiguity_dialog(self):
         if not self.ambiguous_rows: return
 
@@ -384,9 +440,9 @@ class UnifiedImportController:
                 ui.notify(f"Auto-selected {count} rows.")
 
             with ui.row().classes('gap-2 q-mb-md'):
-                ui.button("Set All Standard (e.g. DE001)", on_click=lambda: set_all(0)).props('outline size=sm')
-                ui.button("Set All Legacy (e.g. G001)", on_click=lambda: set_all(1)).props('outline size=sm')
-                ui.button("Set All No-Region (e.g. 001)", on_click=lambda: set_all(2)).props('outline size=sm')
+                ui.button("Set All Standard (e.g. DE001)", on_click=lambda: set_all(0)).props('outline size=sm color=white')
+                ui.button("Set All Legacy (e.g. G001)", on_click=lambda: set_all(1)).props('outline size=sm color=white')
+                ui.button("Set All No-Region (e.g. 001)", on_click=lambda: set_all(2)).props('outline size=sm color=white')
 
             with ui.scroll_area().classes('h-96 w-full'):
                 for item in self.ambiguous_rows:
@@ -407,7 +463,8 @@ class UnifiedImportController:
                     for item in self.ambiguous_rows:
                         idx = item['selected_index']
                         match = item['matches'][idx]
-                        self._add_pending_from_match(item['row'], match)
+                        target = item.get('target_code')
+                        self._add_pending_from_match(item['row'], match, override_set_code=target)
                     self.ambiguous_rows = []
                     self.refresh_status_ui()
                     dialog.close()
@@ -421,6 +478,11 @@ class UnifiedImportController:
 
         with self.status_container:
             # Stats
+            if self.successful_imports and not self.pending_changes:
+                with ui.row().classes('items-center gap-2'):
+                    ui.label(f"Last Import: {len(self.successful_imports)} items added").classes('text-positive font-bold text-lg')
+                    ui.button("Download Report", on_click=self.download_success_report).props('flat color=positive')
+
             if self.pending_changes:
                 ui.label(f"Ready to Import: {len(self.pending_changes)} items").classes('text-positive font-bold text-lg')
 
@@ -577,9 +639,13 @@ def import_tools_page():
                     .classes('bg-red-500 text-white').props('flat')
                 controller.undo_btn.visible = False
 
-                controller.import_btn = ui.button('Import', on_click=controller.apply_import) \
-                    .classes('bg-primary text-white text-lg px-8')
-                controller.import_btn.enabled = False
+                with ui.row().classes('gap-4 items-center'):
+                    ui.button('Scan Again', on_click=controller.process_current_file, icon='refresh') \
+                        .props('outline color=warning')
+
+                    controller.import_btn = ui.button('Import', on_click=controller.apply_import) \
+                        .classes('bg-primary text-white text-lg px-8')
+                    controller.import_btn.enabled = False
 
         # --- MERGE CARD ---
         with ui.card().classes('w-full bg-dark border border-gray-700 p-6'):

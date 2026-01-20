@@ -1,5 +1,13 @@
+import sys
+from unittest.mock import MagicMock
+
+# Mock nicegui before imports to avoid runtime dependency
+sys.modules['nicegui'] = MagicMock()
+sys.modules['nicegui.ui'] = MagicMock()
+sys.modules['nicegui.events'] = MagicMock()
+
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch, AsyncMock
 import json
 from src.ui.import_tools import UnifiedImportController, PendingChange
 from src.core.models import ApiCard, ApiCardSet, ApiCardImage

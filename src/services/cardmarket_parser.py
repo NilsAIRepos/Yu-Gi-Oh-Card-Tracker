@@ -40,6 +40,8 @@ class CardmarketParser:
     # Reverse mapping for rarities (Abbr -> Full Name)
     # Note: Some abbreviations might be ambiguous or missing, we do our best.
     RARITY_MAP = {v: k for k, v in RARITY_ABBREVIATIONS.items()}
+    # Manual overrides for Cardmarket specific codes that differ from our internal standard
+    RARITY_MAP['QSCR'] = 'Quarter Century Secret Rare'
 
     # Regex to parse the line
     # Format: Qty Name Number Lang Condition SetPrefix Rarity [First Edition] Price Currency
