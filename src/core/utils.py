@@ -139,6 +139,49 @@ def extract_language_code(set_code: str) -> str:
     # Case 2: No region code (e.g. SDY-006) -> Usually EN (NA print)
     return 'EN'
 
+def is_set_code_compatible(set_code: str, language: str) -> bool:
+    """
+    Checks if a set code is compatible with the target language.
+    Compatible means:
+    1. The code has NO region identifier (e.g. LOB-001) -> Treated as neutral/base.
+    2. The code has a region identifier that MATCHES the target language (e.g. LOB-DE001 for DE).
+    3. The code has a legacy region identifier that MATCHES the target language (e.g. LOB-G001 for DE).
+
+    Incompatible means:
+    - The code has a region identifier for a DIFFERENT language (e.g. LOB-EN001 for DE).
+    """
+    target_lang = language.upper()
+
+    # Extract Region
+    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
+    if match:
+        region = match.group(2).upper()
+
+        # Resolve to standard language code
+        # If region is not in map, assume it's some specific code we don't know, treat as mismatch unless equal?
+        # But our map covers standard ones.
+        mapped_lang = REGION_TO_LANGUAGE_MAP.get(region)
+
+        if mapped_lang:
+            return mapped_lang == target_lang
+        else:
+            # Unknown region code. Safe to assume incompatible?
+            # Or maybe compatible if we don't know it?
+            # Safest is strict check.
+            return False
+
+    # No region code (e.g. LOB-001) -> Compatible (Neutral/Base)
+    return True
+
+def get_legacy_code(prefix: str, number: str, language: str) -> Optional[str]:
+    """
+    Returns the legacy format code (e.g. LOB-G020) if a legacy mapping exists for the language.
+    """
+    legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(language.upper())
+    if legacy_char:
+        return f"{prefix}-{legacy_char}{number}"
+    return None
+
 def generate_variant_id(card_id: int, set_code: str, rarity: str, image_id: Optional[int] = None) -> str:
     """
     Generates a deterministic unique ID for a card variant using MD5.

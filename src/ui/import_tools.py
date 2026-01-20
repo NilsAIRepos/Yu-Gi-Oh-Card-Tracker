@@ -6,9 +6,10 @@ import uuid
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
+import re
 from src.core.persistence import persistence
 from src.core.models import Collection, ApiCard, ApiCardSet
-from src.core.utils import LANGUAGE_TO_LEGACY_REGION_MAP, normalize_set_code
+from src.core.utils import LANGUAGE_TO_LEGACY_REGION_MAP, normalize_set_code, is_set_code_compatible, get_legacy_code
 from src.core.constants import RARITY_ABBREVIATIONS
 from src.services.ygo_api import ygo_service
 from src.services.collection_editor import CollectionEditor
@@ -239,29 +240,36 @@ class UnifiedImportController:
 
         # Match Rows
         for row in rows:
-            # Construct Target Set Code (Standard format preferred for new entries)
-            target_code = f"{row.set_prefix}-{row.language}{row.number}"
             base_code = f"{row.set_prefix}-{row.number}"
 
-            # Gather all potential variants for this card (ignoring rarity for now)
-            # We look up by Exact Candidates AND Base Code
-            potential_variants = []
+            # 1. Gather All Siblings from DB (Base Code matches)
+            # These include compatible AND incompatible variants (e.g. LOB-EN020)
+            # We look up by Base Code primarily.
+            # We also used to look up by Target Code, but we haven't defined Target Code yet.
+            # Actually, to find ALL siblings, we should look up by Base Code + any potential candidates.
+            # But Base Code lookup should cover most "siblings" that share the prefix-number.
+            # However, sometimes codes differ slightly? No, Base Code is the common denominator.
+
+            all_siblings = []
             seen_variant_ids = set()
 
-            # 1. Define Lookup Keys
-            lookup_keys = [target_code]
-            legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(row.language)
-            if legacy_char:
-                lookup_keys.append(f"{row.set_prefix}-{legacy_char}{row.number}")
-            lookup_keys.append(base_code)
+            # We generate temporary potential targets just for lookup keys (including legacy)
+            # to ensure we find everything even if base code logic is flawed (though it shouldn't be).
+            # But simpler: Just look up Base Code + Standard Target + Legacy Target candidates?
 
-            # 2. Collect DB Matches
+            potential_lookup_targets = [f"{row.set_prefix}-{row.language}{row.number}"]
+            legacy_candidate = get_legacy_code(row.set_prefix, row.number, row.language)
+            if legacy_candidate: potential_lookup_targets.append(legacy_candidate)
+
+            lookup_keys = set(potential_lookup_targets)
+            lookup_keys.add(base_code)
+
             for key in lookup_keys:
                 if key in self.db_lookup:
                     for entry in self.db_lookup[key]:
                         vid = entry['variant'].variant_id
                         if vid not in seen_variant_ids:
-                            potential_variants.append({
+                            all_siblings.append({
                                 'card': entry['card'],
                                 'variant': entry['variant'],
                                 'code': entry['variant'].set_code, # Keep actual DB code
@@ -269,51 +277,110 @@ class UnifiedImportController:
                             })
                             seen_variant_ids.add(vid)
 
-            # 3. Analyze Matches
-            # Exact Match: Rarity AND Set Code match
-            exact_matches = []
-            for m in potential_variants:
-                if m['rarity'] == row.set_rarity:
-                    # Check if set code is "close enough" (Exact or Base match)
-                    # We consider it a match if the DB code matches one of our lookup keys
-                    # OR if we found it via base code lookup (implies it's the same card/slot)
-                    exact_matches.append(m)
+            # 2. Identify Target Codes (Virtual Candidates) based on Siblings
+            target_codes = []
+            std_target = f"{row.set_prefix}-{row.language}{row.number}"
+            target_codes.append(std_target) # Always add standard
 
-            if len(exact_matches) == 1:
-                # Perfect Single Match
-                # Use target_code for the import (normalizing to user's file region preference usually)
-                # But if we matched an exact legacy code (e.g. LOB-E001), maybe preserve it?
-                # Requirement: "No matching set code found in DB for MRD-DE032 while MRD-032... exist"
-                # If we found it via base code (MRD-032), we map to target_code (MRD-DE032) usually.
-                m = exact_matches[0]
-                self._add_pending_from_match(row, m, override_set_code=target_code)
+            if legacy_candidate and legacy_candidate != std_target:
+                # Only add legacy target if we observe legacy format in siblings OR no siblings
+                # Check for 1-letter region codes in siblings
+                has_legacy_sibling = False
+                for s in all_siblings:
+                    # Check region length of sibling code
+                    m = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', s['code'])
+                    if m:
+                        region = m.group(2)
+                        if len(region) == 1:
+                            has_legacy_sibling = True
+                            break
 
-            elif len(exact_matches) > 1:
-                # Ambiguity: Multiple variants have matching rarity (e.g. same card, same rarity, diff codes in DB?)
-                self._add_ambiguity(row, potential_variants, target_code, row.set_rarity)
+                if has_legacy_sibling or not all_siblings:
+                    target_codes.append(legacy_candidate)
+
+            # 3. Filter Compatible Matches (for Set Code selection)
+            compatible_matches = [
+                m for m in all_siblings
+                if is_set_code_compatible(m['code'], row.language)
+            ]
+
+            # 4. Determine Valid Set Code Options
+            # Union of Compatible Matches (from DB) and Target Codes (Virtual)
+            valid_code_options = set()
+            for m in compatible_matches:
+                valid_code_options.add(m['code'])
+            for t in target_codes:
+                valid_code_options.add(t)
+
+            valid_code_options = sorted(list(valid_code_options))
+
+            # 5. Resolution Logic
+
+            # Check for Perfect Match in Compatible Matches (Code + Rarity)
+            # If we find exactly one compatible match that also matches rarity, that's a strong candidate.
+            # But we must also consider if the user *prefers* the Target Code (e.g. LOB-DE020) over a neutral DB match (LOB-020).
+            # If LOB-020 exists and matches rarity, and LOB-DE020 is target.
+            # Ambiguity? LOB-020 vs LOB-DE020. User probably wants LOB-DE020 but DB has LOB-020.
+            # Current logic: If multiple valid options, it's ambiguous.
+
+            if len(valid_code_options) == 1:
+                # Only one valid code option (e.g. RA01-DE049, where RA01-EN049 is incompatible).
+                single_code = valid_code_options[0]
+
+                # Verify Rarity Validity
+                # We check if the requested rarity exists in ANY sibling (compatible or not).
+                # (e.g. RA01-DE049 is target, we check RA01-EN049 to see if "Common" exists)
+
+                rarity_found_in_siblings = False
+                sibling_match = None
+                for s in all_siblings:
+                    if s['rarity'] == row.set_rarity:
+                        rarity_found_in_siblings = True
+                        sibling_match = s
+                        break
+
+                if rarity_found_in_siblings:
+                    # Auto-Resolve
+                    # If the single code corresponds to an existing DB match, use it directly.
+                    # Else (it's a new virtual target), use the sibling match for card info.
+
+                    # Find if single_code is in compatible_matches
+                    existing_match = next((m for m in compatible_matches if m['code'] == single_code and m['rarity'] == row.set_rarity), None)
+
+                    if existing_match:
+                        self._add_pending_from_match(row, existing_match)
+                    else:
+                        # New Target Code. Use sibling for card data.
+                        self._add_pending_from_match(row, sibling_match, override_set_code=single_code)
+                else:
+                    # Rarity Mismatch Ambiguity
+                    self._add_ambiguity(row, compatible_matches, all_siblings, target_codes, row.set_rarity)
 
             else:
-                # No Exact Rarity Match
-                if potential_variants:
-                    # We found the Set Code (or Base Code), but NOT the Rarity.
-                    # This is the "Rarity Ambiguity" case.
-                    self._add_ambiguity(row, potential_variants, target_code, row.set_rarity)
+                # Multiple Valid Code Options (e.g. LOB-020, LOB-DE020)
+                # OR Zero Valid Options (shouldn't happen if we added targets, unless empty targets?)
+                if not valid_code_options and not all_siblings:
+                     self.failed_rows.append(row)
                 else:
-                    # No Set Code match at all
-                    self.failed_rows.append(row)
+                     # Ambiguity
+                     self._add_ambiguity(row, compatible_matches, all_siblings, target_codes, row.set_rarity)
 
-    def _add_ambiguity(self, row, matches, default_set_code, default_rarity):
-        # Select default card if possible (take first match)
-        default_card = matches[0]['card'] if matches else None
+    def _add_ambiguity(self, row, compatible_matches, all_siblings, target_codes, default_rarity):
+        # Select default card if possible (take first sibling)
+        default_card = all_siblings[0]['card'] if all_siblings else None
+
+        # Default Set Code: Prefer the standard target code if available
+        default_set_code = target_codes[0] if target_codes else (compatible_matches[0]['code'] if compatible_matches else "")
 
         self.ambiguous_rows.append({
             'row': row,
-            'matches': matches, # Context for UI
+            'matches': compatible_matches, # Only compatible matches for UI list
+            'all_siblings': all_siblings,  # All siblings for Rarity lookup
+            'target_codes': target_codes,
             'selected_set_code': default_set_code,
             'selected_rarity': default_rarity,
             'selected_card': default_card,
-            'include': True,
-            'target_code': default_set_code
+            'include': True
         })
 
     def _add_pending_from_match(self, row: ParsedRow, match: Dict, override_set_code: Optional[str] = None):
@@ -494,9 +561,6 @@ class UnifiedImportController:
     def open_ambiguity_dialog(self):
         if not self.ambiguous_rows: return
 
-        # Prepare Rarity Options
-        rarity_options = sorted(list(RARITY_ABBREVIATIONS.keys()))
-
         with ui.dialog() as dialog, ui.card().classes('w-full max-w-6xl bg-dark border border-gray-700'):
             ui.label("Resolve Ambiguities").classes('text-h6')
             ui.label("Cards with missing Set Code/Rarity combinations or multiple matches.").classes('text-caption text-grey')
@@ -504,48 +568,83 @@ class UnifiedImportController:
             # Declare container ref
             rows_container = None
 
+            def get_valid_rarities(item):
+                """
+                Returns available rarities based on the selected set code.
+                - If set code is Existing (in compatible matches): Return ONLY that variant's rarity.
+                - If set code is New (Target): Return ALL rarities found in ANY sibling (all_siblings).
+                """
+                selected_code = item['selected_set_code']
+
+                # Check if selected code is an existing compatible match
+                existing_match = next((m for m in item['matches'] if m['code'] == selected_code), None)
+
+                if existing_match:
+                    # Existing variant: Can only have its defined rarity
+                    # We return a dict or list. Since select expects options...
+                    return [existing_match['rarity']]
+
+                # New/Target Code: Can borrow rarity from any sibling
+                # Collect all unique rarities from all_siblings
+                rarities = set()
+                for s in item['all_siblings']:
+                    rarities.add(s['rarity'])
+
+                return sorted(list(rarities))
+
             def render_rows():
                 if not rows_container: return
                 rows_container.clear()
                 with rows_container:
                     for item in self.ambiguous_rows:
                         row = item['row']
-                        matches = item['matches']
 
-                        # Prepare Set Code Options: Matches + Target Code
+                        # Prepare Set Code Options: Matches + Target Codes
                         code_opts = {}
-                        if item.get('target_code'):
-                             code_opts[item['target_code']] = f"{item['target_code']} (New/Target)"
 
-                        for m in matches:
+                        # 1. Targets (New)
+                        for t in item['target_codes']:
+                            code_opts[t] = f"{t} (New)"
+
+                        # 2. Existing Compatible Matches
+                        for m in item['matches']:
                             code_opts[m['code']] = f"{m['code']} (Existing)"
 
                         # Ensure selected value is in options (fallback)
                         if item['selected_set_code'] not in code_opts:
                             code_opts[item['selected_set_code']] = item['selected_set_code']
 
+                        # Prepare Rarity Options (Dynamic)
+                        valid_rarities = get_valid_rarities(item)
+                        # If selected rarity is invalid (e.g. switched set code), reset it to first valid
+                        if item['selected_rarity'] not in valid_rarities and valid_rarities:
+                            item['selected_rarity'] = valid_rarities[0]
+
                         with ui.row().classes('w-full items-center gap-2 q-mb-sm border-b border-gray-800 pb-2'):
                             # 1. Include Checkbox
                             ui.checkbox(value=item['include'],
                                         on_change=lambda e, it=item: it.update({'include': e.value})).classes('w-10 justify-center')
 
-                            # 2. Card Info
+                            # 2. Card Info (Added Language)
                             with ui.column().classes('w-1/4'):
                                 ui.label(f"{row.quantity}x {row.name}").classes('font-bold')
-                                ui.label(f"Orig: {row.set_prefix} | {row.rarity_abbr}").classes('text-xs text-grey-5')
+                                ui.label(f"Orig: {row.set_prefix} | {row.language} | {row.rarity_abbr}").classes('text-xs text-grey-5')
 
                             # 3. Set Code Dropdown
                             def update_code(e, it=item):
                                 it['selected_set_code'] = e.value
-                                pass
+                                render_rows() # Re-render to update rarity options
 
                             ui.select(options=code_opts, value=item['selected_set_code'],
                                       on_change=lambda e: update_code(e)) \
                                       .classes('w-1/4').props('dark dense options-dense')
 
                             # 4. Rarity Dropdown
-                            ui.select(options=rarity_options, value=item['selected_rarity'],
-                                      on_change=lambda e, it=item: it.update({'selected_rarity': e.value})) \
+                            def update_rarity(e, it=item):
+                                it['selected_rarity'] = e.value
+
+                            ui.select(options=valid_rarities, value=item['selected_rarity'],
+                                      on_change=lambda e: update_rarity(e)) \
                                       .classes('w-1/4').props('dark dense options-dense')
 
             def toggle_all(e):
