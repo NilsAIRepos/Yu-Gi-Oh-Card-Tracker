@@ -1131,9 +1131,9 @@ class BulkAddPage:
                          lang_code = item.language.strip().upper()
                          country_code = LANGUAGE_COUNTRY_MAP.get(lang_code)
                          if country_code:
-                             ui.element('img').props(f'src="https://flagcdn.com/h24/{country_code}.png" alt="{lang_code}"').classes('absolute top-1 left-1 h-3 w-auto shadow-black drop-shadow-md rounded bg-black/30')
+                             ui.element('img').props(f'src="https://flagcdn.com/h24/{country_code}.png" alt="{lang_code}"').classes('absolute top-0.5 left-0.5 h-3 w-[18px] shadow-black drop-shadow-md rounded bg-black/30')
                          else:
-                             ui.label(lang_code).classes('absolute top-1 left-1 text-xs font-bold shadow-black drop-shadow-md bg-black/30 rounded px-1')
+                             ui.label(lang_code).classes('absolute top-0.5 left-0.5 text-xs font-bold shadow-black drop-shadow-md bg-black/30 rounded px-1')
 
                          ui.label(f"{item.quantity}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs shadow-md')
 
