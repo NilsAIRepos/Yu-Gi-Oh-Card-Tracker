@@ -15,8 +15,40 @@ from typing import List, Optional, Any, Dict
 import logging
 import uuid
 import asyncio
+import re
 
 logger = logging.getLogger(__name__)
+
+def get_grouping_key_parts(set_code: str):
+    """
+    Parses set code into (Prefix, Category, Number).
+    Category distinguishes between "Standard" (2-letter region or merged languages),
+    "Legacy EU" (1-letter region), and "NA" (No region).
+    """
+    # Case 1: Code-RegionNumber (e.g. RA01-EN054, LOB-E001)
+    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
+    if match:
+        prefix = match.group(1).upper()
+        region = match.group(2)
+        number = match.group(3)
+
+        # 1-letter region -> Legacy EU (E, G, F, I, S, P)
+        if len(region) == 1:
+            category = 'LEGACY_EU'
+        else:
+            # 2+ letter region -> Standard (EN, DE, FR, etc.) - merged
+            category = 'STD'
+        return prefix, category, number
+
+    # Case 2: Code-Number (e.g. SDY-006) -> NA
+    match = re.match(r'^([A-Za-z0-9]+)-(\d+)$', set_code)
+    if match:
+        prefix = match.group(1).upper()
+        number = match.group(2)
+        return prefix, 'NA', number
+
+    # Fallback
+    return set_code, 'UNKNOWN', '000'
 
 @dataclass
 class LibraryEntry:
@@ -581,11 +613,11 @@ class BulkAddPage:
                 if c.race: st_races.add(c.race)
 
             if c.card_sets:
-                # Group sets by (normalized_code, rarity)
+                # Group sets by (Prefix, Category, Number, Rarity)
                 grouped_sets = {}
                 for s in c.card_sets:
-                    norm_code = normalize_set_code(s.set_code)
-                    key = (norm_code, s.set_rarity)
+                    prefix, cat, num = get_grouping_key_parts(s.set_code)
+                    key = (prefix, cat, num, s.set_rarity)
                     if key not in grouped_sets:
                         grouped_sets[key] = []
                     grouped_sets[key].append(s)
@@ -930,6 +962,53 @@ class BulkAddPage:
             hide_header_stats=False
         )
 
+    def open_new_collection_dialog(self):
+        with ui.dialog() as d, ui.card().classes('w-96 bg-gray-900 border border-gray-700'):
+            ui.label('Create New Collection').classes('text-h6')
+
+            name_input = ui.input('Collection Name').classes('w-full').props('autofocus')
+
+            async def create():
+                name = name_input.value.strip()
+                if not name:
+                    ui.notify('Please enter a name.', type='warning')
+                    return
+
+                # Ensure extension
+                if not name.endswith(('.json', '.yaml', '.yml')):
+                    name += '.json'
+
+                # Check if exists
+                existing = persistence.list_collections()
+                if name in existing:
+                    ui.notify(f'Collection "{name}" already exists.', type='negative')
+                    return
+
+                # Create empty collection
+                new_col = Collection(name=name.replace('.json', '').replace('.yaml', '').replace('.yml', ''), cards=[])
+                try:
+                    await run.io_bound(persistence.save_collection, new_col, name)
+                    ui.notify(f'Collection "{name}" created.', type='positive')
+
+                    # Update state
+                    self.state['available_collections'] = persistence.list_collections()
+                    self.state['selected_collection'] = name
+                    persistence.save_ui_state({'bulk_selected_collection': name})
+
+                    d.close()
+                    # Reload header and data
+                    self.render_header.refresh()
+                    await self.load_collection_data()
+
+                except Exception as e:
+                    logger.error(f"Error creating collection: {e}")
+                    ui.notify(f"Error creating collection: {e}", type='negative')
+
+            with ui.row().classes('w-full justify-end q-mt-md'):
+                ui.button('Cancel', on_click=lambda: [d.close(), self.render_header.refresh()]).props('flat')
+                ui.button('Create', on_click=create).props('color=positive')
+        d.open()
+
     @ui.refreshable
     def render_header(self):
         with ui.row().classes('w-full items-center gap-4 p-4 bg-gray-900 rounded-lg border border-gray-800 mb-4 shadow-lg'):
@@ -940,8 +1019,16 @@ class BulkAddPage:
              ui.separator().props('vertical')
 
              cols = {c: c.replace('.json', '').replace('.yaml', '') for c in self.state['available_collections']}
+             cols['__NEW_COLLECTION__'] = '+ New Collection'
+
+             async def handle_col_change(e):
+                 if e.value == '__NEW_COLLECTION__':
+                     self.open_new_collection_dialog()
+                 else:
+                     self.on_collection_change(e.value)
+
              ui.select(cols, label='Target Collection', value=self.state['selected_collection'],
-                       on_change=lambda e: self.on_collection_change(e.value)).classes('w-48')
+                       on_change=handle_col_change).classes('w-48')
 
              ui.separator().props('vertical')
 
