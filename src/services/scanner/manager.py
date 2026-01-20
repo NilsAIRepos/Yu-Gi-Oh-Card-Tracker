@@ -253,6 +253,7 @@ class ScannerManager:
                     _, buffer = cv2.imencode('.jpg', debug_frame_raw)
                     b64_debug = base64.b64encode(buffer).decode('utf-8')
                     self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+                    logger.info(f"Worker: Manual scan image captured and stored in debug state (Length: {len(self.debug_state['captured_image'])})")
 
                     if contour is not None:
                          force_scan = True

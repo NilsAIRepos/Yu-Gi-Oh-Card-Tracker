@@ -312,41 +312,18 @@ class ScanPage:
             return
 
         try:
-            # 1. Status Update
-            if self.status_label:
-                self.status_label.text = f"Status: {scanner_manager.get_status()}"
-
-            # 2. Process Logic (Backend)
-            await scanner_manager.process_pending_lookups()
-
-            # 3. Draw Overlay (from latest server processing)
-            # The contour lags slightly behind the video, but usually acceptable
-            contour = scanner_manager.get_live_contour()
-            if contour:
-                await ui.run_javascript(f'drawOverlay({contour})')
-            else:
-                await ui.run_javascript('clearOverlay()')
-
-            # 4. Check for new results
-            result = scanner_manager.get_latest_result()
-            if result:
-                self.add_scanned_card(result)
-
-            # 5. Check for notifications
-            note = scanner_manager.get_latest_notification()
-            if note:
-                 type_, msg = note
-                 ui.notify(msg, type=type_)
-
-            # 6. Update Debug Info
+            # 1. Update Debug Info (PRIORITY)
+            # Moved to top to ensure immediate feedback on manual scans, even if processing blocks
             if self.debug_mode:
                 snapshot = scanner_manager.get_debug_snapshot()
 
                 # Update Captured Image (Raw with annotations)
                 if self.captured_img:
                     src = snapshot.get("captured_image")
-                    if src != self.captured_img.source: # Minimal update check
-                         self.captured_img.set_source(src)
+                    if src != self.captured_img.source:  # Minimal update check
+                        # logger.info(f"UI: Setting captured image source (Length: {len(src) if src else 0})")
+                        self.captured_img.set_source(src)
+                        self.captured_img.update()
 
                 # Update Result Label
                 if self.scan_result_label:
@@ -354,7 +331,8 @@ class ScanPage:
 
                 # Update Warped Image
                 if snapshot.get("warped_image") and self.debug_img:
-                     self.debug_img.set_source(snapshot["warped_image"])
+                    self.debug_img.set_source(snapshot["warped_image"])
+                    self.debug_img.update()
 
                 # Update Stats
                 if self.debug_stats_label:
@@ -366,7 +344,34 @@ class ScanPage:
 
                 # Update Logs
                 if self.debug_log_label and snapshot.get("logs"):
-                     self.debug_log_label.text = "\n".join(snapshot["logs"])
+                    self.debug_log_label.text = "\n".join(snapshot["logs"])
+
+            # 2. Status Update
+            if self.status_label:
+                self.status_label.text = f"Status: {scanner_manager.get_status()}"
+
+            # 3. Process Logic (Backend)
+            # This can block/await while resolving cards, so it must happen AFTER critical UI updates
+            await scanner_manager.process_pending_lookups()
+
+            # 4. Draw Overlay (from latest server processing)
+            # The contour lags slightly behind the video, but usually acceptable
+            contour = scanner_manager.get_live_contour()
+            if contour:
+                await ui.run_javascript(f'drawOverlay({contour})')
+            else:
+                await ui.run_javascript('clearOverlay()')
+
+            # 5. Check for new results
+            result = scanner_manager.get_latest_result()
+            if result:
+                self.add_scanned_card(result)
+
+            # 6. Check for notifications
+            note = scanner_manager.get_latest_notification()
+            if note:
+                type_, msg = note
+                ui.notify(msg, type=type_)
 
         except Exception as e:
             logger.error(f"Error in ScanPage update_loop: {e}")
