@@ -28,6 +28,7 @@ async def upload_frame(file: UploadFile):
 JS_CAMERA_CODE = """
 <script>
 window.scannerVideo = null;
+window.debugVideo = null;
 window.scannerStream = null;
 window.overlayCanvas = null;
 window.overlayCtx = null;
@@ -59,6 +60,9 @@ async function startCamera(deviceId, uploadUrl) {
         window.scannerVideo.srcObject = window.scannerStream;
         await window.scannerVideo.play();
 
+        // Also attach to debug video if it exists
+        attachDebugStream();
+
         if (window.overlayCanvas) {
             window.overlayCanvas.width = window.scannerVideo.videoWidth;
             window.overlayCanvas.height = window.scannerVideo.videoHeight;
@@ -72,6 +76,14 @@ async function startCamera(deviceId, uploadUrl) {
     }
 }
 
+function attachDebugStream() {
+    window.debugVideo = document.getElementById('debug-video');
+    if (window.debugVideo && window.scannerStream) {
+        window.debugVideo.srcObject = window.scannerStream;
+        window.debugVideo.play().catch(e => console.log("Debug video play error:", e));
+    }
+}
+
 function stopCamera() {
     window.isStreaming = false;
     if (window.streamInterval) {
@@ -82,6 +94,9 @@ function stopCamera() {
         const tracks = window.scannerVideo.srcObject.getTracks();
         tracks.forEach(track => track.stop());
         window.scannerVideo.srcObject = null;
+    }
+    if (window.debugVideo) {
+        window.debugVideo.srcObject = null;
     }
     clearOverlay();
 }
@@ -156,11 +171,22 @@ async function getVideoDevices() {
 }
 
 async function captureSingleFrame() {
-    if (!window.scannerVideo || window.scannerVideo.readyState < 2) return null;
+    // Try capturing from scanner video first, then debug video if needed
+    let videoSource = window.scannerVideo;
+    if (!videoSource || videoSource.readyState < 2) {
+        // Fallback or check debug video?
+        // Actually scannerVideo is the master. If it's paused or hidden, it should still work if stream is active.
+        if (window.debugVideo && window.debugVideo.readyState >= 2) {
+             videoSource = window.debugVideo;
+        } else {
+             return null;
+        }
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = window.scannerVideo.videoWidth;
-    canvas.height = window.scannerVideo.videoHeight;
-    canvas.getContext('2d').drawImage(window.scannerVideo, 0, 0);
+    canvas.width = videoSource.videoWidth;
+    canvas.height = videoSource.videoHeight;
+    canvas.getContext('2d').drawImage(videoSource, 0, 0);
     return canvas.toDataURL('image/jpeg', 0.95);
 }
 </script>
@@ -359,75 +385,98 @@ class ScanPage:
             ui.spinner(size='lg')
             return
 
-        with ui.grid(columns=3).classes('w-full gap-4'):
-            # Column 1: Input & Controls
-            with ui.column().classes('p-4 border rounded'):
-                ui.label("1. Input Source").classes('text-xl font-bold mb-4')
-                ui.upload(label="Upload Image", on_upload=self.handle_debug_upload, auto_upload=True).props('accept=.jpg,.png').classes('w-full')
-                ui.separator()
-                ui.button("Capture from Camera", on_click=self.handle_debug_capture, icon='camera_alt').classes('w-full')
+        # Changed to Grid with Card containers for "Larger Boxes" and Modern Look
+        with ui.grid().classes('grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full'):
+
+            # --- CARD 1: INPUT SOURCE ---
+            with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
+                ui.label("1. Input Source").classes('text-2xl font-bold text-primary')
+
+                # Camera Preview Area
+                with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
+                    ui.html('<video id="debug-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>')
+
+                # Controls
+                with ui.row().classes('w-full gap-2'):
+                    ui.button("Capture Frame", on_click=self.handle_debug_capture, icon='camera_alt').classes('flex-grow bg-accent text-black font-bold')
+
+                ui.separator().classes('bg-gray-600')
+                ui.upload(label="Or Upload Image", on_upload=self.handle_debug_upload, auto_upload=True).props('accept=.jpg,.png color=secondary').classes('w-full')
 
                 if self.debug_report.get('input_image_url'):
-                    ui.label("Input Image:").classes('font-bold mt-4')
-                    ui.image(self.debug_report['input_image_url']).classes('w-full h-auto border')
+                    ui.label("Analyzed Image:").classes('font-bold mt-2')
+                    ui.image(self.debug_report['input_image_url']).classes('w-full h-auto border rounded')
 
-            # Column 2: Visual Pipeline
-            with ui.column().classes('p-4 border rounded'):
-                ui.label("2. Visual Analysis").classes('text-xl font-bold mb-4')
+            # --- CARD 2: VISUAL PIPELINE ---
+            with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
+                ui.label("2. Visual Analysis").classes('text-2xl font-bold text-primary')
 
                 if self.debug_report.get('warped_image_url'):
-                    ui.label("Warped & Pre-processed:").classes('font-bold')
-                    ui.image(self.debug_report['warped_image_url']).classes('w-full h-auto border mb-2')
+                    ui.label("Perspective Warp:").classes('font-bold text-lg')
+                    ui.image(self.debug_report['warped_image_url']).classes('w-full h-auto border rounded mb-2')
+                else:
+                    ui.label("Waiting for input...").classes('text-gray-500 italic')
 
                 if self.debug_report.get('roi_viz_url'):
-                    ui.label("ROI Visualization:").classes('font-bold')
-                    ui.image(self.debug_report['roi_viz_url']).classes('w-full h-auto border mb-2')
+                    ui.label("Regions of Interest:").classes('font-bold text-lg')
+                    ui.image(self.debug_report['roi_viz_url']).classes('w-full h-auto border rounded mb-2')
 
                 crops = self.debug_report.get('crops', {})
-                if crops.get('set_id'):
-                    ui.label("Set ID Crop:").classes('font-bold')
-                    ui.image(crops['set_id']).classes('h-16 border mb-2')
+                if crops:
+                    ui.label("Extracted Crops:").classes('font-bold text-lg')
+                    with ui.row().classes('gap-4'):
+                        if crops.get('set_id'):
+                             with ui.column():
+                                ui.label("Set ID").classes('text-xs')
+                                ui.image(crops['set_id']).classes('h-12 border rounded')
+                        if crops.get('art'):
+                             with ui.column():
+                                ui.label("Artwork").classes('text-xs')
+                                ui.image(crops['art']).classes('h-32 w-32 object-contain border rounded')
 
-                if crops.get('art'):
-                    ui.label("Art Crop:").classes('font-bold')
-                    ui.image(crops['art']).classes('w-32 h-32 object-contain border')
 
-            # Column 3: Logic & Logs
-            with ui.column().classes('p-4 border rounded'):
-                ui.label("3. Pipeline Results").classes('text-xl font-bold mb-4')
+            # --- CARD 3: RESULTS & LOGS ---
+            with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
+                ui.label("3. Pipeline Results").classes('text-2xl font-bold text-primary')
 
                 results = self.debug_report.get('results', {})
                 if results:
-                    with ui.row().classes('w-full justify-between'):
-                         ui.label("Set ID:").classes('font-bold')
-                         ui.label(f"{results.get('set_id', 'N/A')}").classes('font-mono')
+                    with ui.column().classes('w-full gap-2 bg-gray-800 p-4 rounded'):
+                        with ui.row().classes('w-full justify-between items-center'):
+                             ui.label("Set ID:").classes('font-bold text-gray-300')
+                             ui.label(f"{results.get('set_id', 'N/A')}").classes('font-mono text-xl text-white')
 
-                    with ui.row().classes('w-full justify-between'):
-                         ui.label("OCR Conf:").classes('font-bold')
-                         conf = results.get('set_id_conf', 0)
-                         color = 'text-green-600' if conf > 60 else 'text-red-600'
-                         ui.label(f"{conf:.1f}%").classes(f'font-mono {color}')
+                        with ui.row().classes('w-full justify-between items-center'):
+                             ui.label("OCR Conf:").classes('font-bold text-gray-300')
+                             conf = results.get('set_id_conf', 0)
+                             color = 'text-green-400' if conf > 60 else 'text-red-400'
+                             ui.label(f"{conf:.1f}%").classes(f'font-mono text-lg {color}')
 
-                    with ui.row().classes('w-full justify-between'):
-                         ui.label("Language:").classes('font-bold')
-                         ui.label(f"{results.get('language', 'N/A')}")
+                        with ui.row().classes('w-full justify-between items-center'):
+                             ui.label("Language:").classes('font-bold text-gray-300')
+                             ui.label(f"{results.get('language', 'N/A')}").classes('text-lg text-white')
 
-                    with ui.row().classes('w-full justify-between'):
-                         ui.label("Art Match Score:").classes('font-bold')
-                         ui.label(f"{results.get('match_score', 0)}")
+                        with ui.row().classes('w-full justify-between items-center'):
+                             ui.label("Art Match Score:").classes('font-bold text-gray-300')
+                             ui.label(f"{results.get('match_score', 0)}").classes('text-lg text-white')
 
-                    ui.separator().classes('my-2')
-                    ui.label(f"Final Card: {results.get('card_name', 'Unknown')}").classes('text-lg font-bold text-primary')
+                    ui.separator().classes('my-2 bg-gray-600')
+                    ui.label(f"{results.get('card_name', 'Unknown')}").classes('text-2xl font-bold text-accent text-center w-full')
+                else:
+                    ui.label("No results yet.").classes('text-gray-500 italic')
 
-                ui.label("Pipeline Steps:").classes('font-bold mt-4')
+                ui.label("Execution Log:").classes('font-bold text-lg mt-4')
                 steps = self.debug_report.get('steps', [])
-                with ui.scroll_area().classes('h-64 border p-2 bg-gray-50'):
+                with ui.scroll_area().classes('h-64 border border-gray-600 p-2 bg-black rounded'):
                     for step in steps:
                         icon = 'check_circle' if step['status'] == 'OK' else 'error'
-                        color = 'green' if step['status'] == 'OK' else 'red'
-                        with ui.row().classes('items-center gap-2 mb-1'):
-                            ui.icon(icon, color=color)
-                            ui.label(f"{step['name']}: {step['details']}").classes('text-sm')
+                        color = 'text-green-500' if step['status'] == 'OK' else 'text-red-500'
+                        with ui.row().classes('items-center gap-2 mb-1 flex-nowrap'):
+                            ui.icon(icon).classes(color)
+                            ui.label(f"{step['name']}: {step['details']}").classes('text-sm text-gray-300 font-mono')
+
+        # Attach stream to debug video if available
+        ui.run_javascript('attachDebugStream()')
 
 def scan_page():
     def cleanup():
