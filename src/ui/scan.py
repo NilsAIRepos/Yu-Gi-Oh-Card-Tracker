@@ -14,22 +14,30 @@ logger = logging.getLogger(__name__)
 # Client-Side Camera Logic
 JS_CAMERA_CODE = """
 <script>
-var video = null;
-var stream = null;
-var overlayCanvas = null;
-var overlayCtx = null;
+// Use window globals to persist state across re-renders
+window.scannerVideo = null;
+window.scannerStream = null;
+window.overlayCanvas = null;
+window.overlayCtx = null;
 
 function initScanner() {
-    video = document.getElementById('scanner-video');
-    overlayCanvas = document.getElementById('overlay-canvas');
-    if (overlayCanvas) {
-        overlayCtx = overlayCanvas.getContext('2d');
+    window.scannerVideo = document.getElementById('scanner-video');
+    window.overlayCanvas = document.getElementById('overlay-canvas');
+    if (window.overlayCanvas) {
+        window.overlayCtx = window.overlayCanvas.getContext('2d');
     }
 }
 
 async function startCamera(deviceId) {
-    if (!video) initScanner();
-    if (stream) {
+    if (!window.scannerVideo) initScanner();
+
+    // Explicit check
+    if (!window.scannerVideo) {
+        console.error("startCamera: Video element not found!");
+        return false;
+    }
+
+    if (window.scannerStream) {
         stopCamera();
     }
     try {
@@ -40,15 +48,15 @@ async function startCamera(deviceId) {
                 height: { ideal: 720 }
             }
         };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (video) {
-            video.srcObject = stream;
-            await video.play();
+        window.scannerStream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (window.scannerVideo) {
+            window.scannerVideo.srcObject = window.scannerStream;
+            await window.scannerVideo.play();
 
             // Sync canvas size to video size
-            if (overlayCanvas) {
-                overlayCanvas.width = video.videoWidth;
-                overlayCanvas.height = video.videoHeight;
+            if (window.overlayCanvas) {
+                window.overlayCanvas.width = window.scannerVideo.videoWidth;
+                window.overlayCanvas.height = window.scannerVideo.videoHeight;
             }
         }
         return true;
@@ -59,26 +67,28 @@ async function startCamera(deviceId) {
 }
 
 function stopCamera() {
-    if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        stream = null;
+    if (window.scannerStream) {
+        window.scannerStream.getTracks().forEach(track => track.stop());
+        window.scannerStream = null;
     }
-    if (video) {
-        video.srcObject = null;
+    if (window.scannerVideo) {
+        window.scannerVideo.srcObject = null;
     }
     clearOverlay();
 }
 
 function captureFrame() {
-    if (!video || !stream) {
-        console.log("captureFrame: No video or stream");
-        return null;
-    }
+    // Attempt re-init if missing
+    if (!window.scannerVideo) initScanner();
+
+    if (!window.scannerVideo) return "ERR:NO_VIDEO_ELEMENT";
+    if (!window.scannerStream) return "ERR:NO_STREAM";
 
     // Get actual dimensions
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    if (vw === 0 || vh === 0) return null;
+    const vw = window.scannerVideo.videoWidth;
+    const vh = window.scannerVideo.videoHeight;
+
+    if (vw === 0 || vh === 0) return "ERR:DIM_ZERO";
 
     // Downscale if too large to prevent websocket saturation
     const maxDim = 800;
@@ -101,7 +111,7 @@ function captureFrame() {
 
     const ctx = canvas.getContext('2d');
     // Draw scaled image
-    ctx.drawImage(video, 0, 0, w, h);
+    ctx.drawImage(window.scannerVideo, 0, 0, w, h);
 
     // Return lower quality JPEG to reduce size
     var dataUrl = canvas.toDataURL('image/jpeg', 0.6);
@@ -109,36 +119,37 @@ function captureFrame() {
 }
 
 function drawOverlay(points) {
-    if (!overlayCanvas || !overlayCtx || !video) return;
+    if (!window.overlayCanvas || !window.overlayCtx || !window.scannerVideo) return;
 
     // Ensure canvas dimensions match video
-    if (overlayCanvas.width !== video.videoWidth || overlayCanvas.height !== video.videoHeight) {
-        overlayCanvas.width = video.videoWidth;
-        overlayCanvas.height = video.videoHeight;
+    if (window.overlayCanvas.width !== window.scannerVideo.videoWidth ||
+        window.overlayCanvas.height !== window.scannerVideo.videoHeight) {
+        window.overlayCanvas.width = window.scannerVideo.videoWidth;
+        window.overlayCanvas.height = window.scannerVideo.videoHeight;
     }
 
-    const w = overlayCanvas.width;
-    const h = overlayCanvas.height;
+    const w = window.overlayCanvas.width;
+    const h = window.overlayCanvas.height;
 
-    overlayCtx.clearRect(0, 0, w, h);
+    window.overlayCtx.clearRect(0, 0, w, h);
 
     if (!points || points.length < 4) return;
 
-    overlayCtx.beginPath();
-    overlayCtx.moveTo(points[0][0] * w, points[0][1] * h);
+    window.overlayCtx.beginPath();
+    window.overlayCtx.moveTo(points[0][0] * w, points[0][1] * h);
     for (let i = 1; i < points.length; i++) {
-        overlayCtx.lineTo(points[i][0] * w, points[i][1] * h);
+        window.overlayCtx.lineTo(points[i][0] * w, points[i][1] * h);
     }
-    overlayCtx.closePath();
+    window.overlayCtx.closePath();
 
-    overlayCtx.strokeStyle = '#00FF00';
-    overlayCtx.lineWidth = 4;
-    overlayCtx.stroke();
+    window.overlayCtx.strokeStyle = '#00FF00';
+    window.overlayCtx.lineWidth = 4;
+    window.overlayCtx.stroke();
 }
 
 function clearOverlay() {
-    if (overlayCtx && overlayCanvas) {
-        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    if (window.overlayCtx && window.overlayCanvas) {
+        window.overlayCtx.clearRect(0, 0, window.overlayCanvas.width, window.overlayCanvas.height);
     }
 }
 
@@ -169,6 +180,7 @@ class ScanPage:
         self.status_label = None
         self.camera_select = None
         self.is_active = False
+        self.last_capture_error = None # Track error to avoid spam
 
         # Debug UI
         self.debug_mode = False
@@ -275,13 +287,28 @@ class ScanPage:
                 try:
                     # Capture frame with timeout to prevent blocking
                     # Increased timeout to 4.0s to avoid dropping frames on slower connections
-                    b64 = await ui.run_javascript('captureFrame()', timeout=4.0)
-                    if b64:
+                    response = await ui.run_javascript('captureFrame()', timeout=4.0)
+
+                    if response and isinstance(response, str) and response.startswith("ERR:"):
+                        if response != self.last_capture_error:
+                            logger.warning(f"Client Capture Error: {response}")
+                            self.last_capture_error = response
+
+                        # Critical: If user requested manual scan but we failed to capture, notify them!
+                        if scanner_manager.manual_scan_requested:
+                            logger.error("Manual scan failed due to capture error.")
+                            ui.notify(f"Capture Failed: {response}", type='negative')
+                            # Reset flag to prevent stuck state
+                            scanner_manager.manual_scan_requested = False
+
+                    elif response:
+                        # Success
+                        self.last_capture_error = None
                         if scanner_manager.manual_scan_requested:
                             logger.info("Client sending frame for manual scan...")
-                        scanner_manager.push_frame(b64)
+                        scanner_manager.push_frame(response)
                     else:
-                        # If JS returns null (no video stream yet), we just wait.
+                        # Null response (no video stream yet or initialization pending)
                         pass
 
                     # Update Overlay
