@@ -950,7 +950,7 @@ class CollectionPage:
                     ui.label(cond_map.get(item.condition, item.condition[:2].upper())).classes('text-xs font-bold text-yellow-500')
                     ui.label("1st" if item.first_edition else "").classes('text-xs font-bold text-orange-400')
 
-                    flag = LANGUAGE_FLAG_MAP.get(item.language.upper(), item.language)
+                    flag = LANGUAGE_FLAG_MAP.get(item.language.strip().upper(), item.language)
                     ui.label(flag).classes('text-lg')
 
                     ui.label(f"${item.price:.2f}").classes('text-sm text-green-400')
@@ -980,7 +980,7 @@ class CollectionPage:
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if img_src: ui.image(img_src).classes('w-full h-full object-cover')
 
-                        flag = LANGUAGE_FLAG_MAP.get(item.language.upper(), item.language)
+                        flag = LANGUAGE_FLAG_MAP.get(item.language.strip().upper(), item.language)
                         ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
 
                         if item.is_owned:
