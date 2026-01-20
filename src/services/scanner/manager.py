@@ -248,6 +248,11 @@ class ScannerManager:
 
                     # Capture the RAW frame immediately for feedback
                     debug_frame_raw = frame.copy()
+
+                    # Check for Black Image (Camera not ready/covered)
+                    # Mean pixel intensity < 10 (out of 255) is essentially black
+                    is_black_image = np.mean(debug_frame_raw) < 10
+
                     if contour is not None:
                          cv2.drawContours(debug_frame_raw, [contour], -1, (0, 255, 0), 2)
 
@@ -257,7 +262,13 @@ class ScannerManager:
                     self.debug_state["capture_timestamp"] = time.time()
                     logger.info(f"Worker: Manual scan image captured and stored in debug state (Length: {len(self.debug_state['captured_image'])})")
 
-                    if contour is not None:
+                    if is_black_image:
+                         force_scan = False
+                         self.debug_state["scan_result"] = "ERR: Black Image"
+                         self._log_debug("Manual Scan: Black Image Detected")
+                         self.status_message = "Error: Black Image"
+                         self.notification_queue.put(("negative", "Error: Black Image Detected. Check Camera."))
+                    elif contour is not None:
                          force_scan = True
                          self.debug_state["scan_result"] = "Card Detected"
                          self._log_debug("Manual Scan: Proceeding with contour")
