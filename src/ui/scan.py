@@ -276,11 +276,11 @@ class ScanPage:
             logger.error(f"Error saving collection: {e}")
             ui.notify(f"Error saving collection: {e}", type='negative')
 
-    async def handle_debug_upload(self, e: events.UploadEvent):
+    async def handle_debug_upload(self, e: events.UploadEventArguments):
         self.debug_loading = True
         self.render_debug_lab.refresh()
         try:
-            content = e.content.read()
+            content = await e.file.read()
             report = await scanner_manager.analyze_static_image(content)
             self.debug_report = report
         except Exception as err:
