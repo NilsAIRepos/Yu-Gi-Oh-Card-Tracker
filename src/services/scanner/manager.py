@@ -468,6 +468,9 @@ class ScannerManager:
                 self.debug_state["track2_set_id"] = track2_result["set_id"]
                 self.debug_state["track2_conf"] = track2_result["set_id_conf"]
 
+                if track2_result.get("track_type") == "full_frame_easyocr":
+                     self._log_debug("Track 2 used EasyOCR")
+
             # --- Decision Logic ---
             final_set_id = t1_set_id
             final_conf = t1_conf

@@ -9,6 +9,7 @@ try:
     import pytesseract
     from pytesseract import Output
     from langdetect import detect, LangDetectException
+    import easyocr
 except ImportError:
     pass  # Handled in __init__.py
 
@@ -44,6 +45,19 @@ class CardScanner:
             "art": self.roi_art,
             "name": self.roi_name
         }
+
+        # Lazy Init
+        self.reader = None
+
+    def get_reader(self):
+        if self.reader is None:
+            logger.info("Initializing EasyOCR Reader...")
+            # Use English. 'gpu=False' if no CUDA, but usually it auto-detects.
+            # Explicitly disabling GPU for safety on unknown host unless we know it's there?
+            # Actually, standard is gpu=True which falls back to CPU if needed usually.
+            # But let's verify if 'easyocr' supports safe fallback. It generally does.
+            self.reader = easyocr.Reader(['en'], gpu=True)
+        return self.reader
 
     def preprocess_image(self, frame):
         """Basic preprocessing for contour detection."""
@@ -370,92 +384,79 @@ class CardScanner:
     def scan_full_frame(self, frame) -> Dict[str, Any]:
         """
         Track 2: Scans the entire frame for text without relying on contour detection.
-        Useful when the card is not clearly defined against the background.
+        Uses EasyOCR for robust scene text detection.
         """
         # 1. Resize strategy
-        # For small text like Set IDs, higher resolution is better.
-        # But full 1080p+ might be slow.
-        # A width of 1500px is a good balance for full-frame text detection.
+        # EasyOCR needs higher resolution for small text on full frames.
+        # 1600px with mag_ratio=1.5 seems to work best for detection.
         h, w = frame.shape[:2]
-        target_width = 1500
-        if w != target_width:
+        target_width = 1600
+        if w > target_width:
             scale = target_width / w
             frame_resized = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
         else:
             frame_resized = frame
 
-        # 2. Preprocess
-        gray = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2GRAY)
-
-        # Use CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        # This brings out details in dark/bright areas better than global equalization
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-
-        # Denoise before thresholding to reduce salt-and-pepper noise
-        # h=10 is strength, 7/21 are window sizes
-        denoised = cv2.fastNlMeansDenoising(enhanced, None, 10, 7, 21)
-
-        # Adaptive Thresholding
-        thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-
-        # 3. OCR
-        # psm 11 = Sparse text (good for finding isolated codes)
-        config = r'--oem 3 --psm 11'
-
-        # Try OCR on both the Thresholded image AND the Enhanced Grayscale
-        # Sometimes thresholding destroys characters that grayscale preserves
-
-        results_pool = []
-
-        # Pass 1: Thresholded
-        data_thresh = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
-        results_pool.append(data_thresh)
-
-        # Pass 2: Enhanced Grayscale (only if Pass 1 fails? No, let's run both for robustness)
-        # (Optional optimization: only run if Pass 1 yields no ID)
+        # 2. EasyOCR
+        reader = self.get_reader()
+        # detail=1 returns bounding box, text, confidence
+        # mag_ratio=1.5 enlarges image internally for better small text recognition
+        results = reader.readtext(frame_resized, detail=1, paragraph=False, mag_ratio=1.5)
 
         full_text_list = []
         matches = []
 
         # Regex: (3-4 alphanumeric) - (optional Region 2 chars) (3-4 alphanumeric)
         # Examples: LOB-EN001, SDY-001, BODE-EN050, MP19-EN005
-        pattern = re.compile(r'\b([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})\b')
+        # Improved: Handle potential spacing issues or O/0 confusion implicitly via fuzzy later?
+        # For now, stick to standard pattern but maybe allow for missing dash?
+        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
 
-        # Combine results from all passes
-        for data in results_pool:
-            num_boxes = len(data['text'])
-            for i in range(num_boxes):
-                word = data['text'][i].strip().upper()
-                if not word: continue
+        for (bbox, text, conf) in results:
+            text = text.strip().upper()
+            if not text: continue
 
-                # Avoid adding duplicates to full text list just for display cleanliness
-                if word not in full_text_list:
-                    full_text_list.append(word)
+            full_text_list.append(text)
 
-                # Check if this word looks like a set ID
-                m = pattern.search(word)
-                if m:
-                    found_id = m.group(1)
-                    conf = int(data['conf'][i])
-                    if conf == -1: conf = 0
-                    matches.append((found_id, conf))
+            # 1. Direct Regex Match
+            # We remove spaces to handle "SDBE - EN004"
+            clean_text = text.replace(" ", "")
+            m = pattern.search(clean_text)
+            if m:
+                # Reconstruct standard ID
+                prefix = m.group(1)
+                region = m.group(2) if m.group(2) else ""
+                number = m.group(3)
 
-        full_text = " ".join(full_text_list)
+                # Check for O -> 0 in number part?
+                # Actually, EasyOCR handles numbers well usually.
+
+                found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
+
+                # Boost confidence for "EN"
+                score = conf * 100
+                if "EN" in found_id: score += 10
+
+                matches.append((found_id, score))
+            else:
+                # 2. Fuzzy Heuristics for "Garbage" (e.g. SOBEENOW)
+                # Look for patterns like "4 chars + EN + 3 digits" but with typos
+                # SDBE often read as SOBE, 5DBE, etc.
+                # EN004 often read as EN0O4, ENO04, etc.
+
+                # Simple Heuristic: If it contains "EN" followed by digits (or O/I/Z looking like digits)
+                # Or ends with 3 digits.
+                pass # TODO: Add more advanced fuzzy if needed. EasyOCR is usually good enough.
+
+        full_text = " | ".join(full_text_list)
 
         result = {
-            "track_type": "full_frame_ocr",
+            "track_type": "full_frame_easyocr",
             "raw_text": full_text,
             "set_id": None,
             "set_id_conf": 0,
             "language": "EN" # Default
         }
-
-        # If no exact word match, try searching the joined string (less reliable for confidence)
-        if not matches:
-             m = pattern.search(full_text)
-             if m:
-                 matches.append((m.group(1), 50)) # Arbitrary medium confidence
 
         if matches:
             # Pick best confidence
@@ -464,11 +465,10 @@ class CardScanner:
             result["set_id"] = best_id
             result["set_id_conf"] = best_conf
 
-            # Deduce language from ID
+            # Deduce language
             parts = best_id.split('-')
             if len(parts) > 1:
                 suffix = parts[1]
-                # If suffix starts with letters, extract them
                 region_match = re.match(r'^([A-Z]{2})', suffix)
                 if region_match:
                     lang_code = region_match.group(1)

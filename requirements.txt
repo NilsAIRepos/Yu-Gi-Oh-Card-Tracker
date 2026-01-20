@@ -8,3 +8,4 @@ opencv-python
 pytesseract
 langdetect
 pypdf
+easyocr
