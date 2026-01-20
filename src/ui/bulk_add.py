@@ -1117,7 +1117,7 @@ class BulkAddPage:
             for item in items:
                 img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
 
-                flag = LANGUAGE_FLAG_MAP.get(item.language.upper(), item.language)
+                flag = LANGUAGE_FLAG_MAP.get(item.language.strip().upper(), item.language)
                 cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
                 cond_short = cond_map.get(item.condition, item.condition[:2].upper())
 
