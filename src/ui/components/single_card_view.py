@@ -158,7 +158,7 @@ class SingleCardView:
                             on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('w-32').props('dark')
 
             with ui.row().classes('w-full gap-4 justify-end q-mt-md'):
-                async def handle_update(mode):
+                async def handle_update(mode, quantity_override: int = None):
                     base_code = input_state['set_base_code']
                     sel_rarity = input_state['rarity']
                     sel_img = input_state['image_id']
@@ -177,7 +177,7 @@ class SingleCardView:
                              # Moving to same place = no-op
                              ui.notify('No changes detected.', type='warning')
                              return
-                        await on_save_callback(mode, original_variant_id)
+                        await on_save_callback(mode, original_variant_id, quantity_override=quantity_override)
                         return
 
                     # Calculate the target code based on language
@@ -224,32 +224,29 @@ class SingleCardView:
                                      async def do_merge():
                                          d.close()
                                          # Proceed with MOVE
-                                         await on_save_callback(mode, matched_variant_id)
+                                         await on_save_callback(mode, matched_variant_id, quantity_override=quantity_override)
                                      ui.button('Merge', on_click=do_merge).props('color=primary')
                              d.open()
                              return
 
                     # Normal flow
-                    await on_save_callback(mode, matched_variant_id)
-
-                async def do_update():
-                    # In Collectors mode, SET button becomes "Update Entry" (MOVE)
-                    # It moves the entire original quantity to the new state.
-                    await handle_update('MOVE')
+                    await on_save_callback(mode, matched_variant_id, quantity_override=quantity_override)
 
                 async def do_add():
                     await handle_update('ADD')
 
-                # Button Rendering based on Mode
-                if view_mode == 'collectors':
-                    with ui.button('Update Entry', on_click=do_update).props('color=warning text-color=dark'):
-                        ui.tooltip('Change this entry into the selected values (Set, Condition, etc). Merges if target exists.').classes('bg-black text-white')
-                else:
-                    # Consolidated Mode: No SET button
-                    pass
+                async def do_subtract():
+                    qty = int(input_state['quantity'] or 0)
+                    if qty > 0:
+                        await handle_update('ADD', quantity_override=-qty)
+                    else:
+                        ui.notify("Quantity must be > 0", type='warning')
 
                 with ui.button('ADD', on_click=do_add).props('color=secondary'):
                     ui.tooltip('Add the specified quantity to your collection').classes('bg-black text-white')
+
+                with ui.button('SUBTRACT', on_click=do_subtract).props('color=warning text-color=dark'):
+                    ui.tooltip('Subtract the specified quantity from your collection').classes('bg-black text-white')
 
                 if show_remove_button:
                     async def confirm_remove():
@@ -441,11 +438,13 @@ class SingleCardView:
                                 'image_id': img_id
                             }
 
-                            async def on_save_wrapper(mode, variant_id):
+                            async def on_save_wrapper(mode, variant_id, quantity_override: int = None):
                                 # In Consolidated view, we probably just add/set.
                                 # Logic:
                                 # 1. Calculate final set code
                                 final_set_code = transform_set_code(input_state['set_base_code'], input_state['language'])
+
+                                qty = quantity_override if quantity_override is not None else input_state['quantity']
 
                                 # 2. Call save callback
                                 await save_callback(
@@ -453,7 +452,7 @@ class SingleCardView:
                                     final_set_code,
                                     input_state['rarity'],
                                     input_state['language'],
-                                    input_state['quantity'],
+                                    qty,
                                     input_state['condition'],
                                     input_state['first_edition'],
                                     input_state['image_id'],
@@ -730,8 +729,10 @@ class SingleCardView:
                         inventory_expansion.value = True
 
                         with inventory_expansion:
-                             async def on_save_wrapper(mode, target_variant_id):
+                             async def on_save_wrapper(mode, target_variant_id, quantity_override: int = None):
                                 final_set_code = transform_set_code(input_state['set_base_code'], input_state['language'])
+
+                                qty = quantity_override if quantity_override is not None else input_state['quantity']
 
                                 extra_args = {}
                                 if mode == 'MOVE':
@@ -748,7 +749,7 @@ class SingleCardView:
                                     final_set_code,
                                     input_state['rarity'],
                                     input_state['language'],
-                                    input_state['quantity'],
+                                    qty,
                                     input_state['condition'],
                                     input_state['first_edition'],
                                     input_state['image_id'],

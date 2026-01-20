@@ -1141,21 +1141,6 @@ class CollectionPage:
 
             ui.separator().props('vertical')
 
-            # Undo Button
-            has_history = False
-            if self.state['selected_file']:
-                 last = changelog_manager.get_last_change(self.state['selected_file'])
-                 has_history = last is not None
-
-            undo_btn = ui.button('Undo Last', icon='undo', on_click=self.undo_last_action).props('flat color=white')
-            if not has_history:
-                 undo_btn.disable()
-                 undo_btn.classes('opacity-50')
-            else:
-                 with undo_btn: ui.tooltip('Undo last action')
-
-            ui.separator().props('vertical')
-
             with ui.button_group():
                 is_cons = self.state['view_scope'] == 'consolidated'
                 with ui.button('Consolidated', on_click=lambda: self.switch_scope('consolidated')) \
@@ -1175,6 +1160,20 @@ class CollectionPage:
                     ui.tooltip('Show cards in a list layout')
 
             ui.space()
+
+            # Undo Button
+            has_history = False
+            if self.state['selected_file']:
+                 last = changelog_manager.get_last_change(self.state['selected_file'])
+                 has_history = last is not None
+
+            undo_btn = ui.button('Undo Last', icon='undo', on_click=self.undo_last_action).props('flat color=white')
+            if not has_history:
+                 undo_btn.disable()
+                 undo_btn.classes('opacity-50')
+            else:
+                 with undo_btn: ui.tooltip('Undo last action')
+
             with ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary size=lg'):
                 ui.tooltip('Open advanced filters')
 
