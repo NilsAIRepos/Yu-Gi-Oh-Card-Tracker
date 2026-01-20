@@ -319,16 +319,36 @@ class UnifiedImportController:
                     continue
 
                 # Name Similarity Check
-                # We enforce strict name matching to prevent Legacy Code Collisions and False Positives.
-                # Threshold set to 0.95 (effectively exact match ignoring case/spacing).
-                # This ensures we only accept a code match if the card identity (Name) is verified.
-                # If this strict check fails (e.g. valid translation mismatch), we rely on Name Lookup Fallback
-                # to find the correct card in the localized database.
+                # We enforce strict name matching (Threshold 0.95) to prevent Legacy Code Collisions.
+                # To handle Cross-Language matches (e.g. German Input vs English DB Match), we:
+                # 1. Check strict match against the DB card name.
+                # 2. If that fails, check strict match against the LOCALIZED card name (by ID lookup).
+                # This ensures we accept valid translations (verified by ID) but reject collisions (Raigeki vs Hinotama).
 
                 threshold = 0.95
+                input_name = row.name.lower().strip()
+                db_name = m['card'].name.lower().strip()
 
-                ratio = difflib.SequenceMatcher(None, row.name.lower().strip(), m['card'].name.lower().strip()).ratio()
-                if ratio < threshold:
+                # 1. Primary Check (Direct Match)
+                ratio = difflib.SequenceMatcher(None, input_name, db_name).ratio()
+                is_match = ratio >= threshold
+
+                # 2. Secondary Check (ID-Based Localization)
+                if not is_match and row.language.lower() != m['lang'].lower():
+                    # Try to find the card in the row's language to verify name
+                    try:
+                        # Access localized DB (loaded in cache)
+                        localized_card = ygo_service.get_card(m['card'].id, row.language.lower())
+                        if localized_card:
+                            local_name = localized_card.name.lower().strip()
+                            ratio_local = difflib.SequenceMatcher(None, input_name, local_name).ratio()
+                            if ratio_local >= threshold:
+                                is_match = True
+                                logger.info(f"Verified translation match via ID: {row.name} == {localized_card.name} (ID {m['card'].id})")
+                    except Exception as e:
+                        logger.warning(f"Failed to lookup localized card: {e}")
+
+                if not is_match:
                      logger.warning(f"Rejected mismatch ({row.language}/{m['lang']}): {row.name} vs {m['card'].name} ({ratio:.2f} < {threshold})")
                      continue
 
