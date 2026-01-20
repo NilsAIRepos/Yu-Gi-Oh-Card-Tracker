@@ -85,49 +85,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
         default_image_id = card.card_images[0].id if card.card_images else None
 
         # 1. Process API Sets
-        # To avoid duplicates and ensure accuracy, we use a Multi-Pass approach:
-        # Pass 1: Prioritize Exact Matches globally for this card.
-        # Pass 2: Assign Fuzzy Matches to remaining unassigned API sets.
-        # Pass 3: Construct the rows based on assignments.
-
-        assignments = {}  # Map set_index -> List[CollectionVariant]
-
         if card.card_sets:
-            # Pass 1: Exact Matches
-            for idx, cset in enumerate(card.card_sets):
-                target_variant_id = cset.variant_id
-                exact_match = owned_variants.get(target_variant_id)
-
-                # Check if this variant was already processed (e.g., if API has duplicate sets)
-                if exact_match and exact_match.variant_id not in processed_variant_ids:
-                    assignments[idx] = [exact_match]
-                    processed_variant_ids.add(exact_match.variant_id)
-
-            # Pass 2: Fuzzy Matches (for unassigned sets)
-            for idx, cset in enumerate(card.card_sets):
-                if idx in assignments:
-                    continue # Already matched exactly
-
-                target_variant_id = cset.variant_id
-                norm_api = normalize_set_code(cset.set_code)
-
-                fuzzy_matches = []
-                for var_id, var in owned_variants.items():
-                    # Skip if previously processed (by exact match or another fuzzy match)
-                    if var_id in processed_variant_ids:
-                         continue
-
-                    # Check normalization match
-                    if normalize_set_code(var.set_code) == norm_api and var.rarity == cset.set_rarity:
-                        fuzzy_matches.append(var)
-
-                if fuzzy_matches:
-                    assignments[idx] = fuzzy_matches
-                    for m in fuzzy_matches:
-                        processed_variant_ids.add(m.variant_id)
-
-            # Pass 3: Build Rows
-            for idx, cset in enumerate(card.card_sets):
+            for cset in card.card_sets:
                 set_name = cset.set_name
                 set_code = cset.set_code
                 rarity = cset.set_rarity
@@ -143,10 +102,35 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                              row_img_url = img.image_url_small
                              break
 
-                matching_variants = assignments.get(idx)
+                target_variant_id = cset.variant_id
+
+                # Find ALL matching variants (Exact ID match + Fuzzy/Normalized matches)
+                matching_variants = []
+
+                # 1. Exact Match
+                exact_match = owned_variants.get(target_variant_id)
+                if exact_match:
+                    matching_variants.append(exact_match)
+
+                # 2. Fuzzy Match (Normalized Code + Rarity)
+                norm_api = normalize_set_code(cset.set_code)
+                for var_id, var in owned_variants.items():
+                    # Skip if already matched exactly (avoid duplicates)
+                    if var.variant_id == target_variant_id:
+                        continue
+
+                    # Skip if previously processed (e.g. matched by another API set entry? Unlikely but safe)
+                    if var_id in processed_variant_ids:
+                         continue
+
+                    # Check normalization match
+                    if normalize_set_code(var.set_code) == norm_api and var.rarity == cset.set_rarity:
+                        matching_variants.append(var)
 
                 if matching_variants:
                     for matched_cv in matching_variants:
+                        processed_variant_ids.add(matched_cv.variant_id)
+
                         groups = {}
                         for entry in matched_cv.entries:
                             k = (entry.language, entry.condition, entry.first_edition)
@@ -155,7 +139,7 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         for (lang, cond, first), qty in groups.items():
                             rows.append(CollectorRow(
                                 api_card=card,
-                                set_code=matched_cv.set_code, # Use the actual owned set code
+                                set_code=matched_cv.set_code, # Use the actual owned set code (e.g. MP25-DE278)
                                 set_name=set_name,
                                 rarity=rarity,
                                 price=price,
