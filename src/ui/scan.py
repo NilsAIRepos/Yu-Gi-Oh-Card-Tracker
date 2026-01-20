@@ -33,8 +33,7 @@ window.scannerVideo = null;
 window.scannerStream = null;
 window.overlayCanvas = null;
 window.overlayCtx = null;
-window.streamInterval = null;
-window.isStreaming = false;
+window.scanner_js_loaded = true;
 
 function initScanner() {
     window.scannerVideo = document.getElementById('scanner-video');
@@ -229,6 +228,13 @@ class ScanPage:
     async def init_cameras(self):
         """Fetches video devices from client."""
         try:
+            # Verify JS loaded
+            js_loaded = await ui.run_javascript('window.scanner_js_loaded', timeout=5.0)
+            if not js_loaded:
+                ui.notify("Scanner JavaScript failed to load. Try refreshing.", type='negative')
+                logger.error("Scanner JS not loaded.")
+                return
+
             devices = await ui.run_javascript('getVideoDevices()')
             if devices and self.camera_select:
                 self.camera_select.options = {d['value']: d['label'] for d in devices}
@@ -236,6 +242,7 @@ class ScanPage:
                     self.camera_select.value = devices[0]['value']
         except Exception as e:
             logger.error(f"Error fetching cameras: {e}")
+            ui.notify(f"Camera initialization failed: {e}", type='negative')
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
@@ -492,7 +499,7 @@ def scan_page():
         return
 
     # Inject Client-Side JS
-    ui.add_body_html(JS_CAMERA_CODE)
+    ui.add_head_html(JS_CAMERA_CODE)
 
     # Debug Drawer (Simulated)
     # Using fixed positioning to overlay on top of everything.

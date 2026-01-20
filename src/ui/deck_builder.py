@@ -1,5 +1,6 @@
 from nicegui import ui, run
 from src.core.persistence import persistence
+from src.core.changelog_manager import changelog_manager, ChangelogManager
 from src.core.models import Deck, Collection
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.banlist_service import banlist_service
@@ -149,6 +150,8 @@ class DeckBuilderPage:
 
         self.search_results_container = None
         self.deck_area_container = None
+
+        self.deck_changelog_manager = ChangelogManager(os.path.join("data", "changelogs", "decks"))
 
     def calculate_hierarchical_usage(self, target_zone: str) -> Dict[int, int]:
         """
@@ -402,6 +405,21 @@ class DeckBuilderPage:
         self.render_header.refresh()
         self.refresh_deck_area()
 
+    def _log_change(self, action: str, card_id: int, quantity: int, target_zone: str, from_zone: str = None):
+        if not self.state['current_deck_name']: return
+
+        filename = f"{self.state['current_deck_name']}.ydk"
+
+        card_data = {
+            'card_id': card_id,
+            'target_zone': target_zone
+        }
+        if from_zone:
+            card_data['from_zone'] = from_zone
+
+        self.deck_changelog_manager.log_change(filename, action, card_data, quantity)
+        self.render_header.refresh() # Update Undo button state
+
     async def add_card_to_deck(self, card_id: int, quantity: int, target: str):
         if not self.state['current_deck']:
             ui.notify("Please select or create a deck first.", type='warning')
@@ -414,6 +432,7 @@ class DeckBuilderPage:
             target_list.append(card_id)
 
         await self.save_current_deck()
+        self._log_change('ADD', card_id, quantity, target)
         self.refresh_zone(target)
         self.update_zone_headers()
 
@@ -438,6 +457,7 @@ class DeckBuilderPage:
         if card_id in target_list:
             target_list.remove(card_id)
             await self.save_current_deck()
+            self._log_change('REMOVE', card_id, 1, real_target)
 
             if card_element:
                 card_element.delete()
@@ -728,8 +748,11 @@ class DeckBuilderPage:
 
             ui.button(icon='save_as', on_click=save_deck_as).props('flat round color=white').tooltip('Save Deck As')
 
-            col_options = {f: f.replace('.json', '') for f in self.state['available_collections']}
-            col_options[None] = 'None (All Owned)'
+            ui.button(icon='download', on_click=self.open_export_dialog).props('flat round color=white').tooltip('Export Deck / Missing Cards')
+
+            col_options = {None: 'None (All Owned)'}
+            for f in self.state['available_collections']:
+                col_options[f] = f.replace('.json', '')
 
             async def on_col_change(e):
                 val = e.value
@@ -791,7 +814,19 @@ class DeckBuilderPage:
 
             ui.button(icon='save_as', on_click=save_banlist_as).props('flat round color=white').tooltip('Save Banlist As')
 
-            ui.button(icon='download', on_click=self.open_export_dialog).props('flat round color=white').tooltip('Export Deck / Missing Cards')
+            # Undo Button
+            has_history = False
+            deck_filename = f"{self.state['current_deck_name']}.ydk" if self.state['current_deck_name'] else None
+            if deck_filename:
+                 last = self.deck_changelog_manager.get_last_change(deck_filename)
+                 has_history = last is not None
+
+            undo_btn = ui.button('Undo', icon='undo', on_click=self.undo_last_action).props('flat round color=white')
+            if not has_history:
+                 undo_btn.disable()
+                 undo_btn.classes('opacity-50')
+            else:
+                 with undo_btn: ui.tooltip('Undo Last Action')
 
             # Search and filters moved to library column
 
@@ -1099,6 +1134,21 @@ class DeckBuilderPage:
         if from_zone in valid_zones and from_zone != to_zone:
              setattr(deck, from_zone, from_ids)
 
+        # Logging for Drag & Drop
+        try:
+             new_index = args.get('new_index')
+             if from_zone == 'gallery':
+                 if new_index is not None and new_index < len(to_ids):
+                     added_card_id = to_ids[new_index]
+                     self._log_change('ADD', added_card_id, 1, to_zone)
+
+             elif from_zone in valid_zones and to_zone in valid_zones and from_zone != to_zone:
+                 if new_index is not None and new_index < len(to_ids):
+                     moved_card_id = to_ids[new_index]
+                     self._log_change('MOVE', moved_card_id, 1, to_zone, from_zone=from_zone)
+        except Exception as e:
+            logger.error(f"Error logging drag action: {e}")
+
         await self.save_current_deck()
 
         # Refresh UI
@@ -1214,6 +1264,77 @@ class DeckBuilderPage:
             render_initial_options()
 
         d.open()
+
+    async def undo_last_action(self):
+        if not self.state['current_deck_name']: return
+        filename = f"{self.state['current_deck_name']}.ydk"
+
+        last_change = self.deck_changelog_manager.undo_last_change(filename)
+        if not last_change:
+            ui.notify("Nothing to undo.", type='warning')
+            return
+
+        action = last_change['action']
+        data = last_change['card_data']
+        quantity = last_change['quantity']
+
+        deck = self.state['current_deck']
+
+        try:
+            if action == 'ADD':
+                # Revert: Remove cards
+                card_id = data['card_id']
+                zone = data['target_zone']
+                if hasattr(deck, zone):
+                    target_list = getattr(deck, zone)
+                    removed_count = 0
+                    for _ in range(quantity):
+                        if card_id in target_list:
+                            target_list.remove(card_id)
+                            removed_count += 1
+
+                    ui.notify(f"Undid Add.", type='positive')
+                    self.refresh_zone(zone)
+
+            elif action == 'REMOVE':
+                # Revert: Add cards back
+                card_id = data['card_id']
+                zone = data['target_zone']
+                if hasattr(deck, zone):
+                    target_list = getattr(deck, zone)
+                    for _ in range(quantity):
+                        target_list.append(card_id)
+
+                    ui.notify(f"Undid Remove.", type='positive')
+                    self.refresh_zone(zone)
+
+            elif action == 'MOVE':
+                # Revert: Move back from target to source
+                card_id = data['card_id']
+                to_zone = data['target_zone']
+                from_zone = data.get('from_zone')
+
+                if from_zone and hasattr(deck, to_zone) and hasattr(deck, from_zone):
+                    to_list = getattr(deck, to_zone)
+                    from_list = getattr(deck, from_zone)
+
+                    if card_id in to_list:
+                        to_list.remove(card_id)
+                        from_list.append(card_id)
+
+                        ui.notify(f"Undid Move.", type='positive')
+                        self.refresh_zone(to_zone)
+                        self.refresh_zone(from_zone)
+                    else:
+                        ui.notify("Undo Failed: Card not found in target zone.", type='negative')
+
+            await self.save_current_deck()
+            self.update_zone_headers()
+            self.render_header.refresh() # Update Undo button availability
+
+        except Exception as e:
+            logger.error(f"Undo failed: {e}", exc_info=True)
+            ui.notify(f"Undo failed: {e}", type='negative')
 
     def build_ui(self):
         self.filter_dialog = ui.dialog().props('position=right')

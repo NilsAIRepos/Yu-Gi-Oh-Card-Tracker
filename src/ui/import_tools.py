@@ -2,12 +2,14 @@ from nicegui import ui, events
 import json
 import logging
 import asyncio
+import uuid
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 from src.core.persistence import persistence
 from src.core.models import Collection, ApiCard, ApiCardSet
 from src.core.utils import LANGUAGE_TO_LEGACY_REGION_MAP, normalize_set_code
+from src.core.constants import RARITY_ABBREVIATIONS
 from src.services.ygo_api import ygo_service
 from src.services.collection_editor import CollectionEditor
 from src.services.cardmarket_parser import CardmarketParser, ParsedRow
@@ -239,95 +241,80 @@ class UnifiedImportController:
         for row in rows:
             # Construct Target Set Code (Standard format preferred for new entries)
             target_code = f"{row.set_prefix}-{row.language}{row.number}"
-
-            # 1. Try Exact Matches (Standard, Legacy, Regionless)
-            exact_candidates = [target_code]
-            legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(row.language)
-            if legacy_char:
-                exact_candidates.append(f"{row.set_prefix}-{legacy_char}{row.number}")
-            exact_candidates.append(f"{row.set_prefix}-{row.number}")
-
-            found_exact_matches = []
-            seen_exact_vars = set()
-
-            for cand in exact_candidates:
-                if cand in self.db_lookup:
-                    # Filter: Only accept variants that explicitly match the candidate code
-                    # (Prevent bucket lookups from returning normalization-mapped variants)
-                    matches = [
-                        m for m in self.db_lookup[cand]
-                        if m['rarity'] == row.set_rarity and m['variant'].set_code == cand
-                    ]
-
-                    for m in matches:
-                        if m['variant'].variant_id not in seen_exact_vars:
-                            found_exact_matches.append({
-                                'match': m,
-                                'set_code': cand
-                            })
-                            seen_exact_vars.add(m['variant'].variant_id)
-
-            if found_exact_matches:
-                if len(found_exact_matches) == 1:
-                    m_data = found_exact_matches[0]
-                    self._add_pending_from_match(row, m_data['match'], override_set_code=m_data['set_code'])
-                else:
-                    # Ambiguity among Exact Matches (e.g. LOB-EN091 vs LOB-E091)
-                    ambig_matches = []
-                    for fm in found_exact_matches:
-                        ambig_matches.append({
-                            'code': fm['set_code'],
-                            'card': fm['match']['card'],
-                            'variant': fm['match']['variant']
-                        })
-
-                    self.ambiguous_rows.append({
-                        'row': row,
-                        'matches': ambig_matches,
-                        'selected_index': 0,
-                        'target_code': target_code
-                    })
-                continue
-
-            # 2. No Exact Match -> Try Base Code (Normalized)
             base_code = f"{row.set_prefix}-{row.number}"
 
-            if base_code in self.db_lookup:
-                matches = [m for m in self.db_lookup[base_code] if m['rarity'] == row.set_rarity]
+            # Gather all potential variants for this card (ignoring rarity for now)
+            # We look up by Exact Candidates AND Base Code
+            potential_variants = []
+            seen_variant_ids = set()
 
-                if not matches:
-                    self.failed_rows.append(row)
-                    continue
+            # 1. Define Lookup Keys
+            lookup_keys = [target_code]
+            legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(row.language)
+            if legacy_char:
+                lookup_keys.append(f"{row.set_prefix}-{legacy_char}{row.number}")
+            lookup_keys.append(base_code)
 
-                if len(matches) == 1:
-                    # Auto-Match: Use the existing variant data but create as target_code
-                    self._add_pending_from_match(row, matches[0], override_set_code=target_code)
-                else:
-                    # Ambiguity: Multiple variants map to this base code
-                    ambig_matches = []
-                    seen_vars = set()
-                    for m in matches:
-                        # Deduplicate if same variant ID (e.g. from multiple DB loads/keys)
-                        if m['variant'].variant_id in seen_vars: continue
-                        seen_vars.add(m['variant'].variant_id)
+            # 2. Collect DB Matches
+            for key in lookup_keys:
+                if key in self.db_lookup:
+                    for entry in self.db_lookup[key]:
+                        vid = entry['variant'].variant_id
+                        if vid not in seen_variant_ids:
+                            potential_variants.append({
+                                'card': entry['card'],
+                                'variant': entry['variant'],
+                                'code': entry['variant'].set_code, # Keep actual DB code
+                                'rarity': entry['rarity']
+                            })
+                            seen_variant_ids.add(vid)
 
-                        ambig_matches.append({
-                            'code': m['variant'].set_code,
-                            'card': m['card'],
-                            'variant': m['variant']
-                        })
+            # 3. Analyze Matches
+            # Exact Match: Rarity AND Set Code match
+            exact_matches = []
+            for m in potential_variants:
+                if m['rarity'] == row.set_rarity:
+                    # Check if set code is "close enough" (Exact or Base match)
+                    # We consider it a match if the DB code matches one of our lookup keys
+                    # OR if we found it via base code lookup (implies it's the same card/slot)
+                    exact_matches.append(m)
 
-                    if len(ambig_matches) == 1:
-                        self._add_pending_from_match(row, {'card': ambig_matches[0]['card'], 'variant': ambig_matches[0]['variant'], 'code': ambig_matches[0]['code']}, override_set_code=target_code)
-                    else:
-                        self.ambiguous_rows.append({
-                            'row': row,
-                            'matches': ambig_matches,
-                            'selected_index': 0,
-                            'target_code': target_code
-                        })
+            if len(exact_matches) == 1:
+                # Perfect Single Match
+                # Use target_code for the import (normalizing to user's file region preference usually)
+                # But if we matched an exact legacy code (e.g. LOB-E001), maybe preserve it?
+                # Requirement: "No matching set code found in DB for MRD-DE032 while MRD-032... exist"
+                # If we found it via base code (MRD-032), we map to target_code (MRD-DE032) usually.
+                m = exact_matches[0]
+                self._add_pending_from_match(row, m, override_set_code=target_code)
+
+            elif len(exact_matches) > 1:
+                # Ambiguity: Multiple variants have matching rarity (e.g. same card, same rarity, diff codes in DB?)
+                self._add_ambiguity(row, potential_variants, target_code, row.set_rarity)
+
             else:
-                self.failed_rows.append(row)
+                # No Exact Rarity Match
+                if potential_variants:
+                    # We found the Set Code (or Base Code), but NOT the Rarity.
+                    # This is the "Rarity Ambiguity" case.
+                    self._add_ambiguity(row, potential_variants, target_code, row.set_rarity)
+                else:
+                    # No Set Code match at all
+                    self.failed_rows.append(row)
+
+    def _add_ambiguity(self, row, matches, default_set_code, default_rarity):
+        # Select default card if possible (take first match)
+        default_card = matches[0]['card'] if matches else None
+
+        self.ambiguous_rows.append({
+            'row': row,
+            'matches': matches, # Context for UI
+            'selected_set_code': default_set_code,
+            'selected_rarity': default_rarity,
+            'selected_card': default_card,
+            'include': True,
+            'target_code': default_set_code
+        })
 
     def _add_pending_from_match(self, row: ParsedRow, match: Dict, override_set_code: Optional[str] = None):
         self.pending_changes.append(PendingChange(
@@ -368,7 +355,58 @@ class UnifiedImportController:
 
         changes = 0
         self.successful_imports = []
+        modified_card_ids = set()
+
         for item in self.pending_changes:
+            # 1. Database Update Check
+            # Check if variant exists in ApiCard; if not, add it
+            # We do this to ensure DB consistency for new custom/ambiguous variants
+            variant_exists = False
+            for s in item.api_card.card_sets:
+                if s.set_code == item.set_code and s.set_rarity == item.rarity:
+                    variant_exists = True
+                    # Ensure image_id is preserved if we found an existing match but the item didn't have it set (e.g. from ambiguity resolution)
+                    if item.image_id is None:
+                        item.image_id = s.image_id
+                    break
+
+            if not variant_exists:
+                # Create new variant
+                new_id = str(uuid.uuid4())
+                rarity_abbr = RARITY_ABBREVIATIONS.get(item.rarity, "")
+                rarity_code = f"({rarity_abbr})" if rarity_abbr else ""
+
+                # Try to infer set name/image from other variants in same set
+                set_name = "Custom Set"
+                image_id = item.image_id
+
+                # Look for siblings
+                prefix = item.set_code.split('-')[0]
+                for s in item.api_card.card_sets:
+                    if s.set_code.startswith(prefix):
+                        set_name = s.set_name
+                        if image_id is None: image_id = s.image_id
+                        break
+
+                if image_id is None and item.api_card.card_images:
+                    image_id = item.api_card.card_images[0].id
+
+                new_set = ApiCardSet(
+                    variant_id=new_id,
+                    set_name=set_name,
+                    set_code=item.set_code,
+                    set_rarity=item.rarity,
+                    set_rarity_code=rarity_code,
+                    set_price="0.00",
+                    image_id=image_id
+                )
+                item.api_card.card_sets.append(new_set)
+                modified_card_ids.add(item.api_card.id)
+                # Update item image_id if it was missing
+                if item.image_id is None:
+                    item.image_id = image_id
+
+            # 2. Collection Update
             # Determine Quantity Delta
             delta = item.quantity
             if self.import_mode == 'SUBTRACT':
@@ -389,6 +427,19 @@ class UnifiedImportController:
             if modified:
                 changes += 1
                 self.successful_imports.append(f"{item.quantity}x {item.api_card.name} ({item.set_code} - {item.rarity})")
+
+        # Save DB Updates if any
+        if modified_card_ids:
+            # We need to save the DBs that contain these cards.
+            # Iterate all loaded languages in service cache.
+            for lang, cards in ygo_service._cards_cache.items():
+                # Check if any modified card is in this list (by reference or ID)
+                # Since we modified the object in place, and the object is (presumably) the one in the cache...
+                # We can just check IDs.
+                ids_in_lang = {c.id for c in cards}
+                if not ids_in_lang.isdisjoint(modified_card_ids):
+                    await ygo_service.save_card_database(cards, lang)
+                    logger.info(f"Saved updated DB for language: {lang}")
 
         if changes > 0 or (changes == 0 and self.import_mode == 'ADD'):
             # Note: 0 changes might happen if subtract removes non-existent cards, but we still save/notify
@@ -423,7 +474,16 @@ class UnifiedImportController:
         if not self.failed_rows: return
         lines = ["Original Line | Reason"]
         for row in self.failed_rows:
-            lines.append(f"{row.original_line} | No matching set code found in DB for {row.set_prefix}-{row.language}{row.number}")
+            # Handle both ParsedRow objects and Dicts (from JSON)
+            if isinstance(row, dict):
+                reason = row.get('failure_reason', "Import failed")
+                line = str(row) # JSON entries don't have original_line usually
+            else:
+                default_reason = f"No matching set code found in DB for {row.set_prefix}-{row.language}{row.number}"
+                reason = getattr(row, 'failure_reason', default_reason)
+                line = row.original_line
+
+            lines.append(f"{line} | {reason}")
         ui.download("\n".join(lines).encode('utf-8'), "import_failures.txt")
 
     def download_success_report(self):
@@ -434,68 +494,218 @@ class UnifiedImportController:
     def open_ambiguity_dialog(self):
         if not self.ambiguous_rows: return
 
-        with ui.dialog() as dialog, ui.card().classes('w-full max-w-4xl bg-dark border border-gray-700'):
+        # Prepare Rarity Options
+        rarity_options = sorted(list(RARITY_ABBREVIATIONS.keys()))
+
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-6xl bg-dark border border-gray-700'):
             ui.label("Resolve Ambiguities").classes('text-h6')
+            ui.label("Cards with missing Set Code/Rarity combinations or multiple matches.").classes('text-caption text-grey')
 
-            # Helper to bulk resolve
-            def set_all(type_idx):
-                count = 0
+            # Declare container ref
+            rows_container = None
+
+            def render_rows():
+                if not rows_container: return
+                rows_container.clear()
+                with rows_container:
+                    for item in self.ambiguous_rows:
+                        row = item['row']
+                        matches = item['matches']
+
+                        # Prepare Set Code Options: Matches + Target Code
+                        code_opts = {}
+                        if item.get('target_code'):
+                             code_opts[item['target_code']] = f"{item['target_code']} (New/Target)"
+
+                        for m in matches:
+                            code_opts[m['code']] = f"{m['code']} (Existing)"
+
+                        # Ensure selected value is in options (fallback)
+                        if item['selected_set_code'] not in code_opts:
+                            code_opts[item['selected_set_code']] = item['selected_set_code']
+
+                        with ui.row().classes('w-full items-center gap-2 q-mb-sm border-b border-gray-800 pb-2'):
+                            # 1. Include Checkbox
+                            ui.checkbox(value=item['include'],
+                                        on_change=lambda e, it=item: it.update({'include': e.value})).classes('w-10 justify-center')
+
+                            # 2. Card Info
+                            with ui.column().classes('w-1/4'):
+                                ui.label(f"{row.quantity}x {row.name}").classes('font-bold')
+                                ui.label(f"Orig: {row.set_prefix} | {row.rarity_abbr}").classes('text-xs text-grey-5')
+
+                            # 3. Set Code Dropdown
+                            def update_code(e, it=item):
+                                it['selected_set_code'] = e.value
+                                pass
+
+                            ui.select(options=code_opts, value=item['selected_set_code'],
+                                      on_change=lambda e: update_code(e)) \
+                                      .classes('w-1/4').props('dark dense options-dense')
+
+                            # 4. Rarity Dropdown
+                            ui.select(options=rarity_options, value=item['selected_rarity'],
+                                      on_change=lambda e, it=item: it.update({'selected_rarity': e.value})) \
+                                      .classes('w-1/4').props('dark dense options-dense')
+
+            def toggle_all(e):
                 for item in self.ambiguous_rows:
-                    row = item['row']
-                    legacy_char = LANGUAGE_TO_LEGACY_REGION_MAP.get(row.language)
+                    item['include'] = e.value
+                render_rows()
 
-                    best_idx = -1
-                    for idx, m in enumerate(item['matches']):
-                        code = m['code']
-                        parts = code.split('-')
-                        if len(parts) < 2: continue
-                        suffix = parts[1]
+            with ui.scroll_area().classes('h-96 w-full q-my-md'):
+                # Header
+                with ui.row().classes('w-full items-center gap-2 font-bold text-grey-4 q-mb-sm border-b border-gray-600 pb-2'):
+                    ui.checkbox(value=True, on_change=toggle_all).classes('w-10 justify-center').props('dense')
+                    ui.label("Card").classes('w-1/4')
+                    ui.label("Set Code").classes('w-1/4')
+                    ui.label("Rarity").classes('w-1/4')
 
-                        if type_idx == 0: # Standard (DE001)
-                            if suffix.startswith(row.language): best_idx = idx
-                        elif type_idx == 1 and legacy_char: # Legacy (G001)
-                            if suffix.startswith(legacy_char) and not suffix.startswith(row.language): best_idx = idx
-                        elif type_idx == 2: # No Region (001)
-                            if suffix[0].isdigit(): best_idx = idx
+                # Render initial rows
+                rows_container = ui.column().classes('w-full')
+                render_rows()
 
-                        if best_idx != -1:
-                            item['selected_index'] = best_idx
-                            count += 1
+            with ui.row().classes('w-full justify-end gap-4 q-mt-md'):
+                ui.button("Cancel", on_click=dialog.close).props('outline color=white')
 
-                dialog.close()
-                self.open_ambiguity_dialog()
-                ui.notify(f"Auto-selected {count} rows.")
-
-            with ui.row().classes('gap-2 q-mb-md'):
-                ui.button("Set All Standard (e.g. DE001)", on_click=lambda: set_all(0)).props('outline size=sm color=white')
-                ui.button("Set All Legacy (e.g. G001)", on_click=lambda: set_all(1)).props('outline size=sm color=white')
-                ui.button("Set All No-Region (e.g. 001)", on_click=lambda: set_all(2)).props('outline size=sm color=white')
-
-            with ui.scroll_area().classes('h-96 w-full'):
-                for item in self.ambiguous_rows:
-                    row = item['row']
-                    matches = item['matches']
-
-                    with ui.row().classes('w-full items-center gap-4 q-mb-sm border-b border-gray-800 pb-2'):
-                        ui.label(f"{row.quantity}x {row.name}").classes('font-bold w-1/4')
-                        ui.label(f"{row.set_prefix} | {row.language}").classes('text-xs text-grey-4 w-1/4')
-
-                        opts = {idx: f"{m['code']} ({m['variant'].set_rarity})" for idx, m in enumerate(matches)}
-                        ui.select(options=opts, value=item['selected_index'],
-                                  on_change=lambda e, it=item: it.update({'selected_index': e.value})) \
-                                  .classes('w-1/3').props('dark dense')
-
-            with ui.row().classes('w-full justify-end q-mt-md'):
                 def confirm():
                     for item in self.ambiguous_rows:
-                        idx = item['selected_index']
-                        match = item['matches'][idx]
-                        target = item.get('target_code')
-                        self._add_pending_from_match(item['row'], match, override_set_code=target)
+                        if not item['include']:
+                            # Add to failed rows with reason
+                            # We modify the row object slightly or wrap it?
+                            # Failed rows expects ParsedRow objects.
+                            # We can just append the original row.
+                            # The download_failures reads 'original_line' and appends a fixed error message.
+                            # The user requested custom reason.
+                            # I need to handle this in download_failures or here.
+                            # Let's attach the reason to the row object if possible, or use a wrapper.
+                            # Since ParsedRow is a dataclass, I can't easily add attributes unless I redefine it.
+                            # I'll just append to failed_rows and maybe handle the reason logic in download_failures by looking up context?
+                            # Or better: I'll append a tuple or dict to failed_rows if possible?
+                            # Current implementation of download_failures iterates failed_rows which are ParsedRow.
+                            # I'll modify download_failures in next step to handle dicts or annotated rows.
+                            # For now, I'll add a 'failure_reason' attr to the row instance dynamically.
+                            item['row'].failure_reason = "Not selected by user in resolution"
+                            self.failed_rows.append(item['row'])
+                        else:
+                            # Add to pending changes
+                            # We need to find the correct ApiCard.
+                            # If we have matches, use the one from matches if set code matches, else use 'selected_card' (default)
+
+                            # Determine correct ApiCard
+                            chosen_card = item['selected_card']
+                            # If the selected code corresponds to a specific match, use that match's card
+                            # (Useful if ambiguity was between two completely different cards sharing a code, though unlikely)
+                            for m in item['matches']:
+                                if m['code'] == item['selected_set_code']:
+                                    chosen_card = m['card']
+                                    break
+
+                            if not chosen_card:
+                                # Should not happen if matches exists, but if it does:
+                                # We can't import without an ApiCard.
+                                # Fallback: Add to failed
+                                item['row'].failure_reason = "Could not resolve ApiCard reference"
+                                self.failed_rows.append(item['row'])
+                                continue
+
+                            # Add Pending
+                            self.pending_changes.append(PendingChange(
+                                api_card=chosen_card,
+                                set_code=item['selected_set_code'],
+                                rarity=item['selected_rarity'],
+                                quantity=item['row'].quantity,
+                                condition=item['row'].set_condition,
+                                language=item['row'].language,
+                                first_edition=item['row'].first_edition,
+                                image_id=None, # Will resolve later or use default
+                                source_row=item['row']
+                            ))
+
                     self.ambiguous_rows = []
                     self.refresh_status_ui()
                     dialog.close()
+
                 ui.button("Confirm Resolution", on_click=confirm).classes('bg-primary text-white')
+
+        dialog.open()
+
+    def open_preview_dialog(self):
+        if not self.pending_changes: return
+
+        # Create a temporary state list for the dialog
+        # We wrap each pending change to track 'include' status
+        preview_items = [{'data': p, 'include': True} for p in self.pending_changes]
+
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-6xl bg-dark border border-gray-700'):
+            ui.label("Import Preview").classes('text-h6')
+            ui.label("Review items before importing. Uncheck to exclude.").classes('text-caption text-grey')
+
+            rows_container = None
+
+            def render_rows():
+                if not rows_container: return
+                rows_container.clear()
+                with rows_container:
+                    for item in preview_items:
+                        p = item['data']
+                        with ui.row().classes('w-full items-center gap-2 q-mb-sm border-b border-gray-800 pb-2'):
+                            ui.checkbox(value=item['include'],
+                                        on_change=lambda e, it=item: it.update({'include': e.value})).classes('w-10 justify-center')
+
+                            ui.label(str(p.quantity)).classes('w-10 text-center')
+                            ui.label(p.api_card.name).classes('w-1/3 font-bold truncate')
+                            ui.label(p.set_code).classes('w-1/4 text-sm')
+                            ui.label(p.rarity).classes('w-1/4 text-sm')
+
+            def toggle_all(e):
+                for item in preview_items:
+                    item['include'] = e.value
+                render_rows()
+
+            with ui.scroll_area().classes('h-96 w-full q-my-md'):
+                 # Header
+                with ui.row().classes('w-full items-center gap-2 font-bold text-grey-4 q-mb-sm border-b border-gray-600 pb-2'):
+                    ui.checkbox(value=True, on_change=toggle_all).classes('w-10 justify-center').props('dense')
+                    ui.label("Qty").classes('w-10 text-center')
+                    ui.label("Card").classes('w-1/3')
+                    ui.label("Set Code").classes('w-1/4')
+                    ui.label("Rarity").classes('w-1/4')
+
+                rows_container = ui.column().classes('w-full')
+                render_rows()
+
+            with ui.row().classes('w-full justify-end gap-4 q-mt-md'):
+                ui.button("Cancel", on_click=dialog.close).props('outline color=white')
+
+                def confirm():
+                    new_pending = []
+                    excluded_count = 0
+                    for item in preview_items:
+                        if item['include']:
+                            new_pending.append(item['data'])
+                        else:
+                            # Move to failed rows
+                            p = item['data']
+                            if p.source_row:
+                                # Inject reason safely (handle dict vs object)
+                                reason = "Excluded from preview by user"
+                                if isinstance(p.source_row, dict):
+                                    p.source_row['failure_reason'] = reason
+                                else:
+                                    p.source_row.failure_reason = reason
+
+                                self.failed_rows.append(p.source_row)
+                            excluded_count += 1
+
+                    self.pending_changes = new_pending
+                    if excluded_count > 0:
+                        ui.notify(f"Excluded {excluded_count} items.", type='warning')
+
+                    self.refresh_status_ui()
+                    dialog.close()
+
+                ui.button("Update Selection", on_click=confirm).classes('bg-primary text-white')
 
         dialog.open()
 
@@ -511,7 +721,9 @@ class UnifiedImportController:
                     ui.button("Download Report", on_click=self.download_success_report).props('flat color=positive')
 
             if self.pending_changes:
-                ui.label(f"Ready to Import: {len(self.pending_changes)} items").classes('text-positive font-bold text-lg')
+                with ui.row().classes('items-center gap-4'):
+                    ui.label(f"Ready to Import: {len(self.pending_changes)} items").classes('text-positive font-bold text-lg')
+                    ui.button("See Preview", on_click=self.open_preview_dialog).props('outline size=sm color=positive')
 
             if self.ambiguous_rows:
                 with ui.row().classes('items-center gap-2'):
