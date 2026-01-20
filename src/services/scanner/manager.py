@@ -152,10 +152,20 @@ class ScannerManager:
         return self.latest_normalized_contour
 
     def _worker(self):
+        last_frame_time = time.time()
+
         while self.running:
             try:
                 b64_str = self.input_queue.get(timeout=0.5)
+                last_frame_time = time.time()
             except queue.Empty:
+                # Diagnostics: Check if we are starving for frames
+                if time.time() - last_frame_time > 5.0:
+                    # If we haven't seen a frame in 5 seconds
+                    if self.manual_scan_requested:
+                        self._log_debug("WARNING: Manual Scan requested but no video frames received!")
+                        self.notification_queue.put(("warning", "No Camera Signal - Cannot Scan"))
+                        self.manual_scan_requested = False # Reset to prevent stuck state
                 continue
 
             if self.cooldown > 0:

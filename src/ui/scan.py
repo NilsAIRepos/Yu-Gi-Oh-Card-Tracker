@@ -70,7 +70,10 @@ function stopCamera() {
 }
 
 function captureFrame() {
-    if (!video || !stream) return null;
+    if (!video || !stream) {
+        console.log("captureFrame: No video or stream");
+        return null;
+    }
 
     // Get actual dimensions
     const vw = video.videoWidth;
@@ -101,7 +104,8 @@ function captureFrame() {
     ctx.drawImage(video, 0, 0, w, h);
 
     // Return lower quality JPEG to reduce size
-    return canvas.toDataURL('image/jpeg', 0.6);
+    var dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    return dataUrl;
 }
 
 function drawOverlay(points) {
@@ -269,9 +273,13 @@ class ScanPage:
             if is_running:
                 try:
                     # Capture frame with timeout to prevent blocking
-                    b64 = await ui.run_javascript('captureFrame()', timeout=2.0)
+                    # Increased timeout to 4.0s to avoid dropping frames on slower connections
+                    b64 = await ui.run_javascript('captureFrame()', timeout=4.0)
                     if b64:
                         scanner_manager.push_frame(b64)
+                    else:
+                        # If JS returns null (no video stream yet), we just wait.
+                        pass
 
                     # Update Overlay
                     contour = scanner_manager.get_live_contour()
@@ -281,9 +289,11 @@ class ScanPage:
                         await ui.run_javascript('clearOverlay()')
 
                 except Exception as e:
-                    # Log but continue so UI doesn't freeze
-                    # logger.debug(f"Frame capture/overlay error: {e}")
-                    pass
+                    # Log error to console so we know why it fails
+                    logger.error(f"Frame capture/overlay error: {e}")
+                    if self.status_label:
+                        self.status_label.text = "Status: Connection Error (Check Logs)"
+                    # We continue so the loop doesn't die, but now we know.
 
             # 5. Check for new results
             result = scanner_manager.get_latest_result()
