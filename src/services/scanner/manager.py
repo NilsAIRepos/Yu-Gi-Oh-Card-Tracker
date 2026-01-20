@@ -4,7 +4,7 @@ import queue
 import time
 import base64
 import asyncio
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 
 try:
     import numpy as np
@@ -51,6 +51,10 @@ class ScannerManager:
         self.latest_normalized_contour: Optional[List[List[float]]] = None
         self.auto_scan_paused = False
 
+        # Sharpness Buffering
+        # We store tuples of (frame, contour, sharpness_score)
+        self.stability_buffer: List[Tuple[Any, Any, float]] = []
+
         # Debug State
         self.manual_scan_requested = False
         self.debug_state = {
@@ -60,7 +64,8 @@ class ScannerManager:
             "warped_image": None,
             "ocr_text": None,
             "contour_area": 0,
-            "stability": 0
+            "stability": 0,
+            "sharpness": 0.0
         }
 
         # Configuration
@@ -91,10 +96,11 @@ class ScannerManager:
             self.input_queue.queue.clear()
 
         self.latest_normalized_contour = None
+        self.stability_buffer.clear()
         logger.info("Scanner stopped")
 
-    def push_frame(self, b64_frame: str):
-        """Receives a frame from the client."""
+    def push_frame(self, frame_data: Union[str, bytes]):
+        """Receives a frame from the client (Base64 string or Raw Bytes)."""
         if not self.running:
             return
 
@@ -104,9 +110,10 @@ class ScannerManager:
                 self.input_queue.get_nowait()
 
             if self.manual_scan_requested:
-                 logger.info(f"Server received frame for manual scan (Size: {len(b64_frame)} bytes)")
+                 size = len(frame_data)
+                 logger.info(f"Server received frame for manual scan (Size: {size} bytes)")
 
-            self.input_queue.put_nowait(b64_frame)
+            self.input_queue.put_nowait(frame_data)
         except queue.Full:
             pass
 
@@ -155,12 +162,35 @@ class ScannerManager:
         """Returns the latest detected card contour as normalized coordinates (0.0-1.0)."""
         return self.latest_normalized_contour
 
+    def _calculate_sharpness(self, image, contour=None) -> float:
+        """Calculates the sharpness of an image using the Laplacian variance.
+           If contour is provided, only calculates sharpness within the bounding box.
+        """
+        if image is None:
+            return 0.0
+
+        try:
+            target_area = image
+
+            if contour is not None:
+                # Crop to bounding rect of the contour
+                x, y, w, h = cv2.boundingRect(contour)
+                # Ensure valid crop
+                if w > 0 and h > 0:
+                    target_area = image[y:y+h, x:x+w]
+
+            gray = cv2.cvtColor(target_area, cv2.COLOR_BGR2GRAY)
+            return cv2.Laplacian(gray, cv2.CV_64F).var()
+        except Exception as e:
+            logger.error(f"Error calculating sharpness: {e}")
+            return 0.0
+
     def _worker(self):
         last_frame_time = time.time()
 
         while self.running:
             try:
-                b64_str = self.input_queue.get(timeout=0.5)
+                frame_data = self.input_queue.get(timeout=0.5)
                 last_frame_time = time.time()
             except queue.Empty:
                 # Diagnostics: Check if we are starving for frames
@@ -180,13 +210,20 @@ class ScannerManager:
                 if self.auto_scan_paused and not self.manual_scan_requested:
                     continue
 
-                # Decode Base64
-                if ',' in b64_str:
-                    b64_str = b64_str.split(',')[1]
-
-                img_bytes = base64.b64decode(b64_str)
-                nparr = np.frombuffer(img_bytes, np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                # Decode Frame
+                frame = None
+                if isinstance(frame_data, bytes):
+                    # Raw Bytes
+                    nparr = np.frombuffer(frame_data, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                elif isinstance(frame_data, str):
+                    # Base64 String
+                    b64_str = frame_data
+                    if ',' in b64_str:
+                        b64_str = b64_str.split(',')[1]
+                    img_bytes = base64.b64decode(b64_str)
+                    nparr = np.frombuffer(img_bytes, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
                 if frame is None:
                     continue
@@ -209,7 +246,6 @@ class ScannerManager:
                     capture_snapshot = True  # Always capture on manual
 
                     # Capture the RAW frame immediately for feedback
-                    # This ensures the user sees exactly what they snapped
                     debug_frame_raw = frame.copy()
                     if contour is not None:
                          cv2.drawContours(debug_frame_raw, [contour], -1, (0, 255, 0), 2)
@@ -230,14 +266,16 @@ class ScannerManager:
                          self.status_message = "Processing Manual Capture..."
                          self.notification_queue.put(("info", "Processing Manual Capture..."))
 
+                # Stability Check & Buffering
+                is_stable = False
+                sharpness = 0.0
+
                 if contour is not None:
                     area = cv2.contourArea(contour)
                     self.debug_state["contour_area"] = area
 
                     # Normalize and store contour
-                    # contour is shape (4, 1, 2)
                     pts = contour.reshape(4, 2).astype(float)
-                    # Normalize x by width, y by height
                     pts[:, 0] /= width
                     pts[:, 1] /= height
                     self.latest_normalized_contour = pts.tolist()
@@ -245,37 +283,65 @@ class ScannerManager:
                     # Check Stability
                     if self._check_stability(contour):
                         self.stable_frames += 1
+                        is_stable = True
+                        # Pass contour to focus sharpness calculation
+                        sharpness = self._calculate_sharpness(frame, contour)
+                        self.debug_state["sharpness"] = sharpness
                     else:
                         self.stable_frames = 0
-                        # Log instability only occasionally? Or implies movement
-                        pass
+                        self.stability_buffer.clear() # Clear buffer on movement
                 else:
                     self.stable_frames = 0
                     self.last_corners = None
                     self.latest_normalized_contour = None
                     self.debug_state["contour_area"] = 0
+                    self.stability_buffer.clear()
+
+
+                # Update Buffer
+                if is_stable and not force_scan:
+                    self.stability_buffer.append((frame, contour, sharpness))
+                    # Keep buffer size limited to required frames (rolling window if we wanted, but here we trigger AT threshold)
+                    if len(self.stability_buffer) > self.required_stable_frames:
+                        self.stability_buffer.pop(0)
+
 
                 # Trigger Processing
                 # Trigger if: Stable enough OR Forced
-                should_process = (self.stable_frames >= self.required_stable_frames) or force_scan
+                # If stable enough, we pick the best frame from the buffer
+                should_process = (self.stable_frames == self.required_stable_frames) or force_scan
 
                 if should_process and not self.is_processing and (self.cooldown == 0 or force_scan):
                     self.is_processing = True
+                    self.cooldown = self.scan_cooldown_frames # Reset cooldown immediately to prevent double triggers
+
+                    target_frame = frame
+                    target_contour = contour
+
+                    if not force_scan and self.stability_buffer:
+                        # Select best frame from buffer
+                        best_entry = max(self.stability_buffer, key=lambda x: x[2])
+                        target_frame, target_contour, best_score = best_entry
+                        self._log_debug(f"Selected sharpest frame (Score: {best_score:.0f})")
+                        # Clear buffer after selection
+                        self.stability_buffer.clear()
+                        # Important: Reset stable frames so we don't trigger again immediately on next frame
+                        self.stable_frames = 0
 
                     # If it wasn't manual, we still want a snapshot of the auto-scan success
                     if not capture_snapshot:
-                         debug_frame = frame.copy()
-                         cv2.drawContours(debug_frame, [contour], -1, (0, 255, 0), 2)
+                         debug_frame = target_frame.copy()
+                         cv2.drawContours(debug_frame, [target_contour], -1, (0, 255, 0), 2)
                          _, buffer = cv2.imencode('.jpg', debug_frame)
                          b64_debug = base64.b64encode(buffer).decode('utf-8')
                          self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
 
                     self.status_message = "Processing..."
-                    self._log_debug(f"Starting Processing (Stable: {self.stable_frames}, Force: {force_scan})")
+                    self._log_debug(f"Starting Processing (Force: {force_scan})")
 
                     # Run CV tasks in thread
                     # Note: contour might be None if force_scan is True (Manual Fallback)
-                    threading.Thread(target=self._cv_scan_task, args=(frame.copy(), contour)).start()
+                    threading.Thread(target=self._cv_scan_task, args=(target_frame.copy(), target_contour)).start()
 
                 elif self.is_processing:
                     self.status_message = "Analyzing..."
@@ -413,7 +479,7 @@ class ScannerManager:
 
             # Reset processing flag
             self.is_processing = False
-            self.cooldown = self.scan_cooldown_frames
+            # self.cooldown was already set in _worker, but making sure
             self._log_debug("Scan cycle complete")
 
         except Exception as e:

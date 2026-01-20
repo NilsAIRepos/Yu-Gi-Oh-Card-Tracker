@@ -3,6 +3,7 @@ import logging
 import os
 import asyncio
 from typing import List, Dict, Any
+from fastapi import UploadFile
 
 from src.services.scanner.manager import scanner_manager, SCANNER_AVAILABLE
 from src.core.persistence import persistence
@@ -10,6 +11,19 @@ from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
 from src.services.ygo_api import ygo_service
 
 logger = logging.getLogger(__name__)
+
+# API Endpoint for Frame Upload
+# Defined at module level so it registers with the global app
+@app.post("/api/scanner/upload_frame")
+async def upload_frame(file: UploadFile):
+    try:
+        # Read raw bytes from the uploaded file
+        content = await file.read()
+        scanner_manager.push_frame(content)
+        return {"status": "received", "size": len(content)}
+    except Exception as e:
+        logger.error(f"Error receiving frame: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Client-Side Camera Logic
 JS_CAMERA_CODE = """
@@ -29,7 +43,7 @@ function initScanner() {
     }
 }
 
-async function startCamera(deviceId) {
+async function startCamera(deviceId, uploadUrl) {
     if (!window.scannerVideo) initScanner();
 
     // Explicit check
@@ -60,6 +74,10 @@ async function startCamera(deviceId) {
                 window.overlayCanvas.height = window.scannerVideo.videoHeight;
             }
         }
+
+        // Start Streaming Loop
+        startStreamingLoop(uploadUrl);
+
         return true;
     } catch (err) {
         console.error("Error accessing camera:", err);
@@ -67,51 +85,24 @@ async function startCamera(deviceId) {
     }
 }
 
-function stopCamera() {
-    if (window.scannerStream) {
-        window.scannerStream.getTracks().forEach(track => track.stop());
-        window.scannerStream = null;
-    }
-    if (window.scannerVideo) {
-        window.scannerVideo.srcObject = null;
-    }
-    clearOverlay();
-}
+function startStreamingLoop(uploadUrl) {
+    if (window.streamInterval) clearInterval(window.streamInterval);
+    window.isStreaming = true;
 
-function captureFrame() {
-    console.log("Client: captureFrame sequence started");
-    try {
-        // Attempt re-init if missing
-        if (!window.scannerVideo) initScanner();
+    // Create a reuseable canvas for processing frames
+    const procCanvas = document.createElement('canvas');
+    const procCtx = procCanvas.getContext('2d');
 
-        if (!window.scannerVideo) {
-            console.error("Client: No video element found");
-            return "ERR:NO_VIDEO_ELEMENT";
-        }
-        if (!window.scannerStream) {
-            console.error("Client: No media stream active");
-            return "ERR:NO_STREAM";
-        }
+    window.streamInterval = setInterval(() => {
+        if (!window.isStreaming) return;
+        if (!window.scannerVideo || window.scannerVideo.readyState < 2) return;
 
-        // Check ready state (HAVE_CURRENT_DATA = 2, HAVE_ENOUGH_DATA = 4)
-        if (window.scannerVideo.readyState < 2) {
-             console.warn("Client: Video not ready (readyState=" + window.scannerVideo.readyState + ")");
-             return "ERR:VIDEO_NOT_READY";
-        }
-
-        // Get actual dimensions
-        const vw = window.scannerVideo.videoWidth;
-        const vh = window.scannerVideo.videoHeight;
-
-        if (vw === 0 || vh === 0) {
-            console.error("Client: Video dimensions zero");
-            return "ERR:DIM_ZERO";
-        }
-
-        // Downscale if too large to prevent websocket saturation
+        // Downscaling Logic
         const maxDim = 800;
-        let w = vw;
-        let h = vh;
+        let w = window.scannerVideo.videoWidth;
+        let h = window.scannerVideo.videoHeight;
+
+        if (w === 0 || h === 0) return;
 
         if (w > maxDim || h > maxDim) {
             if (w > h) {
@@ -123,22 +114,37 @@ function captureFrame() {
             }
         }
 
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
+        procCanvas.width = w;
+        procCanvas.height = h;
+        procCtx.drawImage(window.scannerVideo, 0, 0, w, h);
 
-        const ctx = canvas.getContext('2d');
-        // Draw scaled image
-        ctx.drawImage(window.scannerVideo, 0, 0, w, h);
+        procCanvas.toBlob(blob => {
+            if (blob) {
+                 const formData = new FormData();
+                 formData.append('file', blob);
+                 // Fire and forget upload
+                 fetch(uploadUrl, { method: 'POST', body: formData }).catch(e => console.error("Frame upload failed:", e));
+            }
+        }, 'image/jpeg', 0.6);
 
-        // Return lower quality JPEG to reduce size
-        var dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-        console.log("Client: captureFrame success, size: " + dataUrl.length);
-        return dataUrl;
-    } catch (err) {
-        console.error("Client: captureFrame exception:", err);
-        return "ERR:JS_EXCEPTION:" + err.message;
+    }, 100); // 100ms interval
+}
+
+function stopCamera() {
+    window.isStreaming = false;
+    if (window.streamInterval) {
+        clearInterval(window.streamInterval);
+        window.streamInterval = null;
     }
+
+    if (window.scannerStream) {
+        window.scannerStream.getTracks().forEach(track => track.stop());
+        window.scannerStream = null;
+    }
+    if (window.scannerVideo) {
+        window.scannerVideo.srcObject = null;
+    }
+    clearOverlay();
 }
 
 function drawOverlay(points) {
@@ -203,7 +209,6 @@ class ScanPage:
         self.status_label = None
         self.camera_select = None
         self.is_active = False
-        self.last_capture_error = None # Track error to avoid spam
 
         # Debug UI
         self.debug_mode = False
@@ -242,9 +247,12 @@ class ScanPage:
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
 
+        # Hardcoded endpoint for now, or derive from window.location if needed (relative path works)
+        upload_url = "/api/scanner/upload_frame"
+
         try:
             # Increase timeout to 60s for permission dialogs
-            success = await ui.run_javascript(f'startCamera("{device_id}")', timeout=60.0)
+            success = await ui.run_javascript(f'startCamera("{device_id}", "{upload_url}")', timeout=60.0)
             logger.info(f"startCamera JS returned: {success}")
 
             if success:
@@ -296,74 +304,39 @@ class ScanPage:
         ui.notify("Automatic Scan Resumed", type='positive')
 
     async def update_loop(self):
+        """
+        Main loop for updating UI based on Scanner Manager state.
+        Note: Frame capture is now handled via direct client POST uploads.
+        This loop is responsible for:
+        1. Fetching status updates
+        2. Drawing overlays (based on processed contours)
+        3. Polling for results
+        """
         if not self.is_active:
             return
 
         try:
-            # 1. Sync State (Backend)
-            is_running = scanner_manager.running
-            # Note: We rely on manual start/stop button clicks to toggle visibility,
-            # but we can force sync here if needed.
-            # But if JS fails, backend might run while frontend stopped.
-
-            # 2. Update Status
+            # 1. Status Update
             if self.status_label:
                 self.status_label.text = f"Status: {scanner_manager.get_status()}"
 
-            # 3. Process Logic
+            # 2. Process Logic (Backend)
             await scanner_manager.process_pending_lookups()
 
-            # 4. Capture Frame & Draw Overlay (Client -> Server -> Client)
-            if is_running:
-                try:
-                    # Capture frame with timeout to prevent blocking
-                    # Increased timeout to 4.0s to avoid dropping frames on slower connections
-                    response = await ui.run_javascript('captureFrame()', timeout=4.0)
+            # 3. Draw Overlay (from latest server processing)
+            # The contour lags slightly behind the video, but usually acceptable
+            contour = scanner_manager.get_live_contour()
+            if contour:
+                await ui.run_javascript(f'drawOverlay({contour})')
+            else:
+                await ui.run_javascript('clearOverlay()')
 
-                    if response and isinstance(response, str) and response.startswith("ERR:"):
-                        if response != self.last_capture_error:
-                            logger.warning(f"Client Capture Error: {response}")
-                            self.last_capture_error = response
-
-                        # Critical: If user requested manual scan but we failed to capture, notify them!
-                        if scanner_manager.manual_scan_requested:
-                            logger.error("Manual scan failed due to capture error.")
-                            ui.notify(f"Capture Failed: {response}", type='negative')
-                            # Reset flag to prevent stuck state
-                            scanner_manager.manual_scan_requested = False
-
-                    elif response:
-                        # Success
-                        self.last_capture_error = None
-                        if scanner_manager.manual_scan_requested:
-                            logger.info(f"Client sending frame for manual scan... (Length: {len(response)})")
-                        scanner_manager.push_frame(response)
-                    else:
-                        # Null response (no video stream yet or initialization pending)
-                        if scanner_manager.manual_scan_requested:
-                             logger.warning(f"Manual scan requested but captureFrame returned empty response: {response!r}")
-                        pass
-
-                    # Update Overlay
-                    contour = scanner_manager.get_live_contour()
-                    if contour:
-                        await ui.run_javascript(f'drawOverlay({contour})')
-                    else:
-                        await ui.run_javascript('clearOverlay()')
-
-                except Exception as e:
-                    # Log error to console so we know why it fails
-                    logger.error(f"Frame capture/overlay error: {e}")
-                    if self.status_label:
-                        self.status_label.text = "Status: Connection Error (Check Logs)"
-                    # We continue so the loop doesn't die, but now we know.
-
-            # 5. Check for new results
+            # 4. Check for new results
             result = scanner_manager.get_latest_result()
             if result:
                 self.add_scanned_card(result)
 
-            # Check for notifications
+            # 5. Check for notifications
             note = scanner_manager.get_latest_notification()
             if note:
                  type_, msg = note
@@ -391,6 +364,7 @@ class ScanPage:
                 if self.debug_stats_label:
                     stats = f"Stability: {snapshot.get('stability', 0)}\n" \
                             f"Contour Area: {snapshot.get('contour_area', 0):.0f}\n" \
+                            f"Sharpness: {snapshot.get('sharpness', 0.0):.1f}\n" \
                             f"OCR: {snapshot.get('ocr_text', 'N/A')}"
                     self.debug_stats_label.text = stats
 
@@ -540,7 +514,7 @@ def scan_page():
 
          ui.label("Controls:").classes('font-bold')
          with ui.row().classes('w-full mb-4 gap-2'):
-            ui.button("Force Manual Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('flex-1')
+            ui.button("Force Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('flex-1')
             ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
 
          ui.label("Captured View:").classes('font-bold')
@@ -605,4 +579,4 @@ def scan_page():
     ui.timer(1.0, page.init_cameras, once=True)
 
     # Start update timer
-    ui.timer(0.3, page.update_loop)
+    ui.timer(0.1, page.update_loop)
