@@ -318,17 +318,20 @@ class UnifiedImportController:
                 if not is_set_code_compatible(m['code'], row.language):
                     continue
 
-                # Name Similarity Check for Cross-Language Imports
-                # Prevents Legacy Code Collisions (e.g. LOB-G021 Hinotama vs LOB-021 Raigeki)
-                # If row language differs from DB entry language AND we matched on a region-less code
-                if row.language.lower() != m['lang'].lower():
-                    # Check if code is regionless (implies Base/English fallback)
-                    if re.match(r'^[A-Za-z0-9]+-\d+$', m['code']):
-                        # Calculate similarity
-                        ratio = difflib.SequenceMatcher(None, row.name, m['card'].name).ratio()
-                        if ratio < 0.25:
-                             logger.warning(f"Rejected legacy mismatch: {row.name} vs {m['card'].name} ({ratio:.2f})")
-                             continue
+                # Name Similarity Check (Global)
+                # We enforce this to catch Legacy Code Collisions (e.g. LOB-G020 Hinotama vs LOB-020 Dark King)
+                # even if languages technically match (e.g. if DB has bad mapping) or if we fell back to Base Code.
+                # Threshold 0.30:
+                # - Rejects "Hinotama Seele" vs "Dark King" (~0.27)
+                # - Rejects "Hinotama Seele" vs "Raigeki" (~0.19)
+                # - Accepts "Hinotama Seele" vs "Hinotama Soul" (~0.81)
+                # - Accepts "Blauäugiger..." vs "Blue-Eyes..." (~0.42)
+                # - Rejects "Verräterische Schwerter" vs "Swords..." (~0.08) -> Correctly triggers Name Fallback to find German card.
+
+                ratio = difflib.SequenceMatcher(None, row.name, m['card'].name).ratio()
+                if ratio < 0.30:
+                     logger.warning(f"Rejected mismatch: {row.name} vs {m['card'].name} ({ratio:.2f})")
+                     continue
 
                 compatible_matches.append(m)
 
