@@ -5,7 +5,7 @@ from src.core.config import config_manager
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.services.collection_editor import CollectionEditor
-from src.core.utils import generate_variant_id, normalize_set_code, extract_language_code, LANGUAGE_FLAG_MAP
+from src.core.utils import generate_variant_id, normalize_set_code, extract_language_code, LANGUAGE_COUNTRY_MAP
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.ui.components.structure_deck_dialog import StructureDeckDialog
@@ -1117,7 +1117,6 @@ class BulkAddPage:
             for item in items:
                 img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
 
-                flag = LANGUAGE_FLAG_MAP.get(item.language.strip().upper(), item.language)
                 cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
                 cond_short = cond_map.get(item.condition, item.condition[:2].upper())
 
@@ -1129,7 +1128,13 @@ class BulkAddPage:
                     with ui.element('div').classes('relative w-full h-full'):
                          ui.image(img_src).classes('w-full h-full object-cover')
 
-                         ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
+                         lang_code = item.language.strip().upper()
+                         country_code = LANGUAGE_COUNTRY_MAP.get(lang_code)
+                         if country_code:
+                             ui.element('img').props(f'src="https://flagcdn.com/h24/{country_code}.png" alt="{lang_code}"').classes('absolute top-1 left-1 h-3 w-auto shadow-black drop-shadow-md rounded bg-black/30')
+                         else:
+                             ui.label(lang_code).classes('absolute top-1 left-1 text-xs font-bold shadow-black drop-shadow-md bg-black/30 rounded px-1')
+
                          ui.label(f"{item.quantity}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs shadow-md')
 
                          with ui.column().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[9px] px-1 gap-0 w-full'):

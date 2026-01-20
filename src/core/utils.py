@@ -63,6 +63,24 @@ LANGUAGE_FLAG_MAP = {
                  # I'll stick to the ones that were present + GB.
 }
 
+# Mapping of Language Codes to ISO Country Codes for Flag Images
+LANGUAGE_COUNTRY_MAP = {
+    'EN': 'gb',
+    'GB': 'gb',
+    'DE': 'de',
+    'FR': 'fr',
+    'IT': 'it',
+    'ES': 'es',
+    'PT': 'pt',
+    'JP': 'jp',
+    'KR': 'kr',
+    'CN': 'cn',
+    'ZH': 'cn',
+    'TC': 'cn',
+    'SC': 'cn',
+    'AE': 'ae',
+}
+
 def transform_set_code(set_code: str, language: str) -> str:
     """
     Transforms a set code based on the language.

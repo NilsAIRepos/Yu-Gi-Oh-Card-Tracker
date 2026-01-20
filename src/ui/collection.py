@@ -5,7 +5,7 @@ from src.core.models import Collection, CollectionCard, CollectionVariant, Colle
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
-from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, LANGUAGE_FLAG_MAP
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, LANGUAGE_COUNTRY_MAP
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.services.collection_editor import CollectionEditor
@@ -960,8 +960,12 @@ class CollectionPage:
                     ui.label(cond_map.get(item.condition, item.condition[:2].upper())).classes('text-xs font-bold text-yellow-500')
                     ui.label("1st" if item.first_edition else "").classes('text-xs font-bold text-orange-400')
 
-                    flag = LANGUAGE_FLAG_MAP.get(item.language.strip().upper(), item.language)
-                    ui.label(flag).classes('text-lg')
+                    lang_code = item.language.strip().upper()
+                    country_code = LANGUAGE_COUNTRY_MAP.get(lang_code)
+                    if country_code:
+                        ui.image(f"https://flagcdn.com/h20/{country_code}.png").classes('w-3 h-auto inline-block shadow-sm').props(f'alt="{lang_code}"')
+                    else:
+                        ui.label(lang_code).classes('text-sm font-bold')
 
                     ui.label(f"${item.price:.2f}").classes('text-sm text-green-400')
 
@@ -990,8 +994,12 @@ class CollectionPage:
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if img_src: ui.image(img_src).classes('w-full h-full object-cover')
 
-                        flag = LANGUAGE_FLAG_MAP.get(item.language.strip().upper(), item.language)
-                        ui.label(flag).classes('absolute top-1 left-1 text-lg shadow-black drop-shadow-md bg-black/30 rounded px-1')
+                        lang_code = item.language.strip().upper()
+                        country_code = LANGUAGE_COUNTRY_MAP.get(lang_code)
+                        if country_code:
+                            ui.element('img').props(f'src="https://flagcdn.com/h24/{country_code}.png" alt="{lang_code}"').classes('absolute top-1 left-1 h-3 w-auto shadow-black drop-shadow-md rounded bg-black/30')
+                        else:
+                            ui.label(lang_code).classes('absolute top-1 left-1 text-xs font-bold shadow-black drop-shadow-md bg-black/30 rounded px-1')
 
                         if item.is_owned:
                              ui.label(f"{item.owned_count}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs')
