@@ -241,10 +241,16 @@ class ScanPage:
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
-        if await ui.run_javascript(f'startCamera("{device_id}", "/api/scanner/upload_frame")'):
-            scanner_manager.start()
-            self.start_btn.visible = False
-            self.stop_btn.visible = True
+        try:
+            if await ui.run_javascript(f'startCamera("{device_id}", "/api/scanner/upload_frame")', timeout=20.0):
+                scanner_manager.start()
+                self.start_btn.visible = False
+                self.stop_btn.visible = True
+            else:
+                 ui.notify("Failed to start camera (JS returned false)", type='negative')
+        except Exception as e:
+            logger.error(f"Error starting camera: {e}")
+            ui.notify(f"Error starting camera: {e}", type='negative')
 
     async def stop_camera(self):
         await ui.run_javascript('stopCamera()')
