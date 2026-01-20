@@ -156,13 +156,16 @@ class CardScanner:
 
     def extract_set_id(self, warped) -> Tuple[Optional[str], int]:
         """Extracts the Set ID using OCR. Returns (set_id, confidence)."""
-        x, y, w, h = self.roi_set_id_search
-        roi = warped[y:y+h, x:x+w]
+        # scan full image instead of ROI to be robust against bad crops
+        roi = warped
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # Resize to improve OCR accuracy on small text
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
+        # psm 11 (Sparse text) is still good, but psm 3 (Fully automatic) might be better for full card
+        # sticking to 11 as we are looking for specific code blocks
         config = r'--oem 3 --psm 11'
 
         # Get data to find confidence of the matched word
@@ -176,10 +179,6 @@ class CardScanner:
         if match:
             found_text = match.group(1)
             # Try to find confidence for this specific match
-            # This is tricky because image_to_data splits by words.
-            # We'll just take the average confidence of all non-empty words as a proxy
-            # or try to match the specific words.
-            # For now, average confidence of confident words (>0) is a decent metric.
             confs = [int(c) for c in data['conf'] if int(c) != -1]
             avg_conf = sum(confs) / len(confs) if confs else 0
             return found_text, avg_conf
@@ -219,13 +218,14 @@ class CardScanner:
                 if suffix in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
                     return suffix
 
-        x, y, w, h = self.roi_desc
-        roi = warped[y:y+h, x:x+w]
+        # Scan full image instead of ROI to reduce "EN" bias from bad crops
+        roi = warped
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
         text = pytesseract.image_to_string(thresh)
-        if len(text) < 10:
+        # Reduced text length threshold
+        if len(text) < 5:
             return "EN"
 
         try:
