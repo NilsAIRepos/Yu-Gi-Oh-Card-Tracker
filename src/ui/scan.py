@@ -224,7 +224,7 @@ class ScanPage:
         self.debug_log_label = None
         self.last_capture_timestamp = 0.0
         self.last_updated_src = None
-        self.pending_request_ts = 0.0
+        self.manual_scan_start_ts = 0.0
 
         # Load available collections
         self.collections = persistence.list_collections()
@@ -301,10 +301,9 @@ class ScanPage:
                  self.debug_drawer_el.classes(remove='translate-x-0', add='translate-x-full')
 
     def trigger_manual_scan(self):
-        ts = time.time()
-        self.pending_request_ts = ts
-        logger.info(f"Button pressed: Manual Scan requested (TS: {ts})")
-        scanner_manager.trigger_manual_scan(ts)
+        self.manual_scan_start_ts = time.time()
+        logger.info(f"Button pressed: Manual Scan requested (Start TS: {self.manual_scan_start_ts})")
+        scanner_manager.trigger_manual_scan()
         ui.notify("Manual Scan Triggered", type='info')
 
     def resume_auto_scan(self):
@@ -332,23 +331,23 @@ class ScanPage:
                 # Update Captured Image (Raw with annotations)
                 if self.captured_img:
                     current_ts = snapshot.get("capture_timestamp", 0.0)
-                    trigger_ts = snapshot.get("trigger_timestamp", 0.0)
                     src = snapshot.get("captured_image")
 
                     # Invalidation:
                     # 1. Update if timestamp is newer
                     # 2. Update if content changed (backup)
-                    # 3. Update if this is the response to our specific manual request
+                    # 3. Update if we are waiting for a manual scan and this is the "next" picture
                     should_update = False
 
                     if src:
-                        # Check if this snapshot corresponds to our pending request
-                        if self.pending_request_ts > 0 and trigger_ts == self.pending_request_ts:
+                        # "Next Picture" Logic:
+                        # If we requested a manual scan at T_req, and this image was captured at T_cap,
+                        # and T_cap > T_req, then this IS the manual scan result.
+                        if self.manual_scan_start_ts > 0 and current_ts > self.manual_scan_start_ts:
                              should_update = True
-                             logger.info(f"UI: Received response for pending request {trigger_ts}")
-                             # Reset pending so we don't re-trigger needlessly,
-                             # though standard timestamp check would handle subsequent loops
-                             self.pending_request_ts = 0.0
+                             logger.info(f"UI: Received manual scan response (Req: {self.manual_scan_start_ts}, Cap: {current_ts})")
+                             # Reset wait flag
+                             self.manual_scan_start_ts = 0.0
 
                         elif current_ts > self.last_capture_timestamp:
                             should_update = True
