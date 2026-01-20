@@ -541,7 +541,7 @@ def scan_page():
          ui.label("Controls:").classes('font-bold')
          with ui.row().classes('w-full mb-4 gap-2'):
             ui.button("Force Scan", on_click=page.trigger_manual_scan).props('color=warning icon=camera_alt').classes('flex-1')
-            ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
+            # ui.button("Auto Scan", on_click=page.resume_auto_scan).props('color=positive icon=autorenew').classes('flex-1')
 
          ui.label("Captured View:").classes('font-bold')
          page.captured_img = ui.image().classes('w-full h-auto border bg-black mb-2 min-h-[100px]')
