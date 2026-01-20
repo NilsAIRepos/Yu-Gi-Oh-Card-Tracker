@@ -23,7 +23,8 @@ class CardScanner:
         # Y coordinate 605 is approx just below the artwork box.
 
         # Set ID: Usually mid-right, below artwork
-        self.roi_set_id = (400, 595, 180, 45)
+        # Broaden the search area significantly for more robust detection
+        self.roi_set_id_search = (300, 580, 290, 80) # Broad search area
 
         # 1st Edition: Usually mid-left, below artwork
         self.roi_1st_ed = (20, 595, 180, 45)
@@ -48,6 +49,35 @@ class CardScanner:
         thresh = cv2.bitwise_not(thresh)
         return thresh
 
+    def get_fallback_crop(self, frame) -> np.ndarray:
+        """
+        Creates a 'center crop' of the frame assuming the user has the card roughly in the middle.
+        This serves as a backup when contour detection fails.
+        """
+        h_frame, w_frame = frame.shape[:2]
+
+        # Target aspect ratio
+        target_ar = self.width / self.height # ~0.68
+
+        # Define a crop box in the center, taking up ~60% of height or width
+        # This is a heuristic.
+        crop_h = int(h_frame * 0.7)
+        crop_w = int(crop_h * target_ar)
+
+        if crop_w > w_frame:
+            # Constrain by width if needed
+            crop_w = int(w_frame * 0.8)
+            crop_h = int(crop_w / target_ar)
+
+        x_start = (w_frame - crop_w) // 2
+        y_start = (h_frame - crop_h) // 2
+
+        crop = frame[y_start:y_start+crop_h, x_start:x_start+crop_w]
+
+        # Resize to standard processing size
+        resized = cv2.resize(crop, (self.width, self.height))
+        return resized
+
     def find_card_contour(self, frame) -> Optional[np.ndarray]:
         """Finds the largest rectangular contour that looks like a card."""
         thresh = self.preprocess_image(frame)
@@ -64,16 +94,19 @@ class CardScanner:
             if area < 10000: # Minimum area threshold
                 continue
 
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+            # IMPROVEMENT: Use Convex Hull to wrap fingers/occlusions
+            hull = cv2.convexHull(cnt)
 
-            # Preference 1: Perfect 4-sided polygon
+            # Try to approximate the hull to 4 points
+            peri = cv2.arcLength(hull, True)
+            approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
+
+            # Preference 1: Perfect 4-sided polygon from hull
             if len(approx) == 4:
                 return approx
 
-            # Preference 2: Robust Fallback (Rotated Rectangle)
-            # Handles cards with rounded corners or slight occlusion
-            rect = cv2.minAreaRect(cnt)
+            # Preference 2: Robust Fallback (Rotated Rectangle from Hull)
+            rect = cv2.minAreaRect(hull)
             (center), (w, h), angle = rect
 
             if w == 0 or h == 0:
@@ -119,7 +152,8 @@ class CardScanner:
 
     def extract_set_id(self, warped) -> Optional[str]:
         """Extracts the Set ID (e.g., LOB-EN001) using OCR."""
-        x, y, w, h = self.roi_set_id
+        # Use broadened search area
+        x, y, w, h = self.roi_set_id_search
         roi = warped[y:y+h, x:x+w]
 
         # Preprocess ROI for OCR
@@ -130,14 +164,18 @@ class CardScanner:
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         # Configure Tesseract
-        # psm 7 = Treat the image as a single text line
-        config = r'--oem 3 --psm 7'
+        # psm 6 = Assume a single uniform block of text (better for multi-line search if crop is messy)
+        # psm 11 = Sparse text (can also work)
+        # We try psm 11 first as it finds text scattered in image
+        config = r'--oem 3 --psm 11'
         text = pytesseract.image_to_string(thresh, config=config)
 
         # Cleanup
         text = text.strip().upper()
+
         # Regex for standard Set ID: 3-4 chars, hyphen, optional region (2 chars), 3 digits
         # Examples: SDK-001, LOB-EN001, MP19-EN005
+        # Improved regex to be more robust
         match = re.search(r'([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})', text)
         if match:
             return match.group(1)
@@ -310,7 +348,7 @@ class CardScanner:
             cv2.rectangle(canvas, (x, y), (x + w, y + h), color, 2)
 
         # Draw Set ID ROI (Green)
-        draw_roi(self.roi_set_id, (0, 255, 0))
+        draw_roi(self.roi_set_id_search, (0, 255, 0))
 
         # Draw 1st Ed ROI (Blue)
         draw_roi(self.roi_1st_ed, (255, 0, 0))

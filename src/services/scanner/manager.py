@@ -193,15 +193,27 @@ class ScannerManager:
                     self.manual_scan_requested = False
                     capture_snapshot = True  # Always capture on manual
 
+                    # Capture the RAW frame immediately for feedback
+                    # This ensures the user sees exactly what they snapped
+                    debug_frame_raw = frame.copy()
+                    if contour is not None:
+                         cv2.drawContours(debug_frame_raw, [contour], -1, (0, 255, 0), 2)
+
+                    _, buffer = cv2.imencode('.jpg', debug_frame_raw)
+                    b64_debug = base64.b64encode(buffer).decode('utf-8')
+                    self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+
                     if contour is not None:
                          force_scan = True
                          self.debug_state["scan_result"] = "Card Detected"
                          self._log_debug("Manual Scan: Proceeding with contour")
                     else:
-                         self.debug_state["scan_result"] = "No Card Found"
-                         self._log_debug("Manual Scan: No contour detected")
-                         self.status_message = "Scan Failed: No Card Detected"
-                         self.notification_queue.put(("warning", "Manual Scan: No Card Detected"))
+                         # FALLBACK LOGIC: Even if no contour, proceed!
+                         force_scan = True # Force processing anyway
+                         self.debug_state["scan_result"] = "Fallback Mode"
+                         self._log_debug("Manual Scan: No contour, using fallback crop")
+                         self.status_message = "Processing Manual Capture..."
+                         self.notification_queue.put(("info", "Processing Manual Capture..."))
 
                 if contour is not None:
                     area = cv2.contourArea(contour)
@@ -222,43 +234,41 @@ class ScannerManager:
                         self.stable_frames = 0
                         # Log instability only occasionally? Or implies movement
                         pass
-
-                    # Trigger Processing
-                    # Trigger if: Stable enough OR Forced
-                    should_process = (self.stable_frames >= self.required_stable_frames) or force_scan
-
-                    if should_process and not self.is_processing and (self.cooldown == 0 or force_scan):
-                        self.is_processing = True
-                        capture_snapshot = True  # Capture on auto-success too
-                        self.status_message = "Processing..."
-                        self._log_debug(f"Starting Processing (Stable: {self.stable_frames}, Force: {force_scan})")
-                        # Run CV tasks in thread
-                        threading.Thread(target=self._cv_scan_task, args=(frame.copy(), contour)).start()
-                    elif self.is_processing:
-                        self.status_message = "Analyzing..."
-                    elif self.stable_frames > 0:
-                        self.status_message = f"Stabilizing: {self.stable_frames}/{self.required_stable_frames}"
                 else:
                     self.stable_frames = 0
                     self.last_corners = None
                     self.latest_normalized_contour = None
-                    self.status_message = "Scanning..." if not self.auto_scan_paused else "Paused"
                     self.debug_state["contour_area"] = 0
 
-                # Capture Snapshot if needed
-                if capture_snapshot:
-                    debug_frame = frame.copy()
-                    if contour is not None:
-                        cv2.drawContours(debug_frame, [contour], -1, (0, 255, 0), 2)
-                    else:
-                        # Draw Red Border to indicate failure clearly
-                        cv2.rectangle(debug_frame, (0, 0), (width-1, height-1), (0, 0, 255), 10)
-                        cv2.putText(debug_frame, "NO CARD FOUND", (50, height // 2),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                # Trigger Processing
+                # Trigger if: Stable enough OR Forced
+                should_process = (self.stable_frames >= self.required_stable_frames) or force_scan
 
-                    _, buffer = cv2.imencode('.jpg', debug_frame)
-                    b64_debug = base64.b64encode(buffer).decode('utf-8')
-                    self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+                if should_process and not self.is_processing and (self.cooldown == 0 or force_scan):
+                    self.is_processing = True
+
+                    # If it wasn't manual, we still want a snapshot of the auto-scan success
+                    if not capture_snapshot:
+                         debug_frame = frame.copy()
+                         cv2.drawContours(debug_frame, [contour], -1, (0, 255, 0), 2)
+                         _, buffer = cv2.imencode('.jpg', debug_frame)
+                         b64_debug = base64.b64encode(buffer).decode('utf-8')
+                         self.debug_state["captured_image"] = f"data:image/jpeg;base64,{b64_debug}"
+
+                    self.status_message = "Processing..."
+                    self._log_debug(f"Starting Processing (Stable: {self.stable_frames}, Force: {force_scan})")
+
+                    # Run CV tasks in thread
+                    # Note: contour might be None if force_scan is True (Manual Fallback)
+                    threading.Thread(target=self._cv_scan_task, args=(frame.copy(), contour)).start()
+
+                elif self.is_processing:
+                    self.status_message = "Analyzing..."
+                elif self.stable_frames > 0:
+                    self.status_message = f"Stabilizing: {self.stable_frames}/{self.required_stable_frames}"
+                elif not force_scan and not self.auto_scan_paused:
+                    self.status_message = "Scanning..."
+
 
             except Exception as e:
                 logger.error(f"Error in scanner worker: {e}")
@@ -289,9 +299,17 @@ class ScannerManager:
         """Phase 1: Heavy CV extraction (Threaded)."""
         try:
             logger.info("Starting CV scan task...")
-            warped = self.scanner.warp_card(frame, contour)
+
+            # Determine Warped Image: Contour or Fallback
+            if contour is not None:
+                warped = self.scanner.warp_card(frame, contour)
+            else:
+                # Fallback for manual scans with no detection
+                logger.info("Using fallback crop for processing.")
+                warped = self.scanner.get_fallback_crop(frame)
 
             # Generate Debug Image (Warped + ROIs)
+            # This ensures the user sees exactly what the OCR engine is looking at
             debug_img = self.scanner.debug_draw_rois(warped)
             _, buffer = cv2.imencode('.jpg', debug_img)
             b64_debug = base64.b64encode(buffer).decode('utf-8')
