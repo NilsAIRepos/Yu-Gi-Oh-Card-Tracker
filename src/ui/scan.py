@@ -86,6 +86,20 @@ async function startCamera(deviceId, uploadUrl) {
     }
 }
 
+function stopCamera() {
+    window.isStreaming = false;
+    if (window.streamInterval) {
+        clearInterval(window.streamInterval);
+        window.streamInterval = null;
+    }
+    if (window.scannerVideo && window.scannerVideo.srcObject) {
+        const tracks = window.scannerVideo.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+        window.scannerVideo.srcObject = null;
+    }
+    clearOverlay();
+}
+
 function startStreamingLoop(uploadUrl) {
     if (window.streamInterval) clearInterval(window.streamInterval);
     window.isStreaming = true;
@@ -95,52 +109,44 @@ function startStreamingLoop(uploadUrl) {
     const procCtx = procCanvas.getContext('2d');
 
     window.streamInterval = setInterval(() => {
-        if (!window.isStreaming) return;
-        if (!window.scannerVideo || window.scannerVideo.readyState < 2) return;
+        try {
+            if (!window.isStreaming) return;
+            if (!window.scannerVideo || window.scannerVideo.readyState < 2) return;
 
-        // Downscaling Logic
-        const maxDim = 800;
-        let w = window.scannerVideo.videoWidth;
-        let h = window.scannerVideo.videoHeight;
+            // Downscaling Logic
+            const maxDim = 800;
+            let w = window.scannerVideo.videoWidth;
+            let h = window.scannerVideo.videoHeight;
 
-        if (w === 0 || h === 0) return;
+            if (w === 0 || h === 0) return;
 
-        if (w > maxDim || h > maxDim) {
-            if (w > h) {
-                h = Math.round(h * (maxDim / w));
-                w = maxDim;
-            } else {
-                w = Math.round(w * (maxDim / h));
-                h = maxDim;
+            if (w > maxDim || h > maxDim) {
+                if (w > h) {
+                    h = Math.round(h * (maxDim / w));
+                    w = maxDim;
+                } else {
+                    w = Math.round(w * (maxDim / h));
+                    h = maxDim;
+                }
             }
+
+            procCanvas.width = w;
+            procCanvas.height = h;
+            procCtx.drawImage(window.scannerVideo, 0, 0, w, h);
+
+            procCanvas.toBlob(blob => {
+                if (blob) {
+                     const formData = new FormData();
+                     formData.append('file', blob);
+                     // Fire and forget upload
+                     fetch(uploadUrl, { method: 'POST', body: formData }).catch(e => console.error("Frame upload failed:", e));
+                }
+            }, 'image/jpeg', 0.6);
+
+        } catch (err) {
+            console.error("Client: captureFrame exception:", err);
         }
-
-        procCanvas.width = w;
-        procCanvas.height = h;
-        procCtx.drawImage(window.scannerVideo, 0, 0, w, h);
-
-        procCanvas.toBlob(blob => {
-            if (blob) {
-                 const formData = new FormData();
-                 formData.append('file', blob);
-                 // Fire and forget upload
-                 fetch(uploadUrl, { method: 'POST', body: formData }).catch(e => console.error("Frame upload failed:", e));
-            }
-        }, 'image/jpeg', 0.6);
-
-        // Return lower quality JPEG to reduce size
-        var dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-        // Using console.info to better survive log filters
-        console.info("Client: captureFrame success, size: " + dataUrl.length);
-        return dataUrl;
-    } catch (err) {
-        console.error("Client: captureFrame exception:", err);
-        return "ERR:JS_EXCEPTION:" + err.message;
-    }
-    if (window.scannerVideo) {
-        window.scannerVideo.srcObject = null;
-    }
-    clearOverlay();
+    }, 200);
 }
 
 function drawOverlay(points) {
