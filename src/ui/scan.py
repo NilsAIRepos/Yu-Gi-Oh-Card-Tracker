@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 async def upload_frame(file: UploadFile):
     try:
         content = await file.read()
-        scanner_manager.push_frame(content)
+        # Ensure we use the process singleton
+        from src.services.scanner.manager import scanner_manager as sm
+        sm.push_frame(content)
         return {"status": "received", "size": len(content)}
     except Exception as e:
         logger.error(f"Error receiving frame: {e}")
@@ -257,6 +259,48 @@ class ScanPage:
         self.debug_report = {}
         self.debug_loading = False
         self.latest_capture_src = None
+        self.was_processing = False
+
+    async def poll_events(self):
+        """Poll for updates from the robust singleton."""
+        if not self.is_active: return
+
+        # Robust Polling:
+        # 1. Status
+        # current_status = scanner_manager.get_status() # Not used directly, but good for debug
+        is_processing = scanner_manager.is_processing
+
+        # 2. Queue
+        # We can detect changes by checking len or hash, but refresh is cheap.
+
+        # 3. Processing State Logic
+        if is_processing or self.debug_loading or self.was_processing:
+             # Refresh Debug UI
+             self.debug_report = scanner_manager.get_debug_snapshot()
+             self.refresh_debug_ui()
+
+             if not is_processing and self.was_processing:
+                  # Falling edge: Just finished
+                  ui.notify("Processing Complete", type='positive')
+
+        self.was_processing = is_processing
+        self.render_status_controls.refresh()
+        self.render_scan_queue.refresh()
+
+        # Check Notifications
+        note = scanner_manager.get_latest_notification()
+        if note: ui.notify(note[1], type=note[0])
+
+        # Check Results
+        res = scanner_manager.get_latest_result()
+        if res:
+             self.scanned_cards.insert(0, res)
+             self.render_live_list.refresh()
+             ui.notify(f"Scanned: {res.get('name')}", type='positive')
+
+             # Also force debug UI refresh with final result if it was this scan
+             self.debug_report = scanner_manager.get_debug_snapshot()
+             self.refresh_debug_ui()
 
     async def init_cameras(self):
         try:
@@ -427,63 +471,6 @@ class ScanPage:
             ui.notify(f"Capture failed: {err}", type='negative')
             self.refresh_debug_ui()
 
-    async def status_loop(self):
-        """Fast loop for UI status updates."""
-        if not self.is_active: return
-
-        try:
-            # Poll Debug State
-            self.debug_report = scanner_manager.get_debug_snapshot()
-
-            # Always refresh status controls to stay in sync
-            self.render_status_controls.refresh()
-
-            # Conditionally refresh full debug UI
-            # We refresh if currently processing OR if we just finished processing (falling edge)
-            is_proc = scanner_manager.is_processing
-            if is_proc or self.was_processing or self.debug_loading:
-                 # Check falling edge (Processing -> Idle)
-                 if self.was_processing and not is_proc:
-                     # Force one last fetch to get the final results
-                     self.debug_report = scanner_manager.get_debug_snapshot()
-
-                 if self.debug_loading: self.debug_loading = False
-                 self.refresh_debug_ui()
-
-            self.was_processing = is_proc
-
-            # Notifications (quick)
-            note = scanner_manager.get_latest_notification()
-            if note:
-                 ui.notify(note[1], type=note[0])
-
-        except Exception as e:
-            logger.error(f"Status Loop Error: {e}")
-
-    async def processing_loop(self):
-        """Slower loop for result processing and lookups."""
-        if not self.is_active: return
-
-        try:
-            # Log periodically to confirm loop is alive if processing
-            if scanner_manager.is_processing:
-                 logger.debug(f"UI Processing Loop running... (Mgr: {getattr(scanner_manager, 'instance_id', '?')})")
-
-            # Process Pending Lookups (Async Resolver - Potentially Blocking)
-            await scanner_manager.process_pending_lookups()
-
-            # Live Results
-            result = scanner_manager.get_latest_result()
-            if result:
-                self.scanned_cards.insert(0, result)
-                self.render_live_list.refresh()
-                ui.notify(f"Scanned: {result.get('name')}", type='positive')
-                # Refresh debug results once to show the final outcome
-                self.refresh_debug_ui()
-
-        except Exception as e:
-            logger.error(f"Processing Loop Error: {e}")
-
     @ui.refreshable
     def render_live_list(self):
         if not self.scanned_cards:
@@ -616,6 +603,7 @@ class ScanPage:
                  ui.button('Pause', icon='pause', color='warning', on_click=self.toggle_pause).props('size=sm')
 
     def toggle_pause(self):
+        logger.info("UI: Toggle Pause Clicked")
         scanner_manager.toggle_pause()
         self.render_status_controls.refresh()
 
@@ -673,8 +661,11 @@ class ScanPage:
 
 def scan_page():
     def cleanup():
-        # Do not stop scanner_manager here, as it's a global service
-        # scanner_manager.stop()
+        if SCANNER_AVAILABLE:
+            try:
+                # Cleanup listener if we attached it (but we switched to polling)
+                pass
+            except: pass
         page.is_active = False
 
     app.on_disconnect(cleanup)
@@ -683,6 +674,10 @@ def scan_page():
     # Ensure scanner service is running (idempotent)
     scanner_manager.start()
     page.is_active = True
+
+    # Initialize UI state with current manager state
+    page.debug_report = scanner_manager.get_debug_snapshot()
+    page.was_processing = False
 
     if not SCANNER_AVAILABLE:
         ui.label("Scanner dependencies not found.").classes('text-red-500 text-xl font-bold')
@@ -740,6 +735,5 @@ def scan_page():
 
     ui.timer(1.0, page.init_cameras, once=True)
 
-    # Split loops to prevent blocking UI updates
-    ui.timer(0.1, page.status_loop)      # Fast UI updates
-    ui.timer(0.5, page.processing_loop)  # Heavy processing
+    # Re-enable polling loop (but robust this time)
+    ui.timer(0.1, page.poll_events)

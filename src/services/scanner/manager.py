@@ -6,7 +6,7 @@ import base64
 import asyncio
 import os
 import uuid
-from typing import Optional, Dict, Any, List, Tuple, Union
+from typing import Optional, Dict, Any, List, Tuple, Union, Callable
 
 try:
     import numpy as np
@@ -27,9 +27,26 @@ else:
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
-from nicegui import run
+from nicegui import run, app
 
 logger = logging.getLogger(__name__)
+
+# --- ROBUST SINGLETON PATTERN ---
+_scanner_manager_instance = None
+_scanner_manager_lock = threading.Lock()
+
+def get_scanner_manager():
+    global _scanner_manager_instance
+    with _scanner_manager_lock:
+        if _scanner_manager_instance is None:
+            # Check if attached to app (for reload persistence)
+            if hasattr(app, 'state') and hasattr(app.state, 'scanner_manager'):
+                _scanner_manager_instance = app.state.scanner_manager
+            else:
+                _scanner_manager_instance = ScannerManager()
+                if hasattr(app, 'state'):
+                    app.state.scanner_manager = _scanner_manager_instance
+        return _scanner_manager_instance
 
 class ScannerManager:
     def __init__(self):
@@ -43,6 +60,9 @@ class ScannerManager:
         self.lookup_queue = queue.Queue() # Best result -> DB Lookup
         self.result_queue = queue.Queue() # Finished results -> UI
         self.notification_queue = queue.Queue() # Notifications -> UI
+
+        # Event Listeners
+        self.listeners: List[Callable[[str, Any], None]] = []
 
         self.thread: Optional[threading.Thread] = None
         self.instance_id = str(uuid.uuid4())[:6]
@@ -78,6 +98,23 @@ class ScannerManager:
         self.debug_dir = "debug/scans"
         os.makedirs(self.debug_dir, exist_ok=True)
 
+    def add_listener(self, callback: Callable[[str, Any], None]):
+        """Register a callback for events."""
+        if callback not in self.listeners:
+            self.listeners.append(callback)
+
+    def remove_listener(self, callback: Callable[[str, Any], None]):
+        if callback in self.listeners:
+            self.listeners.remove(callback)
+
+    def _emit(self, event_type: str, data: Any = None):
+        """Emit an event to all listeners."""
+        for listener in self.listeners:
+            try:
+                listener(event_type, data)
+            except Exception as e:
+                logger.error(f"Error in listener: {e}")
+
     def start(self):
         if not SCANNER_AVAILABLE:
             logger.error(f"[{self.instance_id}] Scanner dependencies missing. Cannot start.")
@@ -91,6 +128,7 @@ class ScannerManager:
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
         logger.info(f"[{self.instance_id}] Scanner started (Client-Side Mode)")
+        self._emit("status_change", self.get_status())
 
     def stop(self):
         if not self.running:
@@ -101,15 +139,13 @@ class ScannerManager:
             self.thread.join(timeout=2.0)
             self.thread = None
         logger.info("Scanner stopped")
+        self._emit("status_change", "Stopped")
 
     def push_frame(self, frame_data: Union[str, bytes]):
         """Updates the latest frame buffer."""
         if not self.running: return
 
         try:
-            # Decode immediately to avoid pileup? Or just store bytes?
-            # Decoding is CPU intensive. Let's store bytes and decode on demand if needed.
-            # But the UI sends it every 200ms.
             with self.latest_frame_lock:
                 self.latest_frame = frame_data
         except Exception:
@@ -137,12 +173,21 @@ class ScannerManager:
                 "filename": filename
             })
         self._log_debug(f"Scan Queued: {label}")
+        self._emit("queue_update", len(self.scan_queue))
+
+        # Auto-resume logic if paused (Self-healing UX)
+        # Note: If user explicitly paused, maybe we shouldn't?
+        # But 'submit' implies intent.
+        # Let's check status.
+        if self.paused:
+             self.resume()
 
     def pause(self):
         self.paused = True
         self.debug_state["paused"] = True
         self.status_message = "Paused"
         self._log_debug("Scanner Paused")
+        self._emit("status_change", "Paused")
 
     def resume(self):
         # Self-Healing: Restart thread if dead
@@ -152,9 +197,9 @@ class ScannerManager:
 
         self.paused = False
         self.debug_state["paused"] = False
-        # Force status to Idle so UI reflects readiness immediately
         self.status_message = "Idle"
         self._log_debug("Scanner Resumed")
+        self._emit("status_change", "Idle")
 
     def toggle_pause(self):
         if self.paused:
@@ -167,7 +212,6 @@ class ScannerManager:
 
     def get_queue_snapshot(self) -> List[Dict[str, Any]]:
         with self.queue_lock:
-            # Return metadata only
             return [
                 {
                     "id": item["id"],
@@ -184,25 +228,19 @@ class ScannerManager:
             if 0 <= index < len(self.scan_queue):
                 removed = self.scan_queue.pop(index)
                 self._log_debug(f"Removed item {removed['id']} from queue")
+        self._emit("queue_update", len(self.scan_queue))
 
     async def analyze_static_image(self, image_bytes: bytes, options: Dict[str, Any] = None) -> Dict[str, Any]:
-        """
-        Runs the pipeline on a static image (Upload or specific capture).
-        This is called directly from UI, but we should probably offload it to the worker
-        or run it in a thread to avoid blocking.
-        For now, let's run it via run.io_bound wrapper around the sync pipeline.
-        """
+        """Runs the pipeline on a static image (Upload or specific capture)."""
         if options is None:
             options = {"tracks": ["easyocr", "paddle"], "preprocessing": "classic"}
 
         return await run.io_bound(self._run_pipeline_sync, image_bytes, options)
 
     def _run_pipeline_sync(self, image_bytes, options):
-        # Decode
         nparr = np.frombuffer(image_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None: return {"error": "Decode failed"}
-
         return self._process_scan(frame, options)
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
@@ -214,6 +252,8 @@ class ScannerManager:
         timestamp = time.strftime("%H:%M:%S")
         entry = f"[{timestamp}] [{self.instance_id}] {message}"
         self.debug_state["logs"] = [entry] + self.debug_state["logs"][:19]
+        # We can emit a log event if we want real-time logs
+        # self._emit("log", entry)
 
     def get_status(self) -> str:
         if self.running and self.thread and not self.thread.is_alive():
@@ -233,10 +273,6 @@ class ScannerManager:
             return None
 
     def get_live_contour(self) -> Optional[List[List[float]]]:
-        # We removed the continuous contour loop.
-        # If we want live overlay, we'd need to re-enable the loop.
-        # Given "Remove auto scan", and the focus on manual capture,
-        # we will return None for now or we could implement a lightweight contour check.
         return None
 
     def _save_debug_image(self, image, prefix="img") -> str:
@@ -251,8 +287,6 @@ class ScannerManager:
         while self.running:
             try:
                 if self.paused:
-                    # Update status but don't overwrite if Resume just set it to Idle/Processing
-                    # Actually, if paused is True, status SHOULD be Paused.
                     self.status_message = "Paused"
                     time.sleep(0.1)
                     continue
@@ -273,11 +307,13 @@ class ScannerManager:
                 logger.info(f"[{self.instance_id}] Starting scan for: {filename}")
                 self._log_debug(f"Started: {filename}")
 
+                # Emit start event
+                self._emit("processing_start", filename)
+
                 try:
                     frame_data = task["image"]
                     options = task["options"]
 
-                    # Decode
                     nparr = np.frombuffer(frame_data, np.uint8)
                     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -292,6 +328,7 @@ class ScannerManager:
                         def update_step(step_name):
                             self.debug_state["current_step"] = step_name
                             self.status_message = f"Processing: {filename} ({step_name})"
+                            self._emit("progress", step_name)
 
                         # Run Pipeline
                         report = self._process_scan(frame, options, status_cb=update_step)
@@ -300,7 +337,6 @@ class ScannerManager:
                         self.debug_state.update(report)
 
                         # If we found a card, push to result queue
-                        # We pick the best result.
                         best_res = self._pick_best_result(report)
                         if best_res:
                             # Enhance with visual traits if warped image exists
@@ -335,6 +371,9 @@ class ScannerManager:
                 self.debug_state["current_step"] = "Idle"
                 if not self.paused:
                      self.status_message = "Idle"
+
+                # Force emit 'finished' event to update UI
+                self._emit("processing_complete", self.debug_state.copy())
 
     def _process_scan(self, frame, options, status_cb=None) -> Dict[str, Any]:
         """Runs the configured tracks on the frame."""
@@ -473,6 +512,9 @@ class ScannerManager:
             self.result_queue.put(data)
             logger.info(f"[{self.instance_id}] Lookup complete for {data.get('set_code')}")
 
+            # Emit result
+            self._emit("result", data)
+
         except Exception as e:
             logger.error(f"[{self.instance_id}] Error in process_pending_lookups: {e}", exc_info=True)
 
@@ -506,4 +548,9 @@ class ScannerManager:
             "potential_art_paths": potential_paths
         }
 
-scanner_manager = ScannerManager()
+# Use the getter instead of direct instantiation
+# But for backward compatibility with imports, we can set scanner_manager here
+# HOWEVER, this is what caused the bug. If we do `scanner_manager = ScannerManager()`,
+# it creates a NEW one on import.
+# We must use `get_scanner_manager()` which checks the app state.
+scanner_manager = get_scanner_manager()
