@@ -257,7 +257,7 @@ class ScanPage:
                  raise ValueError("No file content found in upload event")
 
             content = file_obj.read()
-            fname = e.name or "upload.jpg"
+            fname = getattr(e, 'name', None) or getattr(file_obj, 'name', None) or "upload.jpg"
             await self.run_scan_task(content, fname)
         except Exception as err:
             ui.notify(f"Upload failed: {err}", type='negative')
