@@ -59,6 +59,7 @@ class ScannerManager:
             "logs": [],
             "queue_len": 0,
             "paused": True,
+            "current_step": "Idle",
             "captured_image_url": None,
             "scan_result": "N/A",
             "warped_image_url": None,
@@ -251,12 +252,11 @@ class ScannerManager:
                     time.sleep(0.1)
                     continue
 
-                self.is_processing = True
-                self.status_message = "Processing..."
-
-                # Log task start
                 filename = task.get("filename", "unknown")
-                self._log_debug(f"Processing: {filename}")
+                self.is_processing = True
+                self.status_message = f"Processing: {filename}"
+                logger.info(f"Starting scan for: {filename}")
+                self._log_debug(f"Started: {filename}")
 
                 try:
                     frame_data = task["image"]
@@ -273,8 +273,13 @@ class ScannerManager:
                         self.debug_state["preprocessing"] = options.get("preprocessing", "classic")
                         self.debug_state["active_tracks"] = options.get("tracks", [])
 
+                        # Define status updater
+                        def update_step(step_name):
+                            self.debug_state["current_step"] = step_name
+                            self.status_message = f"Processing: {filename} ({step_name})"
+
                         # Run Pipeline
-                        report = self._process_scan(frame, options)
+                        report = self._process_scan(frame, options, status_cb=update_step)
 
                         # Merge report into debug state
                         self.debug_state.update(report)
@@ -297,7 +302,8 @@ class ScannerManager:
                             }
                             self.lookup_queue.put(lookup_data)
 
-                        self._log_debug("Scan Complete")
+                        logger.info(f"Finished scan for: {filename}")
+                        self._log_debug(f"Finished: {filename}")
                     else:
                         self._log_debug("Frame decode failed")
 
@@ -311,12 +317,16 @@ class ScannerManager:
                 time.sleep(1.0) # Prevent tight loop on crash
             finally:
                 self.is_processing = False
+                self.debug_state["current_step"] = "Idle"
                 if not self.paused:
                      self.status_message = "Idle"
 
-    def _process_scan(self, frame, options) -> Dict[str, Any]:
+    def _process_scan(self, frame, options, status_cb=None) -> Dict[str, Any]:
         """Runs the configured tracks on the frame."""
         if not self.scanner: return {}
+
+        def set_step(msg):
+            if status_cb: status_cb(msg)
 
         report = {
             "steps": [],
@@ -326,6 +336,7 @@ class ScannerManager:
         }
 
         # 1. Preprocessing (Crop)
+        set_step("Preprocessing: Contour/Crop")
         prep_method = options.get("preprocessing", "classic")
         contour = None
         warped = None
@@ -350,11 +361,13 @@ class ScannerManager:
         # Track 1: EasyOCR
         if "easyocr" in tracks:
             try:
+                set_step("Track 1: EasyOCR (Full)")
                 # Full Frame
                 t1_full = self.scanner.ocr_scan(frame, engine='easyocr')
                 t1_full['scope'] = 'full'
                 report["t1_full"] = t1_full
 
+                set_step("Track 1: EasyOCR (Crop)")
                 # Crop
                 if warped is not None:
                     t1_crop = self.scanner.ocr_scan(warped, engine='easyocr')
@@ -367,11 +380,13 @@ class ScannerManager:
         # Track 2: PaddleOCR
         if "paddle" in tracks:
             try:
+                set_step("Track 2: PaddleOCR (Full)")
                 # Full Frame
                 t2_full = self.scanner.ocr_scan(frame, engine='paddle')
                 t2_full['scope'] = 'full'
                 report["t2_full"] = t2_full
 
+                set_step("Track 2: PaddleOCR (Crop)")
                 # Crop
                 if warped is not None:
                     t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
@@ -383,6 +398,7 @@ class ScannerManager:
 
         # Extra Analysis on Warped (if available)
         if warped is not None:
+             set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
              report['first_edition'] = self.scanner.detect_first_edition(warped)
              report['warped_image_data'] = warped # Pass along for Art Match

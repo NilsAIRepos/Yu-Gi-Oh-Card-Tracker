@@ -577,7 +577,11 @@ class ScanPage:
                 elif is_paused:
                      label_text = "Paused"
 
-                ui.label(f"Status: {label_text}").classes('font-bold')
+                with ui.column().classes('gap-0'):
+                    ui.label(f"Status: {label_text}").classes('font-bold')
+                    current_step = scanner_manager.debug_state.get('current_step', 'Idle')
+                    if scanner_manager.is_processing:
+                        ui.label(f"{current_step}").classes('text-xs text-blue-400')
 
             # Controls
             if is_paused:
