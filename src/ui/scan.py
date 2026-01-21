@@ -218,6 +218,7 @@ class ScanPage:
         self.debug_loading = False
         self.latest_capture_src = None
         # self.was_processing is removed as we use event based updates now
+        self.watchdog_counter = 0
 
     async def init_cameras(self):
         try:
@@ -270,24 +271,36 @@ class ScanPage:
     async def event_consumer(self):
         """Consumes events from the local queue and updates UI."""
         try:
+            # 1. Process Queued Events (Fast path)
             while not self.event_queue.empty():
-                event = self.event_queue.get()
+                try:
+                    event = self.event_queue.get_nowait()
 
-                # Apply snapshot
-                if event.snapshot:
-                    self.debug_report = event.snapshot.model_dump()
+                    # Apply snapshot
+                    if event.snapshot:
+                        self.debug_report = event.snapshot.model_dump()
 
-                # Refresh logic based on event type
-                if event.type in ['status_update', 'scan_queued', 'scan_started', 'step_complete', 'scan_finished']:
+                    # Refresh logic based on event type
+                    if event.type in ['status_update', 'scan_queued', 'scan_started', 'step_complete', 'scan_finished']:
+                        self.refresh_debug_ui()
+
+                    if event.type == 'error':
+                        ui.notify(event.data.get('message', 'Error'), type='negative')
+
+                except queue.Empty:
+                    break
+
+            # 2. Watchdog / Polling fallback (Robustness)
+            # Every 10 ticks (approx 1 sec), force fetch the state
+            self.watchdog_counter += 1
+            if self.watchdog_counter >= 10:
+                self.watchdog_counter = 0
+                snapshot = scanner_service.scanner_manager.get_debug_snapshot()
+                if snapshot:
+                    self.debug_report = snapshot
                     self.refresh_debug_ui()
 
-                if event.type == 'result_ready':
-                    pass
-
-                if event.type == 'error':
-                    ui.notify(event.data.get('message', 'Error'), type='negative')
-
-            # Check result queue
+            # 3. Check result queue
             res = scanner_service.scanner_manager.get_latest_result()
             if res:
                 self.scanned_cards.insert(0, res)
