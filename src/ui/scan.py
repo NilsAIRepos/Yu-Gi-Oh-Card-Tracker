@@ -216,7 +216,7 @@ class ScanPage:
         self.debug_report = {}
         self.debug_loading = False
         self.latest_capture_src = None
-        self.was_processing = False
+        # self.was_processing is removed as we use event based updates now
 
     async def init_cameras(self):
         try:
@@ -228,6 +228,75 @@ class ScanPage:
                 if not self.camera_select.value and devices:
                     self.camera_select.value = devices[0]['value']
         except: pass
+
+    def on_scanner_event(self, event):
+        """Callback for scanner events."""
+        if not self.is_active: return
+
+        # Push state immediately
+        if event.snapshot:
+            self.debug_report = event.snapshot.model_dump()
+
+        # Schedule UI updates on main thread
+        # Using simple lambda might risk late binding? No, context should be preserved by ui.context or similar?
+        # Actually NiceGUI callbacks from threads need specific handling?
+        # Typically we can just refresh directly if we are within the context, but this comes from a background thread.
+        # We need to use `app.call_later` to bridge to the event loop, but specific client context?
+        # ScanPage instance is per-client (in `scan_page` scope).
+
+        # We can trigger a refresh of the elements.
+        # Since this callback runs in the background thread of ScannerManager, we must NOT call UI methods directly.
+        # We assume ScannerManager calls this in its thread.
+
+        # We need to dispatch to the UI thread.
+        # But `app.storage` isn't used here.
+        # We can rely on a timer loop to pick up the state (polling local state),
+        # OR use `ui.timer(..., callback=...)` to poll the event queue if we queued it?
+
+        # WAIT. The user asked for "Event Based System".
+        # If I just update `self.debug_report` here, does the UI see it?
+        # No, the UI is static until `.refresh()` is called.
+        # And I can't call `.refresh()` from a background thread easily without context.
+
+        # However, `scanner_manager` is a global singleton. `ScanPage` is per-user.
+        # If multiple users are on the page, they all get this callback if they registered?
+        # ScannerManager listener list is shared.
+
+        # Let's use a queue on the Page instance to receive events, and a fast timer to consume them.
+        # This effectively keeps the "loop" but makes it responsive to events rather than polling the manager.
+        self.event_queue.put(event)
+
+    async def event_consumer(self):
+        """Consumes events from the local queue and updates UI."""
+        while not self.event_queue.empty():
+            event = self.event_queue.get()
+
+            # Apply snapshot
+            if event.snapshot:
+                self.debug_report = event.snapshot.model_dump()
+
+            # Refresh logic based on event type
+            if event.type in ['status_update', 'scan_queued', 'scan_started', 'step_complete', 'scan_finished']:
+                self.refresh_debug_ui()
+
+            if event.type == 'result_ready':
+                # Fetch result? Or was it passed?
+                # The event payload has set_code. The result is in manager.result_queue.
+                # We still need to pop from result_queue.
+                # Let's check result queue here.
+                pass
+
+            if event.type == 'error':
+                ui.notify(event.data.get('message', 'Error'), type='negative')
+
+        # Also check result queue independently or as part of the loop?
+        # The manager.result_queue is thread-safe.
+        res = scanner_service.scanner_manager.get_latest_result()
+        if res:
+            self.scanned_cards.insert(0, res)
+            self.render_live_list.refresh()
+            ui.notify(f"Scanned: {res.get('name')}", type='positive')
+            self.refresh_debug_ui() # Ensure final result is shown
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
@@ -376,18 +445,19 @@ class ScanPage:
             ui.notify(f"Queued: {filename}", type='positive')
         except Exception as err:
             ui.notify(f"Upload failed: {err}", type='negative')
-        self.refresh_debug_ui()
+        # refresh triggered by event
 
     async def handle_debug_capture(self):
-        self.refresh_debug_ui()
+        # refresh triggered by event
         try:
             data_url = await ui.run_javascript('captureSingleFrame()')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
-                self.refresh_debug_ui()
                 return
 
             self.latest_capture_src = data_url
+            # We want to show the capture immediately?
+            # Yes, locally.
             self.refresh_debug_ui()
 
             header, encoded = data_url.split(",", 1)
@@ -404,68 +474,6 @@ class ScanPage:
 
         except Exception as err:
             ui.notify(f"Capture failed: {err}", type='negative')
-            self.refresh_debug_ui()
-
-    async def status_loop(self):
-        """Fast loop for UI status updates."""
-        if not self.is_active: return
-
-        try:
-            # Poll Debug State
-            # get_debug_snapshot now returns dict dump of ScanDebugReport
-            # Use dynamic import access
-            mgr = scanner_service.scanner_manager
-            self.debug_report = mgr.get_debug_snapshot()
-
-            is_processing = mgr.is_processing
-
-            # Always refresh status controls to stay in sync
-            self.render_status_controls.refresh()
-
-            # Conditionally refresh full debug UI
-            # We refresh if processing, OR if we JUST finished processing (falling edge)
-            if is_processing or self.was_processing:
-                 self.refresh_debug_ui()
-            elif self.debug_loading:
-                 self.debug_loading = False
-                 self.refresh_debug_ui()
-
-            self.was_processing = is_processing
-
-            # Notifications (quick)
-            note = mgr.get_latest_notification()
-            if note:
-                 ui.notify(note[1], type=note[0])
-
-        except Exception as e:
-            logger.error(f"Status Loop Error: {e}")
-
-    async def processing_loop(self):
-        """Slower loop for result processing and lookups."""
-        if not self.is_active: return
-
-        try:
-            # Use dynamic import access
-            mgr = scanner_service.scanner_manager
-
-            # Log periodically to confirm loop is alive if processing
-            if mgr.is_processing:
-                 logger.debug(f"UI Processing Loop running... (Mgr: {getattr(mgr, 'instance_id', '?')})")
-
-            # Process Pending Lookups (Async Resolver - Potentially Blocking)
-            await mgr.process_pending_lookups()
-
-            # Live Results
-            result = mgr.get_latest_result()
-            if result:
-                self.scanned_cards.insert(0, result)
-                self.render_live_list.refresh()
-                ui.notify(f"Scanned: {result.get('name')}", type='positive')
-                # Refresh debug results once to show the final outcome
-                self.refresh_debug_ui()
-
-        except Exception as e:
-            logger.error(f"Processing Loop Error: {e}")
 
     @ui.refreshable
     def render_live_list(self):
@@ -659,13 +667,20 @@ class ScanPage:
             if track in self.ocr_tracks: self.ocr_tracks.remove(track)
 
 def scan_page():
+    page = ScanPage()
+
+    # Initialize event queue for this page instance
+    page.event_queue = queue.Queue()
+
     def cleanup():
-        # Do not stop scanner_manager here, as it's a global service
-        # scanner_manager.stop()
+        # Unregister listener
+        scanner_service.scanner_manager.unregister_listener(page.on_scanner_event)
         page.is_active = False
 
     app.on_disconnect(cleanup)
-    page = ScanPage()
+
+    # Register listener
+    scanner_service.scanner_manager.register_listener(page.on_scanner_event)
 
     # Ensure scanner service is running (idempotent)
     # Use dynamic import access
@@ -731,6 +746,10 @@ def scan_page():
 
     ui.timer(1.0, page.init_cameras, once=True)
 
-    # Split loops to prevent blocking UI updates
-    ui.timer(0.1, page.status_loop)      # Fast UI updates
-    ui.timer(0.5, page.processing_loop)  # Heavy processing
+    # Use fast consumer loop instead of slow polling
+    ui.timer(0.1, page.event_consumer)
+
+    # Initialize from current state immediately
+    page.debug_report = scanner_service.scanner_manager.get_debug_snapshot()
+
+    import queue # Needed locally for queue creation above

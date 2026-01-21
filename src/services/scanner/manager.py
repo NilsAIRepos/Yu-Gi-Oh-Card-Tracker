@@ -7,7 +7,7 @@ import asyncio
 import os
 import uuid
 import shutil
-from typing import Optional, Dict, Any, List, Tuple, Union
+from typing import Optional, Dict, Any, List, Tuple, Union, Callable
 
 try:
     import numpy as np
@@ -24,11 +24,15 @@ except ImportError:
 if SCANNER_AVAILABLE:
     from src.services.scanner.pipeline import CardScanner
     from src.services.scanner.models import (
-        ScanRequest, ScanResult, ScanDebugReport, OCRResult, ScanStep
+        ScanRequest, ScanResult, ScanDebugReport, OCRResult, ScanStep, ScanEvent
     )
 else:
     CardScanner = None
     # Dummy models if needed, but we check availability first
+    # Need to define dummies for type hinting if module not avail
+    class ScanEvent: pass
+    class ScanRequest: pass
+    class ScanDebugReport: pass
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
@@ -62,12 +66,45 @@ class ScannerManager:
         self.status_message = "Stopped"
 
         # Debug State (using Model)
-        self.debug_state = ScanDebugReport()
+        self.debug_state = ScanDebugReport() if SCANNER_AVAILABLE else None
+
+        # Event System
+        self.listeners: List[Callable[[ScanEvent], None]] = []
+        self.listeners_lock = threading.Lock()
 
         self.debug_dir = "debug/scans"
         self.queue_dir = "scans/queue"
         os.makedirs(self.debug_dir, exist_ok=True)
         os.makedirs(self.queue_dir, exist_ok=True)
+
+    def register_listener(self, callback: Callable[["ScanEvent"], None]):
+        """Registers a callback for scanner events."""
+        with self.listeners_lock:
+            if callback not in self.listeners:
+                self.listeners.append(callback)
+
+    def unregister_listener(self, callback: Callable[["ScanEvent"], None]):
+        with self.listeners_lock:
+            if callback in self.listeners:
+                self.listeners.remove(callback)
+
+    def _emit(self, event_type: str, data: Dict[str, Any] = {}):
+        """Emits an event to all listeners."""
+        if not SCANNER_AVAILABLE: return
+
+        # Include current snapshot
+        snapshot = self.debug_state.model_copy()
+        with self.queue_lock:
+            snapshot.queue_len = len(self.scan_queue)
+
+        event = ScanEvent(type=event_type, data=data, snapshot=snapshot)
+
+        with self.listeners_lock:
+            for listener in self.listeners:
+                try:
+                    listener(event)
+                except Exception as e:
+                    logger.error(f"Error in event listener: {e}")
 
     def start(self):
         if not SCANNER_AVAILABLE:
@@ -81,6 +118,7 @@ class ScannerManager:
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
         logger.info(f"Scanner started (Client-Side Mode)")
+        self._emit("status_update", {"status": "Started"})
 
     def stop(self):
         if not self.running:
@@ -91,6 +129,7 @@ class ScannerManager:
             self.thread.join(timeout=2.0)
             self.thread = None
         logger.info("Scanner stopped")
+        self._emit("status_update", {"status": "Stopped"})
 
     def submit_scan(self, image_data: bytes, options: Dict[str, Any], label: str = "Manual Scan", filename: str = None):
         """Submits a scan task to the queue."""
@@ -108,28 +147,33 @@ class ScannerManager:
             self.notification_queue.put(("negative", f"Failed to save scan: {e}"))
             return
 
-        request = ScanRequest(
-            id=str(uuid.uuid4())[:8],
-            timestamp=time.time(),
-            filepath=filepath,
-            options=options,
-            type=label,
-            filename=filename
-        )
+        if SCANNER_AVAILABLE:
+            request = ScanRequest(
+                id=str(uuid.uuid4())[:8],
+                timestamp=time.time(),
+                filepath=filepath,
+                options=options,
+                type=label,
+                filename=filename
+            )
 
-        with self.queue_lock:
-            self.scan_queue.append(request)
-        self._log_debug(f"Scan Queued: {label}")
+            with self.queue_lock:
+                self.scan_queue.append(request)
+
+            self._log_debug(f"Scan Queued: {label}")
+            self._emit("scan_queued", {"filename": filename})
 
     def pause(self):
         self.paused = True
-        self.debug_state.paused = True
+        if self.debug_state: self.debug_state.paused = True
         self._log_debug("Scanner Paused")
+        self._emit("status_update", {"paused": True})
 
     def resume(self):
         self.paused = False
-        self.debug_state.paused = False
+        if self.debug_state: self.debug_state.paused = False
         self._log_debug("Scanner Resumed")
+        self._emit("status_update", {"paused": False})
 
     def toggle_pause(self):
         if self.paused:
@@ -142,7 +186,9 @@ class ScannerManager:
 
     def get_queue_snapshot(self) -> List[Dict[str, Any]]:
         with self.queue_lock:
-            return [req.model_dump() for req in self.scan_queue]
+            if SCANNER_AVAILABLE:
+                return [req.model_dump() for req in self.scan_queue]
+            return []
 
     def remove_scan_request(self, index: int):
         with self.queue_lock:
@@ -155,13 +201,17 @@ class ScannerManager:
                     except OSError:
                         pass
                 self._log_debug(f"Removed item {removed.id} from queue")
+                self._emit("status_update", {"queue_len": len(self.scan_queue)})
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
         with self.queue_lock:
-            self.debug_state.queue_len = len(self.scan_queue)
-        return self.debug_state.model_dump()
+            if self.debug_state:
+                self.debug_state.queue_len = len(self.scan_queue)
+                return self.debug_state.model_dump()
+            return {}
 
     def _log_debug(self, message: str):
+        if not self.debug_state: return
         timestamp = time.strftime("%H:%M:%S")
         entry = f"[{timestamp}] {message}"
         # Prepend log, keep last 20
@@ -176,7 +226,7 @@ class ScannerManager:
         # Returns dict for UI consumption
         try:
             res = self.result_queue.get_nowait()
-            if isinstance(res, BaseModel):
+            if hasattr(res, 'model_dump'):
                 return res.model_dump()
             return res
         except queue.Empty:
@@ -201,7 +251,9 @@ class ScannerManager:
             try:
                 # 1. Check Paused
                 if self.paused:
-                    self.status_message = "Paused"
+                    if self.status_message != "Paused":
+                        self.status_message = "Paused"
+                        self._emit("status_update", {"status": "Paused"})
                     time.sleep(0.1)
                     continue
 
@@ -212,7 +264,9 @@ class ScannerManager:
                         task = self.scan_queue[0] # Peek
 
                 if not task:
-                    self.status_message = "Idle"
+                    if self.status_message != "Idle":
+                        self.status_message = "Idle"
+                        self._emit("status_update", {"status": "Idle"})
                     time.sleep(0.1)
                     continue
 
@@ -225,12 +279,14 @@ class ScannerManager:
                      with self.queue_lock:
                          if self.scan_queue and self.scan_queue[0] == task:
                              self.scan_queue.pop(0)
+                     self._emit("status_update", {})
                      continue
 
                 self.is_processing = True
                 self.status_message = f"Processing: {filename}"
                 logger.info(f"Starting scan for: {filename}")
                 self._log_debug(f"Started: {filename}")
+                self._emit("scan_started", {"filename": filename})
 
                 try:
                     # Load Image
@@ -252,19 +308,18 @@ class ScannerManager:
                         self.debug_state.preprocessing = task.options.get("preprocessing", "classic")
                         self.debug_state.active_tracks = task.options.get("tracks", [])
 
+                        self._emit("step_complete", {"step": "init"})
+
                         # Define status updater
                         def update_step(step_name):
                             self.debug_state.current_step = step_name
                             self.status_message = f"Processing: {filename} ({step_name})"
+                            self._emit("step_complete", {"step": step_name})
 
                         # Run Pipeline
                         report = self._process_scan(frame, task.options, status_cb=update_step)
 
                         # Merge report into debug state
-                        # Manually update fields since report is partial ScanDebugReport or dict?
-                        # Let's make _process_scan update self.debug_state fields directly or return dict to merge
-                        # For now, let's assume _process_scan returns a dict that maps to ScanDebugReport fields
-
                         logger.info(f"Scan Report Merged: {list(report.keys())}")
 
                         for key, value in report.items():
@@ -303,17 +358,21 @@ class ScannerManager:
                         except OSError:
                             pass
 
+                        self._emit("scan_finished", {"success": True})
+
                     else:
                         self._log_debug(f"Frame read failed for {filepath}")
                         # Remove bad file
                         with self.queue_lock:
                              if self.scan_queue and self.scan_queue[0].id == task.id:
                                  self.scan_queue.pop(0)
+                        self._emit("scan_finished", {"success": False, "error": "Frame read failed"})
 
                 except ScanAborted:
                     logger.info(f"Scan aborted for: {filename}")
                     self._log_debug(f"Aborted: {filename}")
                     self.status_message = "Paused"
+                    self._emit("status_update", {"status": "Paused"})
                     # Do NOT remove from queue.
                     # Do NOT delete file.
 
@@ -324,16 +383,19 @@ class ScannerManager:
                     with self.queue_lock:
                         if self.scan_queue and self.scan_queue[0].id == task.id:
                             self.scan_queue.pop(0)
+                    self._emit("scan_finished", {"success": False, "error": str(e)})
 
             except Exception as e:
                 logger.error(f"Worker Loop Fatal Error: {e}", exc_info=True)
                 self.status_message = "Error"
+                self._emit("error", {"message": str(e)})
                 time.sleep(1.0) # Prevent tight loop on crash
             finally:
                 self.is_processing = False
-                self.debug_state.current_step = "Idle"
+                if self.debug_state: self.debug_state.current_step = "Idle"
                 if not self.paused:
                      self.status_message = "Idle"
+                     # Final idle emit will happen at top of loop
 
     def _process_scan(self, frame, options, status_cb=None) -> Dict[str, Any]:
         """Runs the configured tracks on the frame."""
@@ -349,7 +411,6 @@ class ScannerManager:
         check_pause()
 
         # Temporary dict to hold results before updating debug_state
-        # We return a dict that matches fields in ScanDebugReport + extra internal data like 'warped_image_data'
         report = {
             "steps": [],
             "t1_full": None, "t1_crop": None,
@@ -498,6 +559,9 @@ class ScannerManager:
 
             self.result_queue.put(result)
             logger.info(f"Lookup complete for {result.set_code}")
+
+            # Emit event for live results
+            self._emit("result_ready", {"set_code": result.set_code})
 
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)

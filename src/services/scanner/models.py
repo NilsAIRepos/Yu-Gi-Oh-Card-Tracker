@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 class OCRResult(BaseModel):
     engine: str
@@ -61,3 +61,8 @@ class ScanDebugReport(BaseModel):
     visual_rarity: str = "Unknown"
     first_edition: bool = False
     steps: List[ScanStep] = []
+
+class ScanEvent(BaseModel):
+    type: str # 'status_update', 'scan_queued', 'scan_finished', 'error'
+    data: Dict[str, Any] # Flexible payload
+    snapshot: Optional[ScanDebugReport] = None # Include full state snapshot for UI consistency
