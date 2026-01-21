@@ -5,6 +5,7 @@ import asyncio
 import time
 import uuid
 import base64
+import queue
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 
@@ -751,5 +752,3 @@ def scan_page():
 
     # Initialize from current state immediately
     page.debug_report = scanner_service.scanner_manager.get_debug_snapshot()
-
-    import queue # Needed locally for queue creation above
