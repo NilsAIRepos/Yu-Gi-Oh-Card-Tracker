@@ -1206,105 +1206,115 @@ class BulkAddPage:
                 tooltip.on('show', ensure_high)
 
     async def load_library_data(self):
-        lang_code = config_manager.get_language().lower()
-        api_cards = await ygo_service.load_card_database(lang_code)
-        self.api_card_map = {c.id: c for c in api_cards}
+        try:
+            logger.info("Starting load_library_data")
+            lang_code = config_manager.get_language().lower()
+            api_cards = await ygo_service.load_card_database(lang_code)
+            self.api_card_map = {c.id: c for c in api_cards}
+            logger.info(f"Loaded {len(api_cards)} cards into API map")
 
-        # Build Set Code Map
-        # Note: Set codes in DB might be "SDAZ-EN001" or "SDAZ-EN001"
-        self.set_code_map = {}
-        for c in api_cards:
-            if c.card_sets:
-                for s in c.card_sets:
-                    self.set_code_map[s.set_code] = c
+            # Build Set Code Map
+            # Note: Set codes in DB might be "SDAZ-EN001" or "SDAZ-EN001"
+            self.set_code_map = {}
+            for c in api_cards:
+                if c.card_sets:
+                    for s in c.card_sets:
+                        self.set_code_map[s.set_code] = c
 
-        entries = []
-        sets = set()
-        m_races = set()
-        st_races = set()
-        archetypes = set()
+            entries = []
+            sets = set()
+            m_races = set()
+            st_races = set()
+            archetypes = set()
 
-        default_lang = self.state['default_language'].upper()
+            default_lang = self.state['default_language'].upper()
 
-        for c in api_cards:
-            if c.card_sets:
-                for s in c.card_sets:
-                    sets.add(f"{s.set_name} | {s.set_code.split('-')[0] if '-' in s.set_code else s.set_code}")
-            if c.archetype: archetypes.add(c.archetype)
-            if "Monster" in c.type: m_races.add(c.race)
-            elif "Spell" in c.type or "Trap" in c.type:
-                if c.race: st_races.add(c.race)
+            for c in api_cards:
+                if c.card_sets:
+                    for s in c.card_sets:
+                        sets.add(f"{s.set_name} | {s.set_code.split('-')[0] if '-' in s.set_code else s.set_code}")
+                if c.archetype: archetypes.add(c.archetype)
+                if "Monster" in c.type: m_races.add(c.race)
+                elif "Spell" in c.type or "Trap" in c.type:
+                    if c.race: st_races.add(c.race)
 
-            if c.card_sets:
-                # Group sets by (Prefix, Category, Number, Rarity)
-                grouped_sets = {}
-                for s in c.card_sets:
-                    prefix, cat, num = get_grouping_key_parts(s.set_code)
-                    key = (prefix, cat, num, s.set_rarity)
-                    if key not in grouped_sets:
-                        grouped_sets[key] = []
-                    grouped_sets[key].append(s)
+                if c.card_sets:
+                    # Group sets by (Prefix, Category, Number, Rarity)
+                    grouped_sets = {}
+                    for s in c.card_sets:
+                        prefix, cat, num = get_grouping_key_parts(s.set_code)
+                        key = (prefix, cat, num, s.set_rarity)
+                        if key not in grouped_sets:
+                            grouped_sets[key] = []
+                        grouped_sets[key].append(s)
 
-                for key, variants in grouped_sets.items():
-                    # Pick the best variant
-                    selected = variants[0]
-                    # Try to find match for default language
-                    for v in variants:
-                         v_lang = extract_language_code(v.set_code)
-                         if v_lang == default_lang:
-                             selected = v
-                             break
+                    for key, variants in grouped_sets.items():
+                        # Pick the best variant
+                        selected = variants[0]
+                        # Try to find match for default language
+                        for v in variants:
+                             v_lang = extract_language_code(v.set_code)
+                             if v_lang == default_lang:
+                                 selected = v
+                                 break
 
-                    # Create entry
-                    price = 0.0
-                    if selected.set_price:
-                        try: price = float(selected.set_price)
-                        except: pass
+                        # Create entry
+                        price = 0.0
+                        if selected.set_price:
+                            try: price = float(selected.set_price)
+                            except: pass
 
-                    img_id = selected.image_id if selected.image_id else (c.card_images[0].id if c.card_images else c.id)
+                        img_id = selected.image_id if selected.image_id else (c.card_images[0].id if c.card_images else c.id)
+                        img_url = c.card_images[0].image_url_small if c.card_images else None
+                        if selected.image_id and c.card_images:
+                            for img in c.card_images:
+                                if img.id == selected.image_id:
+                                    img_url = img.image_url_small
+                                    break
+
+                        entries.append(LibraryEntry(
+                            id=f"{c.id}_{selected.set_code}_{selected.set_rarity}",
+                            api_card=c,
+                            set_code=selected.set_code,
+                            set_name=selected.set_name,
+                            rarity=selected.set_rarity,
+                            image_url=img_url,
+                            image_id=img_id,
+                            price=price
+                        ))
+                else:
+                    img_id = c.card_images[0].id if c.card_images else c.id
                     img_url = c.card_images[0].image_url_small if c.card_images else None
-                    if selected.image_id and c.card_images:
-                        for img in c.card_images:
-                            if img.id == selected.image_id:
-                                img_url = img.image_url_small
-                                break
-
                     entries.append(LibraryEntry(
-                        id=f"{c.id}_{selected.set_code}_{selected.set_rarity}",
+                        id=str(c.id),
                         api_card=c,
-                        set_code=selected.set_code,
-                        set_name=selected.set_name,
-                        rarity=selected.set_rarity,
+                        set_code="N/A",
+                        set_name="No Set Info",
+                        rarity="Common",
                         image_url=img_url,
-                        image_id=img_id,
-                        price=price
+                        image_id=img_id
                     ))
-            else:
-                img_id = c.card_images[0].id if c.card_images else c.id
-                img_url = c.card_images[0].image_url_small if c.card_images else None
-                entries.append(LibraryEntry(
-                    id=str(c.id),
-                    api_card=c,
-                    set_code="N/A",
-                    set_name="No Set Info",
-                    rarity="Common",
-                    image_url=img_url,
-                    image_id=img_id
-                ))
 
-        self.state['library_cards'] = entries
-        self.metadata['available_sets'][:] = sorted(list(sets))
-        self.metadata['available_monster_races'][:] = sorted(list(m_races))
-        self.metadata['available_st_races'][:] = sorted(list(st_races))
-        self.metadata['available_archetypes'][:] = sorted(list(archetypes))
+            self.state['library_cards'] = entries
+            self.metadata['available_sets'][:] = sorted(list(sets))
+            self.metadata['available_monster_races'][:] = sorted(list(m_races))
+            self.metadata['available_st_races'][:] = sorted(list(st_races))
+            self.metadata['available_archetypes'][:] = sorted(list(archetypes))
 
-        for k, v in self.metadata.items():
-            self.state[k] = v
-            self.col_state[k] = v
+            for k, v in self.metadata.items():
+                self.state[k] = v
+                self.col_state[k] = v
 
-        await self.apply_library_filters()
-        if self.library_filter_pane: self.library_filter_pane.update_options()
-        await self.refresh_collection_view_from_memory()
+            logger.info("Library data loaded, applying filters")
+            await self.apply_library_filters()
+            if self.library_filter_pane: self.library_filter_pane.update_options()
+
+            logger.info("Calling load_collection_data")
+            await self.load_collection_data()
+            logger.info("Initialization complete")
+        except Exception as e:
+            logger.exception("Error in load_library_data")
+            ui.notify(f"Error loading data: {e}", type='negative')
 
     async def refresh_collection_view_from_memory(self):
         if not self.current_collection_obj:
@@ -1815,10 +1825,10 @@ class BulkAddPage:
 
                         ui.separator().props('vertical')
 
-                        ui.input(placeholder='Search...') \
+                        ui.input(placeholder='Search...',
+                                 on_change=lambda e: self.apply_library_filters()) \
                             .bind_value(self.state, 'library_search_text') \
                             .props('dense borderless dark debounce=300') \
-                            .on('update:model-value', self.apply_library_filters) \
                             .classes('w-52 text-sm')
 
                         ui.separator().props('vertical')
@@ -1875,10 +1885,10 @@ class BulkAddPage:
 
                         ui.separator().props('vertical')
 
-                        ui.input(placeholder='Search...') \
+                        ui.input(placeholder='Search...',
+                                 on_change=lambda e: self.apply_collection_filters()) \
                             .bind_value(self.col_state, 'search_text') \
                             .props('dense borderless dark debounce=300') \
-                            .on('update:model-value', self.apply_collection_filters) \
                             .classes('w-52 text-sm')
 
                         ui.separator().props('vertical')
