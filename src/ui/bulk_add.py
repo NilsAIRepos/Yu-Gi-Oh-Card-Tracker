@@ -187,6 +187,11 @@ class BulkAddPage:
         self.state['default_condition'] = ui_state.get('bulk_default_cond', self.state['default_condition'])
         self.state['default_first_ed'] = ui_state.get('bulk_default_first', self.state['default_first_ed'])
 
+        # Load update options
+        self.state['update_apply_lang'] = ui_state.get('bulk_update_apply_lang', False)
+        self.state['update_apply_cond'] = ui_state.get('bulk_update_apply_cond', False)
+        self.state['update_apply_first'] = ui_state.get('bulk_update_apply_first', False)
+
         # Load sort preferences
         self.state['library_sort_by'] = ui_state.get('bulk_library_sort_by', self.state['library_sort_by'])
         self.state['library_sort_desc'] = ui_state.get('bulk_library_sort_desc', self.state['library_sort_desc'])
@@ -550,6 +555,164 @@ class BulkAddPage:
 
     # ... [Previous methods: on_collection_change, _setup_card_tooltip, load_library_data, apply_library_filters, etc.]
     # (I will include the full class content in write_file to ensure consistency)
+
+    async def process_batch_update(self, entries: List[BulkCollectionEntry]):
+        if not self.current_collection_obj or not self.state['selected_collection']:
+            return
+
+        # Check what we are updating
+        apply_lang = self.state.get('update_apply_lang', False)
+        apply_cond = self.state.get('update_apply_cond', False)
+        apply_first = self.state.get('update_apply_first', False)
+
+        if not (apply_lang or apply_cond or apply_first):
+            ui.notify("No update options selected.", type='warning')
+            return
+
+        defaults = {
+            'lang': self.state['default_language'],
+            'cond': self.state['default_condition'],
+            'first': self.state['default_first_ed']
+        }
+
+        processed_changes = []
+        updated_count = 0
+        collection = self.current_collection_obj
+
+        # We must use a copy of entries because we might be modifying the source list indirectly
+        # (though entries here is usually a list from state, safely separate from the collection object structure)
+        for entry in entries:
+            # Determine new values
+            new_lang = defaults['lang'] if apply_lang else entry.language
+            new_cond = defaults['cond'] if apply_cond else entry.condition
+            new_first = defaults['first'] if apply_first else entry.first_edition
+
+            # Check if any change is actually needed
+            if (new_lang == entry.language and
+                new_cond == entry.condition and
+                new_first == entry.first_edition):
+                continue
+
+            qty = entry.quantity
+            if qty <= 0: continue
+
+            # REMOVE OLD
+            CollectionEditor.apply_change(
+                collection=collection,
+                api_card=entry.api_card,
+                set_code=entry.set_code,
+                rarity=entry.rarity,
+                language=entry.language,
+                quantity=-qty,
+                condition=entry.condition,
+                first_edition=entry.first_edition,
+                image_id=entry.image_id,
+                variant_id=entry.variant_id,
+                mode='ADD'
+            )
+
+            # ADD NEW
+            # We need to let CollectionEditor handle variant ID for the NEW combination.
+            # We pass None for variant_id to force it to find/generate the correct one for the new attributes.
+            # However, if set_code/rarity/image_id are same, the base variant ID might be same.
+            # CollectionEditor.apply_change logic:
+            # "If not target_variant_id and set_code and rarity: target_variant_id = generate_variant_id..."
+            # So if we pass None, it generates/finds based on card props.
+            # But wait, we want to keep the same variant_id if it's just condition change?
+            # Variant ID is hash of (card_id, set_code, rarity, image_id).
+            # Language/Condition/FirstEd are properties of the ENTRY, not the VARIANT.
+            # So the Variant ID should be the SAME.
+            # So we CAN reuse entry.variant_id.
+
+            CollectionEditor.apply_change(
+                collection=collection,
+                api_card=entry.api_card,
+                set_code=entry.set_code,
+                rarity=entry.rarity,
+                language=new_lang,
+                quantity=qty,
+                condition=new_cond,
+                first_edition=new_first,
+                image_id=entry.image_id,
+                variant_id=entry.variant_id, # Re-use variant ID as basic properties (set/rarity) haven't changed
+                mode='ADD'
+            )
+
+            processed_changes.append({
+                'action': 'UPDATE',
+                'quantity': qty,
+                'card_data': {
+                    'card_id': entry.api_card.id,
+                    'name': entry.api_card.name,
+                    'set_code': entry.set_code,
+                    'rarity': entry.rarity,
+                    'image_id': entry.image_id,
+                    'language': new_lang,
+                    'condition': new_cond,
+                    'first_edition': new_first,
+                    'variant_id': entry.variant_id
+                },
+                'old_data': {
+                    'language': entry.language,
+                    'condition': entry.condition,
+                    'first_edition': entry.first_edition
+                }
+            })
+            updated_count += qty
+
+        if processed_changes:
+            await run.io_bound(persistence.save_collection, collection, self.state['selected_collection'])
+
+            changelog_manager.log_batch_change(
+                self.state['selected_collection'],
+                f"Bulk Updated {len(processed_changes)} stacks",
+                processed_changes
+            )
+
+            ui.notify(f"Updated {len(processed_changes)} entries", type='positive')
+            self.render_header.refresh()
+            await self.load_collection_data()
+        else:
+            ui.notify("No cards required updates.", type='info')
+
+    async def on_update_all_click(self):
+        count = len(self.col_state['collection_filtered'])
+        if count == 0:
+            ui.notify("No cards to update.", type='warning')
+            return
+
+        if not (self.state.get('update_apply_lang') or
+                self.state.get('update_apply_cond') or
+                self.state.get('update_apply_first')):
+            ui.notify("Select at least one property to update (Lang, Cond, or 1st).", type='warning')
+            return
+
+        async def execute():
+             await self.process_batch_update(self.col_state['collection_filtered'])
+
+        updates = []
+        if self.state.get('update_apply_lang'): updates.append(f"Language -> {self.state['default_language']}")
+        if self.state.get('update_apply_cond'): updates.append(f"Condition -> {self.state['default_condition']}")
+        if self.state.get('update_apply_first'): updates.append(f"1st Ed -> {'Yes' if self.state['default_first_ed'] else 'No'}")
+
+        update_str = ", ".join(updates)
+
+        with ui.dialog() as d, ui.card():
+             ui.label("Confirm Bulk Update").classes('text-h6')
+             ui.label(f"Update {count} filtered entries?")
+             ui.label(f"Applying: {update_str}").classes('font-bold text-accent')
+
+             with ui.row().classes('justify-end'):
+                 ui.button("Cancel", on_click=d.close).props('flat')
+                 async def on_confirm():
+                     d.close()
+                     await asyncio.sleep(0.2)
+                     if not self.is_collection_filtered():
+                         await self.show_double_confirmation(count, execute, "UPDATE ALL")
+                     else:
+                         await execute()
+                 ui.button("Update All", on_click=on_confirm).props('color=warning')
+        d.open()
 
     # Copying previous methods for completeness...
     async def process_batch_add(self, entries: List[LibraryEntry]):
@@ -1470,6 +1633,9 @@ class BulkAddPage:
                     ui.label('Library').classes('text-h6 font-bold')
                     with ui.row().classes('items-center gap-1 flex-nowrap'):
                         ui.button("Add All", on_click=self.on_add_all_click).props('flat dense color=positive size=sm')
+
+                        ui.separator().props('vertical')
+
                         async def on_search(e):
                             self.state['library_search_text'] = e.value
                             await self.apply_library_filters()
@@ -1515,7 +1681,20 @@ class BulkAddPage:
                 with ui.row().classes('w-full p-2 bg-gray-900 border-b border-gray-800 items-center justify-between gap-2 flex-nowrap overflow-x-auto'):
                     ui.label('Collection').classes('text-h6 font-bold')
                     with ui.row().classes('items-center gap-1 flex-nowrap'):
+                        # Update Controls
+                        with ui.row().classes('gap-1 items-center bg-gray-800 rounded px-1 border border-gray-700'):
+                            ui.button("Update", on_click=self.on_update_all_click).props('flat dense color=warning size=sm')
+                            ui.checkbox('Lang', value=self.state['update_apply_lang'],
+                                        on_change=lambda e: [self.state.update({'update_apply_lang': e.value}), persistence.save_ui_state({'bulk_update_apply_lang': e.value})]).props('dense size=xs').classes('text-[10px]')
+                            ui.checkbox('Cond', value=self.state['update_apply_cond'],
+                                        on_change=lambda e: [self.state.update({'update_apply_cond': e.value}), persistence.save_ui_state({'bulk_update_apply_cond': e.value})]).props('dense size=xs').classes('text-[10px]')
+                            ui.checkbox('1st', value=self.state['update_apply_first'],
+                                        on_change=lambda e: [self.state.update({'update_apply_first': e.value}), persistence.save_ui_state({'bulk_update_apply_first': e.value})]).props('dense size=xs').classes('text-[10px]')
+
                         ui.button("Remove All", on_click=self.on_remove_all_click).props('flat dense color=negative size=sm')
+
+                        ui.separator().props('vertical')
+
                         async def on_col_search(e):
                             self.col_state['search_text'] = e.value
                             await self.apply_collection_filters()
