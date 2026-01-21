@@ -52,5 +52,25 @@ RARITY_ABBREVIATIONS = {
     "10000 Secret Rare": "10000ScR"
 }
 
-# Map for standardized display/filtering if needed, though simple list is usually enough for sorting.
-# Lower index = Higher Priority/Rarity
+# Card Conditions
+CARD_CONDITIONS = [
+    "Mint",
+    "Near Mint",
+    "Excellent",
+    "Good",
+    "Light Played",
+    "Played",
+    "Poor",
+    "Damaged"
+]
+
+CONDITION_ABBREVIATIONS = {
+    "Mint": "MT",
+    "Near Mint": "NM",
+    "Excellent": "EX",
+    "Good": "GD",
+    "Light Played": "LP",
+    "Played": "PL",
+    "Poor": "PO",
+    "Damaged": "DM"
+}

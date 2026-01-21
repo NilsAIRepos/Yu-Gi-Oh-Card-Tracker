@@ -6,6 +6,7 @@ from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.services.collection_editor import CollectionEditor
 from src.core.utils import generate_variant_id, normalize_set_code, extract_language_code, LANGUAGE_COUNTRY_MAP
+from src.core.constants import CARD_CONDITIONS, CONDITION_ABBREVIATIONS
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.ui.components.structure_deck_dialog import StructureDeckDialog
@@ -1279,7 +1280,7 @@ class BulkAddPage:
                  ui.select(['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP', 'KR'], label='Lang',
                            value=self.state['default_language'],
                            on_change=lambda e: [self.state.update({'default_language': e.value}), persistence.save_ui_state({'bulk_default_lang': e.value})]).props('dense options-dense').classes('w-20')
-                 ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Cond',
+                 ui.select(CARD_CONDITIONS, label='Cond',
                            value=self.state['default_condition'],
                            on_change=lambda e: [self.state.update({'default_condition': e.value}), persistence.save_ui_state({'bulk_default_cond': e.value})]).props('dense options-dense').classes('w-32')
                  ui.checkbox('1st Ed', value=self.state['default_first_ed'],
@@ -1359,8 +1360,7 @@ class BulkAddPage:
             for item in items:
                 img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
 
-                cond_map = {'Mint': 'MT', 'Near Mint': 'NM', 'Played': 'PL', 'Damaged': 'DM'}
-                cond_short = cond_map.get(item.condition, item.condition[:2].upper())
+                cond_short = CONDITION_ABBREVIATIONS.get(item.condition, item.condition[:2].upper())
 
                 with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-accent w-full aspect-[2/3] select-none') \
                         .props(f'data-id="{item.id}"') \

@@ -3,6 +3,7 @@ from src.core.models import ApiCardSet
 from src.services.ygo_api import ApiCard, ygo_service
 from src.services.image_manager import image_manager
 from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, extract_language_code
+from src.core.constants import CARD_CONDITIONS
 from typing import List, Optional, Dict, Set, Callable, Any
 import logging
 import asyncio
@@ -141,7 +142,7 @@ class SingleCardView:
                     on_change_callback()
 
                 set_select.on_value_change(on_set_change)
-                ui.select(['Mint', 'Near Mint', 'Played', 'Damaged'], label='Condition', value=input_state['condition'],
+                ui.select(CARD_CONDITIONS, label='Condition', value=input_state['condition'],
                             on_change=lambda e: [input_state.update({'condition': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
                 ui.checkbox('1st Edition', value=input_state['first_edition'],
                             on_change=lambda e: [input_state.update({'first_edition': e.value}), on_change_callback()]).classes('my-auto').props('dark')
