@@ -453,24 +453,30 @@ class ScannerManager:
 
             if set_id:
                 # Wrap heavy DB/IO in io_bound if not already async-optimized
-                card_info = await self._resolve_card_details(set_id)
+                try:
+                    card_info = await self._resolve_card_details(set_id)
 
-                if card_info:
-                    data.update(card_info)
+                    if card_info:
+                        data.update(card_info)
 
-                    if warped is not None and card_info.get("potential_art_paths"):
-                        match_path, match_score = await run.io_bound(
-                            self.scanner.match_artwork, warped, card_info["potential_art_paths"]
-                        )
-                        if match_path:
-                            data["image_path"] = match_path
-                            data["match_score"] = match_score
-                        else:
-                            data["image_path"] = card_info["potential_art_paths"][0]
-                            data["match_score"] = 0
+                        if warped is not None and card_info.get("potential_art_paths"):
+                            match_path, match_score = await run.io_bound(
+                                self.scanner.match_artwork, warped, card_info["potential_art_paths"]
+                            )
+                            if match_path:
+                                data["image_path"] = match_path
+                                data["match_score"] = match_score
+                            else:
+                                data["image_path"] = card_info["potential_art_paths"][0]
+                                data["match_score"] = 0
+                    else:
+                        data['name'] = f"Unknown ({set_id})"
+                except Exception as lookup_err:
+                    logger.error(f"DB Lookup failed for {set_id}: {lookup_err}")
+                    data['name'] = f"Lookup Error ({set_id})"
 
-            if data["rarity"] == "Unknown":
-                data["rarity"] = data["visual_rarity"]
+            if data.get("rarity", "Unknown") == "Unknown":
+                data["rarity"] = data.get("visual_rarity", "Common")
 
             self.result_queue.put(data)
             logger.info(f"Lookup complete for {data.get('set_code')}")

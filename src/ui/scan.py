@@ -470,7 +470,15 @@ class ScanPage:
             if result:
                 self.scanned_cards.insert(0, result)
                 self.render_live_list.refresh()
-                ui.notify(f"Scanned: {result.get('name')}", type='positive')
+
+                # Notification logic based on result status
+                if "Scan Failed" in result.get('name', ''):
+                    ui.notify("Scan Failed: No Card ID Found", type='negative')
+                elif "Lookup Error" in result.get('name', ''):
+                    ui.notify(f"Lookup Error: {result.get('set_code')}", type='warning')
+                else:
+                    ui.notify(f"Scanned: {result.get('name')}", type='positive')
+
                 # Refresh debug results once to show the final outcome
                 self.refresh_debug_ui()
 
