@@ -49,27 +49,17 @@ class PersistenceManager:
         logger.info(f"Saving collection: {filename}")
         filepath = os.path.join(self.data_dir, filename)
         data = collection.model_dump(mode='json')
-        temp_filepath = filepath + ".tmp"
 
         try:
-            with open(temp_filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 if filename.endswith('.json'):
                     json.dump(data, f, indent=2)
                 elif filename.endswith(('.yaml', '.yml')):
                     yaml.safe_dump(data, f)
                 else:
                     raise ValueError("Unsupported file format")
-                f.flush()
-                os.fsync(f.fileno())
-
-            os.replace(temp_filepath, filepath)
         except Exception as e:
             logger.error(f"Error saving collection {filename}: {e}")
-            if os.path.exists(temp_filepath):
-                try:
-                    os.remove(temp_filepath)
-                except OSError:
-                    pass
             raise
 
     # --- Deck Management ---

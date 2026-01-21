@@ -78,47 +78,6 @@ class BulkCollectionEntry:
     variant_id: str
     price: float = 0.0
 
-def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard]) -> List[BulkCollectionEntry]:
-    entries = []
-    for card in col.cards:
-        api_card = api_card_map.get(card.card_id)
-        if not api_card: continue
-
-        for variant in card.variants:
-            img_id = variant.image_id if variant.image_id else (api_card.card_images[0].id if api_card.card_images else api_card.id)
-            img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
-            if variant.image_id and api_card.card_images:
-                for img in api_card.card_images:
-                    if img.id == variant.image_id:
-                        img_url = img.image_url_small
-                        break
-
-            set_name = "Unknown Set"
-            if api_card.card_sets:
-                for s in api_card.card_sets:
-                     if s.set_code == variant.set_code:
-                         set_name = s.set_name
-                         break
-
-            for entry in variant.entries:
-                unique_id = f"{variant.variant_id}_{entry.language}_{entry.condition}_{entry.first_edition}"
-                entries.append(BulkCollectionEntry(
-                    id=unique_id,
-                    api_card=api_card,
-                    quantity=entry.quantity,
-                    set_code=variant.set_code,
-                    set_name=set_name,
-                    rarity=variant.rarity,
-                    language=entry.language,
-                    condition=entry.condition,
-                    first_edition=entry.first_edition,
-                    image_url=img_url,
-                    image_id=img_id,
-                    variant_id=variant.variant_id,
-                    price=0.0
-                ))
-    return entries
-
 class BulkAddPage:
     def __init__(self):
         # Global Metadata (shared)
@@ -240,7 +199,7 @@ class BulkAddPage:
         self.col_state['sort_by'] = ui_state.get('bulk_collection_sort_by', self.col_state['sort_by'])
         self.col_state['sort_desc'] = ui_state.get('bulk_collection_sort_desc', self.col_state['sort_desc'])
 
-    async def _update_collection(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, mode='ADD', variant_id=None, save=True):
+    async def _update_collection(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, mode='ADD', variant_id=None):
         if not self.current_collection_obj or not self.state['selected_collection']:
             return False
 
@@ -260,8 +219,7 @@ class BulkAddPage:
             )
 
             if modified:
-                if save:
-                    await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
+                await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
                 return True
             return False
         except Exception as e:
@@ -298,13 +256,9 @@ class BulkAddPage:
                             first=data['first_edition'],
                             img_id=data['image_id'],
                             variant_id=data.get('variant_id'),
-                            mode='ADD',
-                            save=False
+                            mode='ADD'
                         )
                         count += 1
-
-                if count > 0:
-                    await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
 
                 ui.notify(f"Undid batch: {last_change.get('description')} ({count} items)", type='positive')
                 self.render_header.refresh()
@@ -1214,7 +1168,45 @@ class BulkAddPage:
             ui.notify(f"Failed to load collection: {e}", type='negative')
             return
 
-        entries = await run.io_bound(_build_collection_entries, col, self.api_card_map)
+        entries = []
+        for card in col.cards:
+            api_card = self.api_card_map.get(card.card_id)
+            if not api_card: continue
+
+            for variant in card.variants:
+                img_id = variant.image_id if variant.image_id else (api_card.card_images[0].id if api_card.card_images else api_card.id)
+                img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
+                if variant.image_id and api_card.card_images:
+                    for img in api_card.card_images:
+                        if img.id == variant.image_id:
+                            img_url = img.image_url_small
+                            break
+
+                set_name = "Unknown Set"
+                if api_card.card_sets:
+                    for s in api_card.card_sets:
+                         if s.set_code == variant.set_code:
+                             set_name = s.set_name
+                             break
+
+                for entry in variant.entries:
+                    unique_id = f"{variant.variant_id}_{entry.language}_{entry.condition}_{entry.first_edition}"
+                    entries.append(BulkCollectionEntry(
+                        id=unique_id,
+                        api_card=api_card,
+                        quantity=entry.quantity,
+                        set_code=variant.set_code,
+                        set_name=set_name,
+                        rarity=variant.rarity,
+                        language=entry.language,
+                        condition=entry.condition,
+                        first_edition=entry.first_edition,
+                        image_url=img_url,
+                        image_id=img_id,
+                        variant_id=variant.variant_id,
+                        price=0.0
+                    ))
+
         self.col_state['collection_cards'] = entries
         await self.apply_collection_filters()
         if self.collection_filter_pane: self.collection_filter_pane.update_options()
