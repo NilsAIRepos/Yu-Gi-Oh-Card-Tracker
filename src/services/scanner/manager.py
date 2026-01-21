@@ -294,8 +294,10 @@ class ScannerManager:
                 self._emit("scan_started", {"filename": filename})
 
                 try:
+                    print(f"DEBUG_WORKER: Loading image {filepath}", flush=True)
                     # Load Image
                     frame = cv2.imread(filepath)
+                    print(f"DEBUG_WORKER: Image loaded. Shape: {frame.shape if frame is not None else 'None'}", flush=True)
 
                     if frame is not None:
                         # Update debug state basics
@@ -322,7 +324,9 @@ class ScannerManager:
                             self._emit("step_complete", {"step": step_name})
 
                         # Run Pipeline
+                        print(f"DEBUG_WORKER: Starting process_scan", flush=True)
                         report = self._process_scan(frame, task.options, status_cb=update_step)
+                        print(f"DEBUG_WORKER: process_scan complete", flush=True)
 
                         # Merge report into debug state
                         logger.info(f"Scan Report Merged: {list(report.keys())}")
@@ -376,8 +380,9 @@ class ScannerManager:
                 except ScanAborted:
                     logger.info(f"Scan aborted for: {filename}")
                     self._log_debug(f"Aborted: {filename}")
+                    self.paused = True # Ensure paused state is set
                     self.status_message = "Paused"
-                    self._emit("status_update", {"status": "Paused"})
+                    self._emit("status_update", {"status": "Paused", "paused": True})
                     # Do NOT remove from queue.
                     # Do NOT delete file.
 

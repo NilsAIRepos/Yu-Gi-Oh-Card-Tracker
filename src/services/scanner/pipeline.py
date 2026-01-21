@@ -247,6 +247,7 @@ class CardScanner:
         Runs OCR on the provided image using the specified engine.
         Returns an OCRResult Pydantic model.
         """
+        print(f"DEBUG_PIPELINE: Starting OCR with engine={engine}", flush=True)
         raw_text_list = []
         confidences = []
         full_text = ""
@@ -262,6 +263,7 @@ class CardScanner:
                  image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
 
             if engine == 'paddle':
+                print("DEBUG_PIPELINE: Invoking PaddleOCR...", flush=True)
                 ocr = self.get_paddleocr()
                 # result = [[[[x1,y1],...], (text, conf)], ...]
                 try:
@@ -276,13 +278,16 @@ class CardScanner:
                         conf = line[1][1]
                         raw_text_list.append(text)
                         confidences.append(conf)
+                print("DEBUG_PIPELINE: PaddleOCR done.", flush=True)
             else: # easyocr
+                print("DEBUG_PIPELINE: Invoking EasyOCR...", flush=True)
                 reader = self.get_easyocr()
                 # mag_ratio=1.5 for better small text
                 results = reader.readtext(image, detail=1, paragraph=False, mag_ratio=1.5)
                 for (bbox, text, conf) in results:
                     raw_text_list.append(text)
                     confidences.append(conf)
+                print("DEBUG_PIPELINE: EasyOCR done.", flush=True)
 
             full_text = " | ".join(raw_text_list)
 
