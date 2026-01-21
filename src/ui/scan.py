@@ -269,7 +269,6 @@ class ScanPage:
 
     async def event_consumer(self):
         """Consumes events from the local queue and updates UI."""
-        if not self.is_active: return
         while not self.event_queue.empty():
             event = self.event_queue.get()
 
@@ -580,8 +579,14 @@ class ScanPage:
     def render_status_controls(self):
         # Use dynamic import access
         mgr = scanner_service.scanner_manager
+        # Explicitly fetch latest state from manager, regardless of local debug report
         status = mgr.get_status()
         is_paused = mgr.is_paused()
+
+        # If queue is empty and status is idle, treat as paused for UI (show start)
+        # But wait, we want to show "Start" if the system is effectively stopped.
+        # If manager.paused is True, then "Start" button is shown.
+        # If manager.paused is False (Running), then "Pause" button is shown.
 
         with ui.row().classes('w-full items-center justify-between bg-gray-800 p-2 rounded border border-gray-700'):
             with ui.row().classes('items-center gap-2'):
