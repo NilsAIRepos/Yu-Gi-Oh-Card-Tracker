@@ -443,6 +443,11 @@ class ScanPage:
             # We refresh if currently processing OR if we just finished processing (falling edge)
             is_proc = scanner_manager.is_processing
             if is_proc or self.was_processing or self.debug_loading:
+                 # Check falling edge (Processing -> Idle)
+                 if self.was_processing and not is_proc:
+                     # Force one last fetch to get the final results
+                     self.debug_report = scanner_manager.get_debug_snapshot()
+
                  if self.debug_loading: self.debug_loading = False
                  self.refresh_debug_ui()
 
