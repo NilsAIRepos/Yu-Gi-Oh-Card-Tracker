@@ -5,7 +5,9 @@ requests
 aiohttp
 Pillow
 opencv-python
-pytesseract
 langdetect
 pypdf
 easyocr
+paddleocr
+paddlepaddle
+ultralytics

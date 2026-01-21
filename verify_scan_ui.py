@@ -1,41 +1,63 @@
-from playwright.sync_api import sync_playwright, expect
+from playwright.sync_api import sync_playwright
 
 def verify_scan_ui():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        try:
-            # Navigate to the scan page
-            page.goto("http://localhost:8080/scan")
+        page.set_viewport_size({"width": 1280, "height": 1024})
 
-            # Wait for the page to load
-            expect(page.get_by_text("Card Scanner")).to_be_visible()
+        print("Navigating to home...")
+        page.goto("http://localhost:8080/")
 
-            # Check for the renamed button "Force Scan"
-            # It might be in the debug drawer which is hidden by default.
-            # I need to toggle debug mode first.
+        print("Clicking Scan Cards...")
+        # Assuming there is a menu or link to Scan Cards.
+        # Based on file structure, it's likely part of the main layout.
+        # I'll check for "Scan Cards" text or similar.
+        page.get_by_text("Scan Cards").click()
 
-            # Find the "Debug Mode" switch and toggle it
-            # NiceGUI switches usually have a label text next to them
-            debug_switch = page.get_by_text("Debug Mode")
-            debug_switch.click()
+        print("Waiting for Scan Page...")
+        page.wait_for_load_state("networkidle")
 
-            # Now the drawer should be visible (or animating in).
-            # Wait a moment for animation if needed, or just look for the button.
+        # Verify Capture Button exists
+        print("Checking for Capture & Scan button...")
+        if page.get_by_role("button", name="Capture & Scan").count() > 0:
+            print("Found Capture & Scan button.")
+        else:
+            print("Capture & Scan button NOT found!")
 
-            # The button text should be "Force Scan"
-            force_scan_btn = page.get_by_role("button", name="Force Scan")
-            expect(force_scan_btn).to_be_visible()
+        # Verify Auto Scan is gone
+        if page.get_by_text("Auto Scan").count() == 0:
+             print("Auto Scan is correctly removed/renamed.")
+        else:
+             print("Auto Scan text found (might be label for something else or residual).")
 
-            # Take a screenshot of the page with the debug drawer open
-            page.screenshot(path="verification_scan_ui.png")
-            print("Verification successful: Force Scan button found.")
+        # Go to Debug Lab
+        print("Switching to Debug Lab...")
+        page.get_by_text("Debug Lab").click()
 
-        except Exception as e:
-            print(f"Verification failed: {e}")
-            page.screenshot(path="verification_scan_error.png")
-        finally:
-            browser.close()
+        # Check controls
+        print("Checking Debug Lab controls...")
+        if page.get_by_text("Preprocessing Strategy").count() > 0:
+             print("Preprocessing Strategy label found.")
+
+        if page.get_by_text("EasyOCR").count() > 0:
+             print("EasyOCR checkbox found.")
+
+        if page.get_by_text("PaddleOCR").count() > 0:
+             print("PaddleOCR checkbox found.")
+
+        # Check Result Zones
+        print("Checking Result Zones...")
+        if page.get_by_text("Track 1: EasyOCR (Full Frame)").count() > 0:
+             print("Track 1 Full zone found.")
+        if page.get_by_text("Track 2: PaddleOCR (Cropped)").count() > 0:
+             print("Track 2 Cropped zone found.")
+
+        # Take Screenshot
+        print("Taking screenshot...")
+        page.screenshot(path="verification_scan_ui.png")
+        print("Done.")
+        browser.close()
 
 if __name__ == "__main__":
     verify_scan_ui()

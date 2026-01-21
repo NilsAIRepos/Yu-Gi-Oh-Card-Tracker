@@ -3,6 +3,7 @@ import logging
 import os
 import asyncio
 import time
+import base64
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 
@@ -24,7 +25,6 @@ async def upload_frame(file: UploadFile):
         logger.error(f"Error receiving frame: {e}")
         return {"status": "error", "message": str(e)}
 
-# Client-Side Camera Logic (High Quality)
 JS_CAMERA_CODE = """
 <script>
 window.scannerVideo = null;
@@ -60,7 +60,6 @@ async function startCamera(deviceId, uploadUrl) {
         window.scannerVideo.srcObject = window.scannerStream;
         await window.scannerVideo.play();
 
-        // Also attach to debug video if it exists
         attachDebugStream();
 
         if (window.overlayCanvas) {
@@ -85,7 +84,6 @@ function attachDebugStream() {
 }
 
 function initDebugStream() {
-    // Retry finding the element a few times if it's not immediately available
     let attempts = 0;
     const interval = setInterval(() => {
         window.debugVideo = document.getElementById('debug-video');
@@ -126,7 +124,6 @@ function startStreamingLoop(uploadUrl) {
         try {
             if (!window.isStreaming || !window.scannerVideo || window.scannerVideo.readyState < 2) return;
 
-            // Full Resolution Capture
             const w = window.scannerVideo.videoWidth;
             const h = window.scannerVideo.videoHeight;
             if (w === 0 || h === 0) return;
@@ -141,7 +138,7 @@ function startStreamingLoop(uploadUrl) {
                      formData.append('file', blob);
                      fetch(uploadUrl, { method: 'POST', body: formData }).catch(e => console.error("Frame upload failed:", e));
                 }
-            }, 'image/jpeg', 0.95); // High Quality
+            }, 'image/jpeg', 0.95);
 
         } catch (err) {
             console.error("Client: captureFrame exception:", err);
@@ -186,11 +183,9 @@ async function getVideoDevices() {
 }
 
 async function captureSingleFrame() {
-    // Try capturing from scanner video first, then debug video if needed
     let videoSource = window.scannerVideo;
     let usingDebug = false;
 
-    // Check if scanner video is valid and active
     if (!videoSource || videoSource.readyState < 2) {
         if (window.debugVideo && window.debugVideo.readyState >= 2) {
              videoSource = window.debugVideo;
@@ -199,7 +194,6 @@ async function captureSingleFrame() {
              return null;
         }
     } else {
-        // If scanner video is paused/ended, try debug video
         if (videoSource.paused || videoSource.ended) {
              if (window.debugVideo && window.debugVideo.readyState >= 2) {
                  videoSource = window.debugVideo;
@@ -208,7 +202,6 @@ async function captureSingleFrame() {
         }
     }
 
-    // Ensure the chosen source is playing
     if (videoSource.paused) {
         try {
             await videoSource.play();
@@ -254,8 +247,11 @@ class ScanPage:
         self.camera_select = None
         self.start_btn = None
         self.stop_btn = None
-        self.auto_scan_switch = None
         self.is_active = False
+
+        # Config
+        self.ocr_tracks = ['easyocr'] # ['easyocr', 'paddle']
+        self.preprocessing_mode = 'classic' # 'classic' or 'yolo'
 
         # Debug Lab State
         self.debug_report = {}
@@ -291,14 +287,6 @@ class ScanPage:
         scanner_manager.stop()
         self.start_btn.visible = True
         self.stop_btn.visible = False
-
-    def on_tab_change(self, e):
-        # e.value is the tab object or value.
-        # Checking by label name is tricky if value is object.
-        # But we can rely on the tab names we assigned in scan_page function if we had access.
-        # Alternatively, we just check if it's the live scan tab.
-        # However, e.value is the ui.tab instance.
-        pass # Logic handled in scan_page closure
 
     def remove_card(self, index):
         if 0 <= index < len(self.scanned_cards):
@@ -369,6 +357,15 @@ class ScanPage:
             logger.error(f"Error saving collection: {e}")
             ui.notify(f"Error saving collection: {e}", type='negative')
 
+    async def trigger_live_scan(self):
+        """Triggers a scan from the Live Tab using current settings."""
+        options = {
+            "tracks": self.ocr_tracks,
+            "preprocessing": self.preprocessing_mode
+        }
+        scanner_manager.trigger_scan(options)
+        ui.notify("Scanning...", type='info')
+
     def refresh_debug_ui(self):
         self.render_debug_results.refresh()
         self.render_debug_analysis.refresh()
@@ -376,12 +373,21 @@ class ScanPage:
 
     async def handle_debug_upload(self, e: events.UploadEventArguments):
         self.debug_loading = True
-        self.latest_capture_src = None # Clear previous capture on upload
+        self.latest_capture_src = None
         self.refresh_debug_ui()
         try:
             content = await e.file.read()
-            report = await scanner_manager.analyze_static_image(content)
+            # We use analyze_static_image for upload, which is async but wrapped in io_bound in manager
+            options = {
+                "tracks": self.ocr_tracks,
+                "preprocessing": self.preprocessing_mode
+            }
+            report = await scanner_manager.analyze_static_image(content, options)
+            # Update local debug state from the report
             self.debug_report = report
+            # Also update manager debug state so it persists?
+            # analyze_static_image in manager returns a report but doesn't necessarily update global state
+            # unless we tell it to. In this case, we use the returned report.
         except Exception as err:
             ui.notify(f"Analysis failed: {err}", type='negative')
         self.debug_loading = False
@@ -391,7 +397,6 @@ class ScanPage:
         self.debug_loading = True
         self.refresh_debug_ui()
         try:
-            # Capture frame from client
             data_url = await ui.run_javascript('captureSingleFrame()')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
@@ -399,32 +404,59 @@ class ScanPage:
                 self.refresh_debug_ui()
                 return
 
-            # Show immediate preview
             self.latest_capture_src = data_url
             self.refresh_debug_ui()
 
-            # Convert Data URL to bytes
-            import base64
+            # Trigger Scan via Manager (Worker)
+            # We need to send bytes.
             header, encoded = data_url.split(",", 1)
             content = base64.b64decode(encoded)
 
-            report = await scanner_manager.analyze_static_image(content)
-            self.debug_report = report
+            # Since we have the content, we can manually trigger the queue via trigger_scan
+            # but trigger_scan uses 'latest_frame'.
+            # We should probably update latest_frame or just use analyze_static_image?
+            # The prompt says: "Output ALL 4 OCR RAW TEXT RESULTS... IN THE DEBUG LAB".
+            # The manager's trigger_scan flow updates the debug_state which the UI polls.
+            # So calling trigger_scan (which uses latest_frame) is preferred if we trust latest_frame.
+            # But here we captured a frame explicitly.
+            # Let's push this frame then trigger.
+            scanner_manager.push_frame(content)
+
+            options = {
+                "tracks": self.ocr_tracks,
+                "preprocessing": self.preprocessing_mode
+            }
+            scanner_manager.trigger_scan(options)
+
         except Exception as err:
             ui.notify(f"Capture failed: {err}", type='negative')
-
-        self.debug_loading = False
-        self.refresh_debug_ui()
+            self.debug_loading = False
+            self.refresh_debug_ui()
 
     async def update_loop(self):
         if not self.is_active: return
 
-        # Live Overlay
-        contour = scanner_manager.get_live_contour()
-        if contour:
-            await ui.run_javascript(f'drawOverlay({contour})')
-        else:
-            await ui.run_javascript('clearOverlay()')
+        # Poll Debug State
+        self.debug_report = scanner_manager.get_debug_snapshot()
+        if self.debug_report.get('logs') and self.debug_loading:
+             # If we were loading, check if done?
+             # Simple logic: just refresh UI periodically if visible
+             pass
+
+        # Only refresh if something changed?
+        # For now, let's refresh periodically if loading, or if we have new data.
+        # Ideally we'd have a dirty flag.
+        # We can refresh the debug UI every loop? Might be too heavy.
+        # Let's refresh only if status is "Processing..." or similar.
+        if scanner_manager.is_processing:
+             self.refresh_debug_ui()
+        elif self.debug_loading: # Should turn off
+             self.debug_loading = False
+             self.refresh_debug_ui()
+
+        # Process Pending Lookups (Async Resolver)
+        # This is where we act as the consumer of lookup_queue
+        await scanner_manager.process_pending_lookups()
 
         # Live Results
         result = scanner_manager.get_latest_result()
@@ -452,7 +484,6 @@ class ScanPage:
                     ui.label(card.get('name', 'Unknown')).classes('font-bold')
                     ui.label(f"{card.get('set_code')}").classes('text-xs text-gray-500')
 
-                # Delete Button
                 ui.button(icon='delete', color='negative', flat=True,
                           on_click=lambda idx=i: self.remove_card(idx))
 
@@ -462,13 +493,12 @@ class ScanPage:
             ui.spinner(size='lg')
             return
 
-        # Preview Section
-        preview_src = self.latest_capture_src or self.debug_report.get('input_image_url')
+        preview_src = self.latest_capture_src or self.debug_report.get('captured_image_url') or self.debug_report.get('input_image_url')
         if preview_src:
-            ui.label("Latest Input:").classes('font-bold mt-2 text-lg')
+            ui.label("Latest Capture:").classes('font-bold mt-2 text-lg')
             ui.image(preview_src).classes('w-full h-auto border rounded shadow-md')
-        elif self.debug_loading:
-            ui.label("Processing...").classes('italic text-accent mt-2')
+        elif scanner_manager.is_processing:
+             ui.spinner()
 
     @ui.refreshable
     def render_debug_analysis(self):
@@ -484,95 +514,84 @@ class ScanPage:
 
     @ui.refreshable
     def render_debug_pipeline_results(self):
-        results = self.debug_report.get('results', {})
-        if results:
-            with ui.column().classes('w-full gap-2 bg-gray-800 p-4 rounded'):
-                with ui.row().classes('w-full justify-between items-center'):
-                     ui.label("Set ID:").classes('font-bold text-gray-300')
-                     ui.label(f"{results.get('set_id', 'N/A')}").classes('font-mono text-xl text-white')
+        # 4 Collapsable Zones
 
-                with ui.row().classes('w-full justify-between items-center'):
-                     ui.label("OCR Conf:").classes('font-bold text-gray-300')
-                     conf = results.get('set_id_conf', 0)
-                     color = 'text-green-400' if conf > 60 else 'text-red-400'
-                     ui.label(f"{conf:.1f}%").classes(f'font-mono text-lg {color}')
+        def render_zone(title, key):
+            data = self.debug_report.get(key)
+            with ui.expansion(title, icon='visibility').classes('w-full bg-gray-800 border border-gray-600 mb-2'):
+                if data:
+                    with ui.column().classes('p-2 w-full'):
+                        ui.label(f"Set ID: {data.get('set_id', 'N/A')}").classes('font-bold text-green-400')
+                        ui.label(f"Conf: {data.get('set_id_conf', 0):.1f}%").classes('text-sm')
+                        ui.label(f"Lang: {data.get('language', 'N/A')}").classes('text-sm')
+                        ui.separator().classes('bg-gray-600 my-1')
+                        ui.label("Raw Text:").classes('text-xs text-gray-400')
+                        ui.label(data.get('raw_text', '')).classes('font-mono text-xs break-all bg-black p-1 rounded')
+                else:
+                    ui.label("No Data").classes('italic text-gray-500 p-2')
 
-                # Track 1 Raw Text
-                t1_raw = self.debug_report.get('track1_raw')
-                if t1_raw is not None:
-                    with ui.expansion('Track 1 Raw Text', icon='text_fields').classes('w-full bg-gray-800 text-xs'):
-                        ui.label(t1_raw if t1_raw.strip() else "[No text detected]").classes('font-mono break-all')
+        render_zone("Track 1: EasyOCR (Full Frame)", "t1_full")
+        render_zone("Track 1: EasyOCR (Cropped)", "t1_crop")
+        render_zone("Track 2: PaddleOCR (Full Frame)", "t2_full")
+        render_zone("Track 2: PaddleOCR (Cropped)", "t2_crop")
 
-                with ui.row().classes('w-full justify-between items-center'):
-                     ui.label("Language:").classes('font-bold text-gray-300')
-                     ui.label(f"{results.get('language', 'N/A')}").classes('text-lg text-white')
+        ui.separator().classes('my-4')
 
-                with ui.row().classes('w-full justify-between items-center'):
-                     ui.label("Art Match Score:").classes('font-bold text-gray-300')
-                     ui.label(f"{results.get('match_score', 0)}").classes('text-lg text-white')
-
-            # --- Track 2 Visualization ---
-            track2 = self.debug_report.get('track2')
-            if track2:
-                ui.separator().classes('my-2 bg-gray-600')
-                ui.label("Track 2 (Full Frame):").classes('font-bold text-primary')
-                with ui.column().classes('w-full gap-1 bg-gray-800 p-2 rounded text-sm'):
-                     with ui.row().classes('w-full justify-between'):
-                         ui.label("Found ID:").classes('text-gray-400')
-                         ui.label(f"{track2.get('set_id') or 'None'} ({track2.get('set_id_conf', 0)}%)").classes('font-mono text-white')
-
-                     with ui.expansion('Raw OCR Text', icon='text_fields').classes('w-full bg-gray-700'):
-                         ui.label(track2.get('raw_text', '')).classes('font-mono text-xs break-all')
-
-            ui.separator().classes('my-2 bg-gray-600')
-            ui.label(f"{results.get('card_name', 'Unknown')}").classes('text-2xl font-bold text-accent text-center w-full')
-        else:
-            ui.label("No results yet.").classes('text-gray-500 italic')
-
-        ui.label("Execution Log:").classes('font-bold text-lg mt-4')
-        steps = self.debug_report.get('steps', [])
-        with ui.scroll_area().classes('h-64 border border-gray-600 p-2 bg-black rounded'):
-            for step in steps:
-                icon = 'check_circle' if step['status'] == 'OK' else 'error'
-                color = 'text-green-500' if step['status'] == 'OK' else 'text-red-500'
-                with ui.row().classes('items-center gap-2 mb-1 flex-nowrap'):
-                    ui.icon(icon).classes(color)
-                    ui.label(f"{step['name']}: {step['details']}").classes('text-sm text-gray-300 font-mono')
+        ui.label("Execution Log:").classes('font-bold text-lg')
+        logs = self.debug_report.get('logs', [])
+        with ui.scroll_area().classes('h-48 border border-gray-600 p-2 bg-black rounded font-mono text-xs text-green-500'):
+            for log in logs:
+                ui.label(log)
 
     def render_debug_lab(self):
-        # Changed to Grid with Card containers for "Larger Boxes" and Modern Look
         with ui.grid().classes('grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full'):
 
-            # --- CARD 1: INPUT SOURCE ---
+            # --- CARD 1: CONTROLS & INPUT ---
             with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
-                ui.label("1. Input Source").classes('text-2xl font-bold text-primary')
+                ui.label("1. Configuration & Input").classes('text-2xl font-bold text-primary')
 
-                # Camera Preview Area - Static!
+                # Preprocessing Toggle
+                ui.label("Preprocessing Strategy:").classes('font-bold text-gray-300')
+                with ui.row():
+                    ui.radio(['classic', 'yolo'], value=self.preprocessing_mode, on_change=lambda e: setattr(self, 'preprocessing_mode', e.value)).props('inline')
+
+                # Tracks Selector
+                ui.label("Active Tracks:").classes('font-bold text-gray-300')
+                # Checkboxes
+                with ui.row():
+                    ui.checkbox('EasyOCR', value='easyocr' in self.ocr_tracks, on_change=lambda e: self.toggle_track('easyocr', e.value))
+                    ui.checkbox('PaddleOCR', value='paddle' in self.ocr_tracks, on_change=lambda e: self.toggle_track('paddle', e.value))
+
+                # Camera Preview
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
                     ui.html('<video id="debug-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
 
                 # Controls
                 with ui.row().classes('w-full gap-2'):
-                    ui.button("Capture Frame", on_click=self.handle_debug_capture, icon='camera_alt').classes('flex-grow bg-accent text-black font-bold')
+                    ui.button("Capture & Analyze", on_click=self.handle_debug_capture, icon='camera_alt').classes('flex-grow bg-accent text-black font-bold')
 
                 ui.separator().classes('bg-gray-600')
-                ui.upload(label="Or Upload Image", on_upload=self.handle_debug_upload, auto_upload=True).props('accept=.jpg,.png color=secondary').classes('w-full')
+                ui.upload(label="Upload Image", on_upload=self.handle_debug_upload, auto_upload=True).props('accept=.jpg,.png color=secondary').classes('w-full')
 
-                # Results
                 self.render_debug_results()
 
-            # --- CARD 2: VISUAL PIPELINE ---
+            # --- CARD 2: VISUAL ---
             with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
                 ui.label("2. Visual Analysis").classes('text-2xl font-bold text-primary')
                 self.render_debug_analysis()
 
-            # --- CARD 3: RESULTS & LOGS ---
+            # --- CARD 3: RESULTS ---
             with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
-                ui.label("3. Pipeline Results").classes('text-2xl font-bold text-primary')
+                ui.label("3. OCR Results").classes('text-2xl font-bold text-primary')
                 self.render_debug_pipeline_results()
 
-        # Attach stream to debug video if available
         ui.run_javascript('initDebugStream()')
+
+    def toggle_track(self, track, enabled):
+        if enabled:
+            if track not in self.ocr_tracks: self.ocr_tracks.append(track)
+        else:
+            if track in self.ocr_tracks: self.ocr_tracks.remove(track)
 
 def scan_page():
     def cleanup():
@@ -614,8 +633,9 @@ def scan_page():
                 page.stop_btn.visible = False
 
                 ui.separator().props('vertical')
-                page.auto_scan_switch = ui.switch('Auto Scan', on_change=lambda e: scanner_manager.set_auto_scan(e.value))
-                page.auto_scan_switch.value = not scanner_manager.auto_scan_paused
+
+                # Replaced Auto Scan with Manual Scan Button
+                ui.button('Capture & Scan', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black')
 
                 ui.space()
                 ui.button('Add to Collection', on_click=page.commit_cards).props('color=primary icon=save')
@@ -637,4 +657,4 @@ def scan_page():
              page.render_debug_lab()
 
     ui.timer(1.0, page.init_cameras, once=True)
-    ui.timer(0.1, page.update_loop)
+    ui.timer(0.2, page.update_loop) # Slightly slower loop
