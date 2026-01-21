@@ -482,19 +482,6 @@ class ScanPage:
             ui.label("Regions of Interest:").classes('font-bold text-lg')
             ui.image(self.debug_report['roi_viz_url']).classes('w-full h-auto border rounded mb-2')
 
-        crops = self.debug_report.get('crops', {})
-        if crops:
-            ui.label("Extracted Crops:").classes('font-bold text-lg')
-            with ui.row().classes('gap-4'):
-                if crops.get('set_id'):
-                     with ui.column():
-                        ui.label("Set ID").classes('text-xs')
-                        ui.image(crops['set_id']).classes('h-12 border rounded')
-                if crops.get('art'):
-                     with ui.column():
-                        ui.label("Artwork").classes('text-xs')
-                        ui.image(crops['art']).classes('h-32 w-32 object-contain border rounded')
-
     @ui.refreshable
     def render_debug_pipeline_results(self):
         results = self.debug_report.get('results', {})
@@ -510,6 +497,12 @@ class ScanPage:
                      color = 'text-green-400' if conf > 60 else 'text-red-400'
                      ui.label(f"{conf:.1f}%").classes(f'font-mono text-lg {color}')
 
+                # Track 1 Raw Text
+                t1_raw = self.debug_report.get('track1_raw')
+                if t1_raw is not None:
+                    with ui.expansion('Track 1 Raw Text', icon='text_fields').classes('w-full bg-gray-800 text-xs'):
+                        ui.label(t1_raw if t1_raw.strip() else "[No text detected]").classes('font-mono break-all')
+
                 with ui.row().classes('w-full justify-between items-center'):
                      ui.label("Language:").classes('font-bold text-gray-300')
                      ui.label(f"{results.get('language', 'N/A')}").classes('text-lg text-white')
@@ -517,6 +510,19 @@ class ScanPage:
                 with ui.row().classes('w-full justify-between items-center'):
                      ui.label("Art Match Score:").classes('font-bold text-gray-300')
                      ui.label(f"{results.get('match_score', 0)}").classes('text-lg text-white')
+
+            # --- Track 2 Visualization ---
+            track2 = self.debug_report.get('track2')
+            if track2:
+                ui.separator().classes('my-2 bg-gray-600')
+                ui.label("Track 2 (Full Frame):").classes('font-bold text-primary')
+                with ui.column().classes('w-full gap-1 bg-gray-800 p-2 rounded text-sm'):
+                     with ui.row().classes('w-full justify-between'):
+                         ui.label("Found ID:").classes('text-gray-400')
+                         ui.label(f"{track2.get('set_id') or 'None'} ({track2.get('set_id_conf', 0)}%)").classes('font-mono text-white')
+
+                     with ui.expansion('Raw OCR Text', icon='text_fields').classes('w-full bg-gray-700'):
+                         ui.label(track2.get('raw_text', '')).classes('font-mono text-xs break-all')
 
             ui.separator().classes('my-2 bg-gray-600')
             ui.label(f"{results.get('card_name', 'Unknown')}").classes('text-2xl font-bold text-accent text-center w-full')

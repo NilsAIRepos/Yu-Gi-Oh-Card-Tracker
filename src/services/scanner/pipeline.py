@@ -9,6 +9,8 @@ try:
     import pytesseract
     from pytesseract import Output
     from langdetect import detect, LangDetectException
+    import easyocr
+    import torch
 except ImportError:
     pass  # Handled in __init__.py
 
@@ -22,6 +24,7 @@ class CardScanner:
         # Region of Interest (ROI) definitions (x, y, w, h) based on 600x875
 
         # Set ID: Usually mid-right, below artwork
+        # Note: With EasyOCR, we can be a bit more generous with the crop
         self.roi_set_id_search = (300, 580, 290, 80)
 
         # 1st Edition: Usually mid-left, below artwork
@@ -44,6 +47,20 @@ class CardScanner:
             "art": self.roi_art,
             "name": self.roi_name
         }
+
+        # Lazy Init
+        self.reader = None
+
+    def get_reader(self):
+        if self.reader is None:
+            logger.info("Initializing EasyOCR Reader...")
+            use_gpu = False
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                use_gpu = True
+
+            logger.info(f"EasyOCR using GPU: {use_gpu}")
+            self.reader = easyocr.Reader(['en'], gpu=use_gpu)
+        return self.reader
 
     def preprocess_image(self, frame):
         """Basic preprocessing for contour detection."""
@@ -98,19 +115,47 @@ class CardScanner:
         if not contours:
             return None
 
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        h_img, w_img = frame.shape[:2]
+        center_x, center_y = w_img // 2, h_img // 2
+
+        # Filter contours by size first to remove noise
+        # Increase min area to avoid detecting small internal boxes (like art box)
+        valid_contours = []
+        for cnt in contours:
+            if cv2.contourArea(cnt) > 25000:
+                 valid_contours.append(cnt)
+
+        contours = valid_contours
+
+        # Central Bias Score: Prioritize large areas near the center
+        def score_contour(cnt):
+            area = cv2.contourArea(cnt)
+
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                cX = int(M["m10"] / M["m00"])
+                cY = int(M["m01"] / M["m00"])
+                # Normalized distance from center (0 to ~1)
+                dist_norm = np.sqrt((cX - center_x)**2 + (cY - center_y)**2) / (np.sqrt(w_img**2 + h_img**2))
+            else:
+                dist_norm = 1.0
+
+            # Score = Area weighted by proximity to center
+            # We penalize distance.
+            return area * (1.0 - dist_norm)
+
+        contours = sorted(contours, key=score_contour, reverse=True)
 
         for cnt in contours[:5]:
-            area = cv2.contourArea(cnt)
-            if area < 10000:
-                continue
-
             hull = cv2.convexHull(cnt)
             peri = cv2.arcLength(hull, True)
             approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
 
+            # Check for 4 corners directly
             if len(approx) == 4:
-                return approx
+                # Validate Aspect Ratio for 4-point polygon
+                # It's harder to get AR from poly, so we check minAreaRect
+                pass # fall through to rect check for consistency
 
             rect = cv2.minAreaRect(hull)
             (center), (w, h), angle = rect
@@ -122,7 +167,9 @@ class CardScanner:
             if ar > 1:
                 ar = 1 / ar
 
-            if 0.55 < ar < 0.85:
+            # Yugioh Card Ratio is ~0.68 (59mm / 86mm)
+            # Stricter bounds to avoid capturing square art boxes or wide table areas
+            if 0.60 < ar < 0.78:
                 box = cv2.boxPoints(rect)
                 box = np.int32(box)
                 return box.reshape(4, 1, 2)
@@ -154,44 +201,56 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def extract_set_id(self, warped) -> Tuple[Optional[str], int]:
-        """Extracts the Set ID using OCR. Returns (set_id, confidence)."""
-        # scan full image instead of ROI to be robust against bad crops
-        roi = warped
+    def extract_set_id(self, warped) -> Tuple[Optional[str], int, str]:
+        """Extracts the Set ID using EasyOCR (Track 1). Returns (set_id, confidence, raw_text)."""
+        # Crop the Set ID area to reduce noise and improve speed/accuracy for EasyOCR
+        x, y, w, h = self.roi_set_id_search
+        roi = warped[y:y+h, x:x+w]
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # Resize to improve OCR accuracy on small text
-        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Enhance contrast for better OCR?
+        # EasyOCR is robust, but slight sharpening might help.
+        # Let's try raw ROI first. If needed, we can upscale.
+        # Upscaling is usually good for small text.
+        roi_upscaled = cv2.resize(roi, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
-        # psm 11 (Sparse text) is still good, but psm 3 (Fully automatic) might be better for full card
-        # sticking to 11 as we are looking for specific code blocks
-        config = r'--oem 3 --psm 11'
+        reader = self.get_reader()
+        # detail=1: [bbox, text, conf]
+        results = reader.readtext(roi_upscaled, detail=1, paragraph=False)
 
-        # Get data to find confidence of the matched word
-        data = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
+        full_text_list = []
+        matches = []
 
-        text = " ".join(data['text']).strip().upper()
+        # Regex pattern for Set ID
+        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
 
-        # Regex for standard Set ID
-        # Looking for pattern in the full text
-        match = re.search(r'([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})', text)
-        if match:
-            found_text = match.group(1)
-            # Try to find confidence for this specific match
-            confs = [int(c) for c in data['conf'] if int(c) != -1]
-            avg_conf = sum(confs) / len(confs) if confs else 0
-            return found_text, avg_conf
+        for (bbox, text, conf) in results:
+            text = text.strip().upper()
+            if not text: continue
 
-        # Fallback liberal match
-        match = re.search(r'([A-Z0-9]+-[A-Z0-9]+)', text)
-        if match:
-            found_text = match.group(1)
-            confs = [int(c) for c in data['conf'] if int(c) != -1]
-            avg_conf = sum(confs) / len(confs) if confs else 0
-            return found_text, avg_conf
+            full_text_list.append(text)
 
-        return None, 0
+            clean_text = text.replace(" ", "")
+            m = pattern.search(clean_text)
+            if m:
+                prefix = m.group(1)
+                region = m.group(2) if m.group(2) else ""
+                number = m.group(3)
+
+                found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
+
+                score = conf * 100
+                if "EN" in found_id: score += 10
+
+                matches.append((found_id, score))
+
+        full_text = " | ".join(full_text_list)
+
+        if matches:
+            matches.sort(key=lambda x: x[1], reverse=True)
+            best_id, best_conf = matches[0]
+            return best_id, best_conf, full_text
+
+        return None, 0, full_text
 
     def detect_first_edition(self, warped) -> bool:
         """Checks for '1st Edition' text using OCR."""
@@ -218,13 +277,15 @@ class CardScanner:
                 if suffix in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
                     return suffix
 
-        # Scan full image instead of ROI to reduce "EN" bias from bad crops
+        # Fallback: OCR on full card or Desc box?
+        # Since we use EasyOCR now, we might not want to re-run it on full warped unless needed.
+        # Tesseract is lightweight for language detection on warped text blocks.
+
         roi = warped
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
         text = pytesseract.image_to_string(thresh)
-        # Reduced text length threshold
         if len(text) < 5:
             return "EN"
 
@@ -328,10 +389,81 @@ class CardScanner:
         cv2.rectangle(canvas, (0, 0), (self.width, self.height), (0, 255, 0), 4)
 
         # Draw specific ROIs that are still used
+        draw_roi(self.roi_set_id_search, (0, 0, 255)) # Re-enabled for visualization
         draw_roi(self.roi_1st_ed, (255, 0, 0))
         draw_roi(self.roi_name, (0, 255, 255))
         draw_roi(self.roi_art, (255, 0, 255))
 
-        # roi_set_id_search and roi_desc are no longer used (Full Scan)
-
         return canvas
+
+    def scan_full_frame(self, frame) -> Dict[str, Any]:
+        """
+        Track 2: Scans the entire frame for text without relying on contour detection.
+        Uses EasyOCR for robust scene text detection.
+        """
+        # 1. Resize strategy
+        h, w = frame.shape[:2]
+        target_width = 1600
+        if w > target_width:
+            scale = target_width / w
+            frame_resized = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+        else:
+            frame_resized = frame
+
+        # 2. EasyOCR
+        reader = self.get_reader()
+        # detail=1 returns bounding box, text, confidence
+        # mag_ratio=1.5 enlarges image internally for better small text recognition
+        results = reader.readtext(frame_resized, detail=1, paragraph=False, mag_ratio=1.5)
+
+        full_text_list = []
+        matches = []
+
+        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
+
+        for (bbox, text, conf) in results:
+            text = text.strip().upper()
+            if not text: continue
+
+            full_text_list.append(text)
+
+            clean_text = text.replace(" ", "")
+            m = pattern.search(clean_text)
+            if m:
+                prefix = m.group(1)
+                region = m.group(2) if m.group(2) else ""
+                number = m.group(3)
+
+                found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
+
+                score = conf * 100
+                if "EN" in found_id: score += 10
+
+                matches.append((found_id, score))
+
+        full_text = " | ".join(full_text_list)
+
+        result = {
+            "track_type": "full_frame_easyocr",
+            "raw_text": full_text,
+            "set_id": None,
+            "set_id_conf": 0,
+            "language": "EN"
+        }
+
+        if matches:
+            matches.sort(key=lambda x: x[1], reverse=True)
+            best_id, best_conf = matches[0]
+            result["set_id"] = best_id
+            result["set_id_conf"] = best_conf
+
+            parts = best_id.split('-')
+            if len(parts) > 1:
+                suffix = parts[1]
+                region_match = re.match(r'^([A-Z]{2})', suffix)
+                if region_match:
+                    lang_code = region_match.group(1)
+                    if lang_code in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
+                        result["language"] = lang_code
+
+        return result
