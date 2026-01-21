@@ -499,9 +499,9 @@ class ScanPage:
 
                 # Track 1 Raw Text
                 t1_raw = self.debug_report.get('track1_raw')
-                if t1_raw:
+                if t1_raw is not None:
                     with ui.expansion('Track 1 Raw Text', icon='text_fields').classes('w-full bg-gray-800 text-xs'):
-                        ui.label(t1_raw).classes('font-mono break-all')
+                        ui.label(t1_raw if t1_raw.strip() else "[No text detected]").classes('font-mono break-all')
 
                 with ui.row().classes('w-full justify-between items-center'):
                      ui.label("Language:").classes('font-bold text-gray-300')
