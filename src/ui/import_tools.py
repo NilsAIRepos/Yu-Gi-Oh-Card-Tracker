@@ -290,26 +290,8 @@ class UnifiedImportController:
                             })
                             seen_variant_ids.add(vid)
 
-            # 2. Identify Target Codes (Virtual Candidates) based on Siblings
-            target_codes = []
+            # Pre-calculate Standard Target String (needed for Name Fallback logic)
             std_target = f"{row.set_prefix}-{row.language}{row.number}"
-            target_codes.append(std_target) # Always add standard
-
-            if legacy_candidate and legacy_candidate != std_target:
-                # Only add legacy target if we observe legacy format in siblings OR no siblings
-                # Check for 1-letter region codes in siblings
-                has_legacy_sibling = False
-                for s in all_siblings:
-                    # Check region length of sibling code
-                    m = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', s['code'])
-                    if m:
-                        region = m.group(2)
-                        if len(region) == 1:
-                            has_legacy_sibling = True
-                            break
-
-                if has_legacy_sibling or not all_siblings:
-                    target_codes.append(legacy_candidate)
 
             # 3. Filter Compatible Matches (for Set Code selection)
             compatible_matches = []
@@ -441,7 +423,36 @@ class UnifiedImportController:
                         logger.info(f"Auto-Resolved Name Fallback: {row.name} ({best_code if best_code else sibling_match['code']})")
                         continue
 
-            # 4. Determine Valid Set Code Options
+            # 4. Finalize Target Codes (Virtual Candidates)
+            # We defer this until now so we can use sibling/match info gathered from Name Fallback
+            target_codes = []
+
+            # Analyze Sibling Formats (Union of Code Siblings AND Compatible Matches)
+            # We look at both to determine plausible formats for this card/set.
+            has_2_letter = False
+            has_1_letter = False
+
+            check_list = all_siblings + compatible_matches
+            if check_list:
+                for s in check_list:
+                    if re.match(r'^([A-Za-z0-9]+)-([A-Za-z]{2})(\d+)$', s['code']):
+                        has_2_letter = True
+                    elif re.match(r'^([A-Za-z0-9]+)-([A-Za-z]{1})(\d+)$', s['code']):
+                        has_1_letter = True
+            else:
+                # No siblings/matches found - assume Standard (2-letter) is valid default
+                has_2_letter = True
+
+            # Add Standard Target (2-Letter) only if 2-Letter format is observed or implied
+            if has_2_letter:
+                target_codes.append(std_target)
+
+            # Add Legacy Target (1-Letter) if appropriate
+            if legacy_candidate and legacy_candidate != std_target:
+                if has_1_letter or not check_list:
+                    target_codes.append(legacy_candidate)
+
+            # 5. Determine Valid Set Code Options
             # Union of Compatible Matches (from DB) and Target Codes (Virtual)
             valid_code_options = set()
             for m in compatible_matches:
@@ -451,10 +462,14 @@ class UnifiedImportController:
             # If a target code exists in DB but points to a card NOT in compatible_matches, it's a collision.
             compatible_card_ids = {m['card'].id for m in compatible_matches}
 
+            final_target_codes = []
+
             for t in target_codes:
+                is_collision = False
+
+                # Check 1: Direct Code Collision
                 if t in self.db_lookup:
                     # Code exists in DB. Check if it points to any compatible card.
-                    # If NONE of the cards associated with this code are in compatible_matches, exclude it.
                     db_entries = self.db_lookup[t]
                     has_compatible_link = False
                     for entry in db_entries:
@@ -463,11 +478,32 @@ class UnifiedImportController:
                             break
 
                     if not has_compatible_link:
-                        # Collision detected (e.g. LOB-DE091 is Silver Bow, but we are looking for Lesser Dragon)
-                        logger.info(f"Excluded target code {t} due to collision with different card.")
-                        continue
+                        # Collision detected
+                        logger.info(f"Excluded target code {t} due to direct collision.")
+                        is_collision = True
 
-                valid_code_options.add(t)
+                # Check 2: Base Code Collision (for Standard Targets only)
+                # Ensure we don't invent a 2-Letter code that maps (via base normalization) to a DIFFERENT card.
+                # e.g. LOB-DE020 -> LOB-020 -> Dark King. If we are Hinotama Soul, this is a collision.
+                # Do NOT apply this to Legacy Targets (t == legacy_candidate), as they rely on number shifts.
+                if not is_collision and t == std_target and t != legacy_candidate:
+                    base_t = normalize_set_code(t)
+                    # Only check base collision if base code exists in DB
+                    if base_t in self.db_lookup:
+                         db_entries = self.db_lookup[base_t]
+                         has_compatible_link = False
+                         for entry in db_entries:
+                             if entry['card'].id in compatible_card_ids:
+                                 has_compatible_link = True
+                                 break
+
+                         if not has_compatible_link:
+                             logger.info(f"Excluded target code {t} due to Base Code collision ({base_t}).")
+                             is_collision = True
+
+                if not is_collision:
+                    valid_code_options.add(t)
+                    final_target_codes.append(t)
 
             valid_code_options = sorted(list(valid_code_options))
 
@@ -511,7 +547,7 @@ class UnifiedImportController:
                         self._add_pending_from_match(row, sibling_match, override_set_code=single_code)
                 else:
                     # Rarity Mismatch Ambiguity
-                    self._add_ambiguity(row, compatible_matches, all_siblings, target_codes, row.set_rarity)
+                    self._add_ambiguity(row, compatible_matches, all_siblings, final_target_codes, row.set_rarity)
 
             else:
                 # Multiple Valid Code Options (e.g. LOB-020, LOB-DE020)
@@ -520,7 +556,7 @@ class UnifiedImportController:
                      self.failed_rows.append(row)
                 else:
                      # Ambiguity
-                     self._add_ambiguity(row, compatible_matches, all_siblings, target_codes, row.set_rarity)
+                     self._add_ambiguity(row, compatible_matches, all_siblings, final_target_codes, row.set_rarity)
 
     def _add_ambiguity(self, row, compatible_matches, all_siblings, target_codes, default_rarity):
         # Select default card if possible (take first sibling)
@@ -898,7 +934,8 @@ class UnifiedImportController:
                             # 2. Card Info (Added Language)
                             with ui.column().classes('w-1/4'):
                                 ui.label(f"{row.quantity}x {row.name}").classes('font-bold')
-                                ui.label(f"Orig: {row.set_prefix} | {row.language} | {row.rarity_abbr}").classes('text-xs text-grey-5')
+                                edition_flag = "1st" if row.first_edition else "Unl"
+                                ui.label(f"Orig: {row.set_prefix} | {row.language} | {row.set_rarity} | {row.set_condition} | {edition_flag}").classes('text-xs text-grey-5')
 
                             # 3. Set Code Dropdown
                             def update_code(e, it):
