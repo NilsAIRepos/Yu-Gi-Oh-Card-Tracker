@@ -53,14 +53,14 @@ class ScannerManager:
         self.latest_frame_lock = threading.Lock()
 
         self.is_processing = False
-        self.paused = True  # Default to paused (Stopped)
-        self.status_message = "Stopped"
+        self.paused = False  # Default to unpaused (Ready)
+        self.status_message = "Idle"
 
         # Debug State
         self.debug_state = {
             "logs": [],
             "queue_len": 0,
-            "paused": True,
+            "paused": False,
             "current_step": "Idle",
             "captured_image_url": None,
             "scan_result": "N/A",
@@ -82,6 +82,10 @@ class ScannerManager:
         if not SCANNER_AVAILABLE:
             logger.error("Scanner dependencies missing. Cannot start.")
             return
+
+        # Always unpause on start/restart to ensure processing happens
+        self.paused = False
+        self.debug_state["paused"] = False
 
         if self.running:
             return
@@ -303,6 +307,17 @@ class ScannerManager:
                                 "warped_image": report.get('warped_image_data')
                             }
                             self.lookup_queue.put(lookup_data)
+                        else:
+                            # 2024-05-27: If OCR fails to find a Set ID, we still want to notify the UI
+                            # instead of silently dropping the scan.
+                            logger.info(f"Scan failed (No Set ID found) for: {filename}")
+                            self.result_queue.put({
+                                "name": "Scan Failed",
+                                "set_code": "No ID Found",
+                                "card_id": None,
+                                "image_path": None,
+                                "rarity": "Unknown"
+                            })
 
                         logger.info(f"Finished scan for: {filename}")
                         self._log_debug(f"Finished: {filename}")
