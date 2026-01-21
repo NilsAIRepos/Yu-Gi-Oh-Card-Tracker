@@ -269,13 +269,14 @@ class ScannerManager:
                     time.sleep(0.1)
                     continue
 
-                filename = task.get("filename", "unknown")
-                self.is_processing = True
-                self._set_status(f"Processing: {filename}")
-                logger.info(f"[Mgr:{self.instance_id}] Starting scan for: {filename}")
-                self._log_debug(f"Started: {filename}")
-
+                # Processing Block
                 try:
+                    filename = task.get("filename", "unknown")
+                    self.is_processing = True
+                    self._set_status(f"Processing: {filename}")
+                    logger.info(f"[Mgr:{self.instance_id}] Starting scan for: {filename}")
+                    self._log_debug(f"Started: {filename}")
+
                     frame_data = task["image"]
                     options = task["options"]
 
@@ -327,16 +328,15 @@ class ScannerManager:
                 except Exception as e:
                     logger.error(f"[Mgr:{self.instance_id}] Task Execution Error: {e}", exc_info=True)
                     self._log_debug(f"Error: {str(e)}")
+                finally:
+                    self.is_processing = False
+                    self.debug_state["current_step"] = "Idle"
+                    self._set_status("Idle")
 
             except Exception as e:
                 logger.error(f"[Mgr:{self.instance_id}] Worker Loop Fatal Error: {e}", exc_info=True)
                 self._set_status("Error")
                 time.sleep(1.0) # Prevent tight loop on crash
-            finally:
-                self.is_processing = False
-                self.debug_state["current_step"] = "Idle"
-                # Always set Idle when done. Loop will set Paused if needed.
-                self._set_status("Idle")
 
     def _process_scan(self, frame, options, status_cb=None) -> Dict[str, Any]:
         """Runs the configured tracks on the frame."""
