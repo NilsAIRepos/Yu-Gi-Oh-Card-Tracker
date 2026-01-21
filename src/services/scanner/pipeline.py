@@ -74,22 +74,30 @@ class CardScanner:
 
     def get_fallback_crop(self, frame) -> np.ndarray:
         """Creates a 'center crop' of the frame."""
-        h_frame, w_frame = frame.shape[:2]
-        target_ar = self.width / self.height
+        try:
+            h_frame, w_frame = frame.shape[:2]
+            target_ar = self.width / self.height
 
-        crop_h = int(h_frame * 0.7)
-        crop_w = int(crop_h * target_ar)
+            crop_h = int(h_frame * 0.7)
+            crop_w = int(crop_h * target_ar)
 
-        if crop_w > w_frame:
-            crop_w = int(w_frame * 0.8)
-            crop_h = int(crop_w / target_ar)
+            if crop_w > w_frame:
+                crop_w = int(w_frame * 0.8)
+                crop_h = int(crop_w / target_ar)
 
-        x_start = (w_frame - crop_w) // 2
-        y_start = (h_frame - crop_h) // 2
+            x_start = max(0, (w_frame - crop_w) // 2)
+            y_start = max(0, (h_frame - crop_h) // 2)
 
-        crop = frame[y_start:y_start+crop_h, x_start:x_start+crop_w]
-        resized = cv2.resize(crop, (self.width, self.height))
-        return resized
+            crop = frame[y_start:y_start+crop_h, x_start:x_start+crop_w]
+
+            if crop.size == 0:
+                 return cv2.resize(frame, (self.width, self.height))
+
+            resized = cv2.resize(crop, (self.width, self.height))
+            return resized
+        except Exception as e:
+            logger.error(f"Fallback crop error: {e}")
+            return cv2.resize(frame, (self.width, self.height))
 
     def get_roi_crop(self, warped, roi_name: str) -> Optional[np.ndarray]:
         if roi_name not in self.rois:
@@ -229,40 +237,49 @@ class CardScanner:
         """
         raw_text_list = []
         confidences = []
+        full_text = ""
+        set_id = None
+        set_id_conf = 0.0
+        lang = "EN"
 
-        # Resize for better small text detection (standard strategy)
-        h, w = image.shape[:2]
-        if w < 1000:
-             scale = 1600 / w
-             image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
+        try:
+            # Resize for better small text detection (standard strategy)
+            h, w = image.shape[:2]
+            if w < 1000:
+                 scale = 1600 / w
+                 image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
 
-        if engine == 'paddle':
-            ocr = self.get_paddleocr()
-            # result = [[[[x1,y1],...], (text, conf)], ...]
-            try:
-                result = ocr.ocr(image, cls=True)
-            except TypeError:
-                # Fallback for versions where cls arg is unexpected
-                result = ocr.ocr(image)
+            if engine == 'paddle':
+                ocr = self.get_paddleocr()
+                # result = [[[[x1,y1],...], (text, conf)], ...]
+                try:
+                    result = ocr.ocr(image, cls=True)
+                except TypeError:
+                    # Fallback for versions where cls arg is unexpected
+                    result = ocr.ocr(image)
 
-            if result and result[0]:
-                for line in result[0]:
-                    text = line[1][0]
-                    conf = line[1][1]
+                if result and result[0]:
+                    for line in result[0]:
+                        text = line[1][0]
+                        conf = line[1][1]
+                        raw_text_list.append(text)
+                        confidences.append(conf)
+            else: # easyocr
+                reader = self.get_easyocr()
+                # mag_ratio=1.5 for better small text
+                results = reader.readtext(image, detail=1, paragraph=False, mag_ratio=1.5)
+                for (bbox, text, conf) in results:
                     raw_text_list.append(text)
                     confidences.append(conf)
-        else: # easyocr
-            reader = self.get_easyocr()
-            # mag_ratio=1.5 for better small text
-            results = reader.readtext(image, detail=1, paragraph=False, mag_ratio=1.5)
-            for (bbox, text, conf) in results:
-                raw_text_list.append(text)
-                confidences.append(conf)
 
-        full_text = " | ".join(raw_text_list)
+            full_text = " | ".join(raw_text_list)
 
-        # Parse Set ID
-        set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences)
+            # Parse Set ID
+            set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences)
+
+        except Exception as e:
+            logger.error(f"OCR Scan Error ({engine}): {e}")
+            full_text = " | ".join(raw_text_list) # Return whatever we got
 
         return {
             "engine": engine,

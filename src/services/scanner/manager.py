@@ -6,6 +6,7 @@ import base64
 import asyncio
 import os
 import uuid
+import shutil
 from typing import Optional, Dict, Any, List, Tuple, Union
 
 try:
@@ -31,6 +32,9 @@ from nicegui import run
 
 logger = logging.getLogger(__name__)
 
+class ScanAborted(Exception):
+    pass
+
 class ScannerManager:
     def __init__(self):
         self.running = False
@@ -49,9 +53,6 @@ class ScannerManager:
         logger.info(f"ScannerManager initialized with ID: {self.instance_id}")
 
         # State
-        self.latest_frame = None
-        self.latest_frame_lock = threading.Lock()
-
         self.is_processing = False
         self.paused = True  # Default to paused (Stopped)
         self.status_message = "Stopped"
@@ -76,7 +77,9 @@ class ScannerManager:
         }
 
         self.debug_dir = "debug/scans"
+        self.queue_dir = "scans/queue"
         os.makedirs(self.debug_dir, exist_ok=True)
+        os.makedirs(self.queue_dir, exist_ok=True)
 
     def start(self):
         if not SCANNER_AVAILABLE:
@@ -101,36 +104,27 @@ class ScannerManager:
             self.thread = None
         logger.info("Scanner stopped")
 
-    def push_frame(self, frame_data: Union[str, bytes]):
-        """Updates the latest frame buffer."""
-        if not self.running: return
-
-        try:
-            # Decode immediately to avoid pileup? Or just store bytes?
-            # Decoding is CPU intensive. Let's store bytes and decode on demand if needed.
-            # But the UI sends it every 200ms.
-            with self.latest_frame_lock:
-                self.latest_frame = frame_data
-        except Exception:
-            pass
-
-    def trigger_scan(self, options: Dict[str, Any]):
-        """Triggers a scan using the latest frame and provided options."""
-        with self.latest_frame_lock:
-            if self.latest_frame is None:
-                self.notification_queue.put(("warning", "No camera signal"))
-                return
-            frame_data = self.latest_frame
-
-        self.submit_scan(frame_data, options, label="Manual Capture")
-
     def submit_scan(self, image_data: bytes, options: Dict[str, Any], label: str = "Manual Scan", filename: str = None):
         """Submits a scan task to the queue."""
+        if not filename:
+             filename = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+
+        filepath = os.path.join(self.queue_dir, filename)
+
+        # Save file to disk
+        try:
+            with open(filepath, "wb") as f:
+                f.write(image_data)
+        except Exception as e:
+            logger.error(f"Failed to write scan file {filepath}: {e}")
+            self.notification_queue.put(("negative", f"Failed to save scan: {e}"))
+            return
+
         with self.queue_lock:
             self.scan_queue.append({
                 "id": str(uuid.uuid4())[:8],
                 "timestamp": time.time(),
-                "image": image_data,
+                "filepath": filepath,
                 "options": options,
                 "type": label,
                 "filename": filename
@@ -174,27 +168,13 @@ class ScannerManager:
         with self.queue_lock:
             if 0 <= index < len(self.scan_queue):
                 removed = self.scan_queue.pop(index)
+                filepath = removed.get("filepath")
+                if filepath and os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        pass
                 self._log_debug(f"Removed item {removed['id']} from queue")
-
-    async def analyze_static_image(self, image_bytes: bytes, options: Dict[str, Any] = None) -> Dict[str, Any]:
-        """
-        Runs the pipeline on a static image (Upload or specific capture).
-        This is called directly from UI, but we should probably offload it to the worker
-        or run it in a thread to avoid blocking.
-        For now, let's run it via run.io_bound wrapper around the sync pipeline.
-        """
-        if options is None:
-            options = {"tracks": ["easyocr", "paddle"], "preprocessing": "classic"}
-
-        return await run.io_bound(self._run_pipeline_sync, image_bytes, options)
-
-    def _run_pipeline_sync(self, image_bytes, options):
-        # Decode
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if frame is None: return {"error": "Decode failed"}
-
-        return self._process_scan(frame, options)
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
         with self.queue_lock:
@@ -221,12 +201,6 @@ class ScannerManager:
         except queue.Empty:
             return None
 
-    def get_live_contour(self) -> Optional[List[List[float]]]:
-        # We removed the continuous contour loop.
-        # If we want live overlay, we'd need to re-enable the loop.
-        # Given "Remove auto scan", and the focus on manual capture,
-        # we will return None for now or we could implement a lightweight contour check.
-        return None
 
     def _save_debug_image(self, image, prefix="img") -> str:
         if image is None: return None
@@ -239,15 +213,17 @@ class ScannerManager:
         logger.info(f"Scanner worker thread started (Manager ID: {self.instance_id})")
         while self.running:
             try:
+                # 1. Check Paused
                 if self.paused:
                     self.status_message = "Paused"
                     time.sleep(0.1)
                     continue
 
+                # 2. Peek Queue
                 task = None
                 with self.queue_lock:
                     if self.scan_queue:
-                        task = self.scan_queue.pop(0)
+                        task = self.scan_queue[0] # Peek, don't pop
 
                 if not task:
                     self.status_message = "Idle"
@@ -255,25 +231,31 @@ class ScannerManager:
                     continue
 
                 filename = task.get("filename", "unknown")
+                filepath = task.get("filepath")
+
+                # Check if file exists
+                if not filepath or not os.path.exists(filepath):
+                     logger.error(f"File not found: {filepath}")
+                     with self.queue_lock:
+                         if self.scan_queue and self.scan_queue[0] == task:
+                             self.scan_queue.pop(0)
+                     continue
+
                 self.is_processing = True
                 self.status_message = f"Processing: {filename}"
                 logger.info(f"Starting scan for: {filename}")
                 self._log_debug(f"Started: {filename}")
 
                 try:
-                    frame_data = task["image"]
-                    options = task["options"]
-
-                    # Decode
-                    nparr = np.frombuffer(frame_data, np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    # Load Image
+                    frame = cv2.imread(filepath)
 
                     if frame is not None:
                         # Update debug state basics
                         cap_url = self._save_debug_image(frame, "manual_cap")
                         self.debug_state["captured_image_url"] = cap_url
-                        self.debug_state["preprocessing"] = options.get("preprocessing", "classic")
-                        self.debug_state["active_tracks"] = options.get("tracks", [])
+                        self.debug_state["preprocessing"] = task["options"].get("preprocessing", "classic")
+                        self.debug_state["active_tracks"] = task["options"].get("tracks", [])
 
                         # Define status updater
                         def update_step(step_name):
@@ -281,7 +263,7 @@ class ScannerManager:
                             self.status_message = f"Processing: {filename} ({step_name})"
 
                         # Run Pipeline
-                        report = self._process_scan(frame, options, status_cb=update_step)
+                        report = self._process_scan(frame, task["options"], status_cb=update_step)
 
                         # Merge report into debug state
                         self.debug_state.update(report)
@@ -306,12 +288,39 @@ class ScannerManager:
 
                         logger.info(f"Finished scan for: {filename}")
                         self._log_debug(f"Finished: {filename}")
+
+                        # Remove from queue and delete file ON SUCCESS (or clean fail)
+                        with self.queue_lock:
+                             if self.scan_queue and self.scan_queue[0]["id"] == task["id"]:
+                                 self.scan_queue.pop(0)
+
+                        try:
+                            os.remove(filepath)
+                        except OSError:
+                            pass
+
                     else:
-                        self._log_debug("Frame decode failed")
+                        self._log_debug(f"Frame read failed for {filepath}")
+                        # Remove bad file
+                        with self.queue_lock:
+                             if self.scan_queue and self.scan_queue[0]["id"] == task["id"]:
+                                 self.scan_queue.pop(0)
+
+                except ScanAborted:
+                    logger.info(f"Scan aborted for: {filename}")
+                    self._log_debug(f"Aborted: {filename}")
+                    self.status_message = "Paused"
+                    # Do NOT remove from queue.
+                    # Do NOT delete file.
+                    # Next loop will see paused=True and wait.
 
                 except Exception as e:
                     logger.error(f"Task Execution Error: {e}", exc_info=True)
                     self._log_debug(f"Error: {str(e)}")
+                    # On error, remove to prevent infinite loop
+                    with self.queue_lock:
+                        if self.scan_queue and self.scan_queue[0]["id"] == task["id"]:
+                            self.scan_queue.pop(0)
 
             except Exception as e:
                 logger.error(f"Worker Loop Fatal Error: {e}", exc_info=True)
@@ -327,8 +336,14 @@ class ScannerManager:
         """Runs the configured tracks on the frame."""
         if not self.scanner: return {}
 
+        def check_pause():
+            if self.paused:
+                raise ScanAborted()
+
         def set_step(msg):
             if status_cb: status_cb(msg)
+
+        check_pause()
 
         report = {
             "steps": [],
@@ -348,6 +363,8 @@ class ScannerManager:
         else:
              contour = self.scanner.find_card_contour(frame)
 
+        check_pause()
+
         if contour is not None:
              warped = self.scanner.warp_card(frame, contour)
              report["warped_image_url"] = self._save_debug_image(warped, "warped")
@@ -356,6 +373,14 @@ class ScannerManager:
         else:
              report["steps"].append({"name": "Contour", "status": "FAIL", "details": f"{prep_method} failed"})
              warped = self.scanner.get_fallback_crop(frame) # Fallback for crop tracks
+             # Also save fallback warped image so it's visible in Debug Lab
+             report["warped_image_url"] = self._save_debug_image(warped, "warped")
+             # And ROIs on fallback
+             roi_viz = self.scanner.debug_draw_rois(warped)
+             report["roi_viz_url"] = self._save_debug_image(roi_viz, "roi_viz")
+
+
+        check_pause()
 
         tracks = options.get("tracks", ["easyocr"]) # ['easyocr', 'paddle']
 
@@ -369,15 +394,21 @@ class ScannerManager:
                 t1_full['scope'] = 'full'
                 report["t1_full"] = t1_full
 
+                check_pause()
+
                 set_step("Track 1: EasyOCR (Crop)")
                 # Crop
                 if warped is not None:
                     t1_crop = self.scanner.ocr_scan(warped, engine='easyocr')
                     t1_crop['scope'] = 'crop'
                     report["t1_crop"] = t1_crop
+            except ScanAborted:
+                raise
             except Exception as e:
                 logger.error(f"Track 1 (EasyOCR) Failed: {e}")
                 report["steps"].append({"name": "Track 1", "status": "FAIL", "details": str(e)})
+
+        check_pause()
 
         # Track 2: PaddleOCR
         if "paddle" in tracks:
@@ -388,18 +419,23 @@ class ScannerManager:
                 t2_full['scope'] = 'full'
                 report["t2_full"] = t2_full
 
+                check_pause()
+
                 set_step("Track 2: PaddleOCR (Crop)")
                 # Crop
                 if warped is not None:
                     t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
                     t2_crop['scope'] = 'crop'
                     report["t2_crop"] = t2_crop
+            except ScanAborted:
+                raise
             except Exception as e:
                 logger.error(f"Track 2 (PaddleOCR) Failed: {e}")
                 report["steps"].append({"name": "Track 2", "status": "FAIL", "details": str(e)})
 
         # Extra Analysis on Warped (if available)
         if warped is not None:
+             check_pause()
              set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
              report['first_edition'] = self.scanner.detect_first_edition(warped)

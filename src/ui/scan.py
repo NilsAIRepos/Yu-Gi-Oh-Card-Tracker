@@ -3,6 +3,7 @@ import logging
 import os
 import asyncio
 import time
+import uuid
 import base64
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
@@ -13,17 +14,6 @@ from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
 from src.services.ygo_api import ygo_service
 
 logger = logging.getLogger(__name__)
-
-# API Endpoint for Frame Upload
-@app.post("/api/scanner/upload_frame")
-async def upload_frame(file: UploadFile):
-    try:
-        content = await file.read()
-        scanner_manager.push_frame(content)
-        return {"status": "received", "size": len(content)}
-    except Exception as e:
-        logger.error(f"Error receiving frame: {e}")
-        return {"status": "error", "message": str(e)}
 
 JS_CAMERA_CODE = """
 <script>
@@ -42,7 +32,7 @@ function initScanner() {
     }
 }
 
-async function startCamera(deviceId, uploadUrl) {
+async function startCamera(deviceId) {
     if (!window.scannerVideo) initScanner();
     if (!window.scannerVideo) return false;
 
@@ -67,7 +57,6 @@ async function startCamera(deviceId, uploadUrl) {
             window.overlayCanvas.height = window.scannerVideo.videoHeight;
         }
 
-        startStreamingLoop(uploadUrl);
         return true;
     } catch (err) {
         console.error("Error accessing camera:", err);
@@ -112,38 +101,6 @@ function stopCamera() {
         window.debugVideo.srcObject = null;
     }
     clearOverlay();
-}
-
-function startStreamingLoop(uploadUrl) {
-    if (window.streamInterval) clearInterval(window.streamInterval);
-    window.isStreaming = true;
-    const procCanvas = document.createElement('canvas');
-    const procCtx = procCanvas.getContext('2d');
-
-    window.streamInterval = setInterval(() => {
-        try {
-            if (!window.isStreaming || !window.scannerVideo || window.scannerVideo.readyState < 2) return;
-
-            const w = window.scannerVideo.videoWidth;
-            const h = window.scannerVideo.videoHeight;
-            if (w === 0 || h === 0) return;
-
-            procCanvas.width = w;
-            procCanvas.height = h;
-            procCtx.drawImage(window.scannerVideo, 0, 0, w, h);
-
-            procCanvas.toBlob(blob => {
-                if (blob) {
-                     const formData = new FormData();
-                     formData.append('file', blob);
-                     fetch(uploadUrl, { method: 'POST', body: formData }).catch(e => console.error("Frame upload failed:", e));
-                }
-            }, 'image/jpeg', 0.95);
-
-        } catch (err) {
-            console.error("Client: captureFrame exception:", err);
-        }
-    }, 200);
 }
 
 function drawOverlay(points) {
@@ -272,8 +229,8 @@ class ScanPage:
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
         try:
-            if await ui.run_javascript(f'startCamera("{device_id}", "/api/scanner/upload_frame")', timeout=20.0):
-                scanner_manager.start()
+            if await ui.run_javascript(f'startCamera("{device_id}")', timeout=20.0):
+                # We don't need to start/stop the manager here anymore, it runs daemon
                 self.start_btn.visible = False
                 self.stop_btn.visible = True
             else:
@@ -284,7 +241,6 @@ class ScanPage:
 
     async def stop_camera(self):
         await ui.run_javascript('stopCamera()')
-        scanner_manager.stop()
         self.start_btn.visible = True
         self.stop_btn.visible = False
 
@@ -359,12 +315,24 @@ class ScanPage:
 
     async def trigger_live_scan(self):
         """Triggers a scan from the Live Tab using current settings."""
-        options = {
-            "tracks": self.ocr_tracks,
-            "preprocessing": self.preprocessing_mode
-        }
-        scanner_manager.trigger_scan(options)
-        ui.notify("Scanning...", type='info')
+        try:
+            data_url = await ui.run_javascript('captureSingleFrame()')
+            if not data_url:
+                ui.notify("Camera not active or ready", type='warning')
+                return
+
+            header, encoded = data_url.split(",", 1)
+            content = base64.b64decode(encoded)
+
+            options = {
+                "tracks": self.ocr_tracks,
+                "preprocessing": self.preprocessing_mode
+            }
+            fname = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+            scanner_manager.submit_scan(content, options, label="Live Scan", filename=fname)
+            ui.notify("Captured to Queue", type='positive')
+        except Exception as e:
+            ui.notify(f"Capture failed: {e}", type='negative')
 
     def refresh_debug_ui(self):
         self.render_debug_results.refresh()
@@ -419,7 +387,7 @@ class ScanPage:
                 "tracks": self.ocr_tracks,
                 "preprocessing": self.preprocessing_mode
             }
-            fname = f"capture_{int(time.time())}.jpg"
+            fname = f"capture_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             scanner_manager.submit_scan(content, options, label="Camera Capture", filename=fname)
             ui.notify("Capture queued", type='positive')
 
@@ -708,6 +676,9 @@ def scan_page():
                 page.stop_btn.visible = False
 
                 ui.separator().props('vertical')
+
+                # --- NEW: Status Controls in Live Scan ---
+                page.render_status_controls()
 
                 # Replaced Auto Scan with Manual Scan Button
                 ui.button('Capture & Scan', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black')
