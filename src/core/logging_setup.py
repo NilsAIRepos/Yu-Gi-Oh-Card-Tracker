@@ -37,3 +37,7 @@ def setup_logging():
     # Add handlers to the logger
     logger.addHandler(c_handler)
     logger.addHandler(f_handler)
+
+    # Add UI Stream Handler
+    from src.services.log_stream import log_stream
+    logger.addHandler(log_stream)
