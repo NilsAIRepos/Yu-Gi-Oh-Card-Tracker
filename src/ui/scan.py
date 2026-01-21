@@ -381,8 +381,8 @@ class ScanPage:
                 "tracks": self.ocr_tracks,
                 "preprocessing": self.preprocessing_mode
             }
-            scanner_manager.submit_scan(content, options, label="Image Upload")
-            ui.notify("Upload queued for analysis", type='positive')
+            scanner_manager.submit_scan(content, options, label="Image Upload", filename=e.name)
+            ui.notify(f"Queued: {e.name}", type='positive')
         except Exception as err:
             ui.notify(f"Upload failed: {err}", type='negative')
         self.refresh_debug_ui()
@@ -406,7 +406,9 @@ class ScanPage:
                 "tracks": self.ocr_tracks,
                 "preprocessing": self.preprocessing_mode
             }
-            scanner_manager.submit_scan(content, options, label="Camera Capture")
+            fname = f"capture_{int(time.time())}.jpg"
+            scanner_manager.submit_scan(content, options, label="Camera Capture", filename=fname)
+            ui.notify("Capture queued", type='positive')
 
         except Exception as err:
             ui.notify(f"Capture failed: {err}", type='negative')
@@ -526,15 +528,19 @@ class ScanPage:
     def render_scan_queue(self):
         queue_items = scanner_manager.get_queue_snapshot()
 
-        with ui.expansion(f"Scan Queue ({len(queue_items)})", icon='list').classes('w-full border border-gray-600 rounded'):
+        with ui.card().classes('w-full border border-gray-600 rounded p-0'):
+             with ui.row().classes('w-full bg-gray-800 p-2 items-center'):
+                 ui.icon('list', color='primary')
+                 ui.label(f"Scan Queue ({len(queue_items)})").classes('font-bold')
+
              if not queue_items:
-                 ui.label("Queue is empty.").classes('p-2 text-gray-500 italic')
+                 ui.label("Queue is empty.").classes('p-4 text-gray-500 italic')
              else:
                  with ui.column().classes('w-full gap-1 p-2'):
                      for i, item in enumerate(queue_items):
-                         with ui.row().classes('w-full items-center justify-between bg-gray-800 p-2 rounded'):
+                         with ui.row().classes('w-full items-center justify-between bg-gray-800 p-2 rounded border border-gray-700'):
                              with ui.column().classes('gap-0'):
-                                 ui.label(f"#{i+1} {item['type']}").classes('text-sm font-bold')
+                                 ui.label(item.get('filename') or item['type']).classes('text-sm font-bold')
                                  ui.label(time.strftime("%H:%M:%S", time.localtime(item['timestamp']))).classes('text-xs text-gray-400')
                              ui.button(icon='delete', color='negative',
                                        on_click=lambda idx=i: self.delete_queue_item(idx)).props('flat size=sm')
@@ -552,19 +558,24 @@ class ScanPage:
             with ui.row().classes('items-center gap-2'):
                 if status == "Processing...":
                     ui.spinner(size='sm')
-                elif status == "Paused":
-                    ui.icon('pause_circle', color='warning').classes('text-xl')
+                elif is_paused:
+                    ui.icon('stop_circle', color='warning').classes('text-xl')
                 else:
                     ui.icon('check_circle', color='positive').classes('text-xl')
 
-                ui.label(f"Status: {status}").classes('font-bold')
+                label_text = status
+                if is_paused and status == "Stopped":
+                     label_text = "Ready to Start"
+                elif is_paused:
+                     label_text = "Paused"
+
+                ui.label(f"Status: {label_text}").classes('font-bold')
 
             # Controls
-            btn_icon = 'play_arrow' if is_paused else 'pause'
-            btn_label = 'Resume' if is_paused else 'Pause'
-            btn_color = 'positive' if is_paused else 'warning'
-
-            ui.button(btn_label, icon=btn_icon, color=btn_color, on_click=self.toggle_pause).props('size=sm')
+            if is_paused:
+                 ui.button('Start Processing', icon='play_arrow', color='positive', on_click=self.toggle_pause).props('size=sm')
+            else:
+                 ui.button('Pause', icon='pause', color='warning', on_click=self.toggle_pause).props('size=sm')
 
     def toggle_pause(self):
         scanner_manager.toggle_pause()

@@ -51,14 +51,14 @@ class ScannerManager:
         self.latest_frame_lock = threading.Lock()
 
         self.is_processing = False
-        self.paused = False
-        self.status_message = "Idle"
+        self.paused = True  # Default to paused (Stopped)
+        self.status_message = "Stopped"
 
         # Debug State
         self.debug_state = {
             "logs": [],
             "queue_len": 0,
-            "paused": False,
+            "paused": True,
             "captured_image_url": None,
             "scan_result": "N/A",
             "warped_image_url": None,
@@ -121,7 +121,7 @@ class ScannerManager:
 
         self.submit_scan(frame_data, options, label="Manual Capture")
 
-    def submit_scan(self, image_data: bytes, options: Dict[str, Any], label: str = "Manual Scan"):
+    def submit_scan(self, image_data: bytes, options: Dict[str, Any], label: str = "Manual Scan", filename: str = None):
         """Submits a scan task to the queue."""
         with self.queue_lock:
             self.scan_queue.append({
@@ -129,7 +129,8 @@ class ScannerManager:
                 "timestamp": time.time(),
                 "image": image_data,
                 "options": options,
-                "type": label
+                "type": label,
+                "filename": filename
             })
         self._log_debug(f"Scan Queued: {label}")
 
@@ -160,6 +161,7 @@ class ScannerManager:
                     "id": item["id"],
                     "timestamp": item["timestamp"],
                     "type": item.get("type", "Unknown"),
+                    "filename": item.get("filename"),
                     "options": item["options"]
                 }
                 for item in self.scan_queue
