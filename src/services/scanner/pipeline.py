@@ -10,6 +10,7 @@ try:
     from pytesseract import Output
     from langdetect import detect, LangDetectException
     import easyocr
+    import torch
 except ImportError:
     pass  # Handled in __init__.py
 
@@ -23,6 +24,7 @@ class CardScanner:
         # Region of Interest (ROI) definitions (x, y, w, h) based on 600x875
 
         # Set ID: Usually mid-right, below artwork
+        # Note: With EasyOCR, we can be a bit more generous with the crop
         self.roi_set_id_search = (300, 580, 290, 80)
 
         # 1st Edition: Usually mid-left, below artwork
@@ -52,11 +54,12 @@ class CardScanner:
     def get_reader(self):
         if self.reader is None:
             logger.info("Initializing EasyOCR Reader...")
-            # Use English. 'gpu=False' if no CUDA, but usually it auto-detects.
-            # Explicitly disabling GPU for safety on unknown host unless we know it's there?
-            # Actually, standard is gpu=True which falls back to CPU if needed usually.
-            # But let's verify if 'easyocr' supports safe fallback. It generally does.
-            self.reader = easyocr.Reader(['en'], gpu=True)
+            use_gpu = False
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                use_gpu = True
+
+            logger.info(f"EasyOCR using GPU: {use_gpu}")
+            self.reader = easyocr.Reader(['en'], gpu=use_gpu)
         return self.reader
 
     def preprocess_image(self, frame):
@@ -199,44 +202,55 @@ class CardScanner:
         return warped
 
     def extract_set_id(self, warped) -> Tuple[Optional[str], int, str]:
-        """Extracts the Set ID using OCR. Returns (set_id, confidence, raw_text)."""
-        # scan full image instead of ROI to be robust against bad crops
-        roi = warped
+        """Extracts the Set ID using EasyOCR (Track 1). Returns (set_id, confidence, raw_text)."""
+        # Crop the Set ID area to reduce noise and improve speed/accuracy for EasyOCR
+        x, y, w, h = self.roi_set_id_search
+        roi = warped[y:y+h, x:x+w]
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # Resize to improve OCR accuracy on small text
-        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Enhance contrast for better OCR?
+        # EasyOCR is robust, but slight sharpening might help.
+        # Let's try raw ROI first. If needed, we can upscale.
+        # Upscaling is usually good for small text.
+        roi_upscaled = cv2.resize(roi, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
-        # psm 11 (Sparse text) is still good, but psm 3 (Fully automatic) might be better for full card
-        # sticking to 11 as we are looking for specific code blocks
-        config = r'--oem 3 --psm 11'
+        reader = self.get_reader()
+        # detail=1: [bbox, text, conf]
+        results = reader.readtext(roi_upscaled, detail=1, paragraph=False)
 
-        # Get data to find confidence of the matched word
-        data = pytesseract.image_to_data(thresh, config=config, output_type=Output.DICT)
+        full_text_list = []
+        matches = []
 
-        # Ensure text is not None
-        text = " ".join([t for t in data['text'] if t is not None]).strip().upper()
+        # Regex pattern for Set ID
+        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
 
-        # Regex for standard Set ID
-        # Looking for pattern in the full text
-        match = re.search(r'([A-Z0-9]{3,4}-[A-Z]{0,2}?[0-9]{3})', text)
-        if match:
-            found_text = match.group(1)
-            # Try to find confidence for this specific match
-            confs = [int(c) for c in data['conf'] if int(c) != -1]
-            avg_conf = sum(confs) / len(confs) if confs else 0
-            return found_text, avg_conf, text
+        for (bbox, text, conf) in results:
+            text = text.strip().upper()
+            if not text: continue
 
-        # Fallback liberal match
-        match = re.search(r'([A-Z0-9]+-[A-Z0-9]+)', text)
-        if match:
-            found_text = match.group(1)
-            confs = [int(c) for c in data['conf'] if int(c) != -1]
-            avg_conf = sum(confs) / len(confs) if confs else 0
-            return found_text, avg_conf, text
+            full_text_list.append(text)
 
-        return None, 0, text
+            clean_text = text.replace(" ", "")
+            m = pattern.search(clean_text)
+            if m:
+                prefix = m.group(1)
+                region = m.group(2) if m.group(2) else ""
+                number = m.group(3)
+
+                found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
+
+                score = conf * 100
+                if "EN" in found_id: score += 10
+
+                matches.append((found_id, score))
+
+        full_text = " | ".join(full_text_list)
+
+        if matches:
+            matches.sort(key=lambda x: x[1], reverse=True)
+            best_id, best_conf = matches[0]
+            return best_id, best_conf, full_text
+
+        return None, 0, full_text
 
     def detect_first_edition(self, warped) -> bool:
         """Checks for '1st Edition' text using OCR."""
@@ -263,13 +277,15 @@ class CardScanner:
                 if suffix in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
                     return suffix
 
-        # Scan full image instead of ROI to reduce "EN" bias from bad crops
+        # Fallback: OCR on full card or Desc box?
+        # Since we use EasyOCR now, we might not want to re-run it on full warped unless needed.
+        # Tesseract is lightweight for language detection on warped text blocks.
+
         roi = warped
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
 
         text = pytesseract.image_to_string(thresh)
-        # Reduced text length threshold
         if len(text) < 5:
             return "EN"
 
@@ -373,11 +389,10 @@ class CardScanner:
         cv2.rectangle(canvas, (0, 0), (self.width, self.height), (0, 255, 0), 4)
 
         # Draw specific ROIs that are still used
+        draw_roi(self.roi_set_id_search, (0, 0, 255)) # Re-enabled for visualization
         draw_roi(self.roi_1st_ed, (255, 0, 0))
         draw_roi(self.roi_name, (0, 255, 255))
         draw_roi(self.roi_art, (255, 0, 255))
-
-        # roi_set_id_search and roi_desc are no longer used (Full Scan)
 
         return canvas
 
@@ -387,8 +402,6 @@ class CardScanner:
         Uses EasyOCR for robust scene text detection.
         """
         # 1. Resize strategy
-        # EasyOCR needs higher resolution for small text on full frames.
-        # 1600px with mag_ratio=1.5 seems to work best for detection.
         h, w = frame.shape[:2]
         target_width = 1600
         if w > target_width:
@@ -406,10 +419,6 @@ class CardScanner:
         full_text_list = []
         matches = []
 
-        # Regex: (3-4 alphanumeric) - (optional Region 2 chars) (3-4 alphanumeric)
-        # Examples: LOB-EN001, SDY-001, BODE-EN050, MP19-EN005
-        # Improved: Handle potential spacing issues or O/0 confusion implicitly via fuzzy later?
-        # For now, stick to standard pattern but maybe allow for missing dash?
         pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
 
         for (bbox, text, conf) in results:
@@ -418,35 +427,19 @@ class CardScanner:
 
             full_text_list.append(text)
 
-            # 1. Direct Regex Match
-            # We remove spaces to handle "SDBE - EN004"
             clean_text = text.replace(" ", "")
             m = pattern.search(clean_text)
             if m:
-                # Reconstruct standard ID
                 prefix = m.group(1)
                 region = m.group(2) if m.group(2) else ""
                 number = m.group(3)
 
-                # Check for O -> 0 in number part?
-                # Actually, EasyOCR handles numbers well usually.
-
                 found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
 
-                # Boost confidence for "EN"
                 score = conf * 100
                 if "EN" in found_id: score += 10
 
                 matches.append((found_id, score))
-            else:
-                # 2. Fuzzy Heuristics for "Garbage" (e.g. SOBEENOW)
-                # Look for patterns like "4 chars + EN + 3 digits" but with typos
-                # SDBE often read as SOBE, 5DBE, etc.
-                # EN004 often read as EN0O4, ENO04, etc.
-
-                # Simple Heuristic: If it contains "EN" followed by digits (or O/I/Z looking like digits)
-                # Or ends with 3 digits.
-                pass # TODO: Add more advanced fuzzy if needed. EasyOCR is usually good enough.
 
         full_text = " | ".join(full_text_list)
 
@@ -455,17 +448,15 @@ class CardScanner:
             "raw_text": full_text,
             "set_id": None,
             "set_id_conf": 0,
-            "language": "EN" # Default
+            "language": "EN"
         }
 
         if matches:
-            # Pick best confidence
             matches.sort(key=lambda x: x[1], reverse=True)
             best_id, best_conf = matches[0]
             result["set_id"] = best_id
             result["set_id_conf"] = best_conf
 
-            # Deduce language
             parts = best_id.split('-')
             if len(parts) > 1:
                 suffix = parts[1]
