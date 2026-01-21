@@ -370,105 +370,112 @@ class ScanPage:
         self.render_debug_results.refresh()
         self.render_debug_analysis.refresh()
         self.render_debug_pipeline_results.refresh()
+        self.render_scan_queue.refresh()
+        self.render_status_controls.refresh()
 
     async def handle_debug_upload(self, e: events.UploadEventArguments):
-        self.debug_loading = True
         self.latest_capture_src = None
-        self.refresh_debug_ui()
         try:
-            content = await e.file.read()
-            # We use analyze_static_image for upload, which is async but wrapped in io_bound in manager
+            # Handle NiceGUI version differences
+            file_obj = getattr(e, 'content', getattr(e, 'file', None))
+            if not file_obj:
+                raise ValueError("No file content found in event")
+
+            content = await file_obj.read()
+
+            # Extract filename safely
+            filename = getattr(e, 'name', None)
+            if not filename and hasattr(file_obj, 'name'):
+                filename = file_obj.name
+            if not filename:
+                filename = "upload.jpg"
+
             options = {
                 "tracks": self.ocr_tracks,
                 "preprocessing": self.preprocessing_mode
             }
-            report = await scanner_manager.analyze_static_image(content, options)
-            # Update local debug state from the report
-            self.debug_report = report
-            # Also update manager debug state so it persists?
-            # analyze_static_image in manager returns a report but doesn't necessarily update global state
-            # unless we tell it to. In this case, we use the returned report.
+            scanner_manager.submit_scan(content, options, label="Image Upload", filename=filename)
+            ui.notify(f"Queued: {filename}", type='positive')
         except Exception as err:
-            ui.notify(f"Analysis failed: {err}", type='negative')
-        self.debug_loading = False
+            ui.notify(f"Upload failed: {err}", type='negative')
         self.refresh_debug_ui()
 
     async def handle_debug_capture(self):
-        self.debug_loading = True
         self.refresh_debug_ui()
         try:
             data_url = await ui.run_javascript('captureSingleFrame()')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
-                self.debug_loading = False
                 self.refresh_debug_ui()
                 return
 
             self.latest_capture_src = data_url
             self.refresh_debug_ui()
 
-            # Trigger Scan via Manager (Worker)
-            # We need to send bytes.
             header, encoded = data_url.split(",", 1)
             content = base64.b64decode(encoded)
-
-            # Since we have the content, we can manually trigger the queue via trigger_scan
-            # but trigger_scan uses 'latest_frame'.
-            # We should probably update latest_frame or just use analyze_static_image?
-            # The prompt says: "Output ALL 4 OCR RAW TEXT RESULTS... IN THE DEBUG LAB".
-            # The manager's trigger_scan flow updates the debug_state which the UI polls.
-            # So calling trigger_scan (which uses latest_frame) is preferred if we trust latest_frame.
-            # But here we captured a frame explicitly.
-            # Let's push this frame then trigger.
-            scanner_manager.push_frame(content)
 
             options = {
                 "tracks": self.ocr_tracks,
                 "preprocessing": self.preprocessing_mode
             }
-            scanner_manager.trigger_scan(options)
+            fname = f"capture_{int(time.time())}.jpg"
+            scanner_manager.submit_scan(content, options, label="Camera Capture", filename=fname)
+            ui.notify("Capture queued", type='positive')
 
         except Exception as err:
             ui.notify(f"Capture failed: {err}", type='negative')
-            self.debug_loading = False
             self.refresh_debug_ui()
 
-    async def update_loop(self):
+    async def status_loop(self):
+        """Fast loop for UI status updates."""
         if not self.is_active: return
 
-        # Poll Debug State
-        self.debug_report = scanner_manager.get_debug_snapshot()
-        if self.debug_report.get('logs') and self.debug_loading:
-             # If we were loading, check if done?
-             # Simple logic: just refresh UI periodically if visible
-             pass
+        try:
+            # Poll Debug State
+            self.debug_report = scanner_manager.get_debug_snapshot()
 
-        # Only refresh if something changed?
-        # For now, let's refresh periodically if loading, or if we have new data.
-        # Ideally we'd have a dirty flag.
-        # We can refresh the debug UI every loop? Might be too heavy.
-        # Let's refresh only if status is "Processing..." or similar.
-        if scanner_manager.is_processing:
-             self.refresh_debug_ui()
-        elif self.debug_loading: # Should turn off
-             self.debug_loading = False
-             self.refresh_debug_ui()
+            # Always refresh status controls to stay in sync
+            self.render_status_controls.refresh()
 
-        # Process Pending Lookups (Async Resolver)
-        # This is where we act as the consumer of lookup_queue
-        await scanner_manager.process_pending_lookups()
+            # Conditionally refresh full debug UI
+            if scanner_manager.is_processing:
+                 self.refresh_debug_ui()
+            elif self.debug_loading:
+                 self.debug_loading = False
+                 self.refresh_debug_ui()
 
-        # Live Results
-        result = scanner_manager.get_latest_result()
-        if result:
-            self.scanned_cards.insert(0, result)
-            self.render_live_list.refresh()
-            ui.notify(f"Scanned: {result.get('name')}", type='positive')
+            # Notifications (quick)
+            note = scanner_manager.get_latest_notification()
+            if note:
+                 ui.notify(note[1], type=note[0])
 
-        # Notifications
-        note = scanner_manager.get_latest_notification()
-        if note:
-             ui.notify(note[1], type=note[0])
+        except Exception as e:
+            logger.error(f"Status Loop Error: {e}")
+
+    async def processing_loop(self):
+        """Slower loop for result processing and lookups."""
+        if not self.is_active: return
+
+        try:
+            # Log periodically to confirm loop is alive if processing
+            if scanner_manager.is_processing:
+                 logger.debug(f"UI Processing Loop running... (Mgr: {getattr(scanner_manager, 'instance_id', '?')})")
+
+            # Process Pending Lookups (Async Resolver - Potentially Blocking)
+            await scanner_manager.process_pending_lookups()
+
+            # Live Results
+            result = scanner_manager.get_latest_result()
+            if result:
+                self.scanned_cards.insert(0, result)
+                self.render_live_list.refresh()
+                ui.notify(f"Scanned: {result.get('name')}", type='positive')
+                # Refresh debug results once to show the final outcome
+                self.refresh_debug_ui()
+
+        except Exception as e:
+            logger.error(f"Processing Loop Error: {e}")
 
     @ui.refreshable
     def render_live_list(self):
@@ -543,12 +550,75 @@ class ScanPage:
             for log in logs:
                 ui.label(log)
 
+    @ui.refreshable
+    def render_scan_queue(self):
+        queue_items = scanner_manager.get_queue_snapshot()
+
+        with ui.card().classes('w-full border border-gray-600 rounded p-0'):
+             with ui.row().classes('w-full bg-gray-800 p-2 items-center'):
+                 ui.icon('list', color='primary')
+                 ui.label(f"Scan Queue ({len(queue_items)})").classes('font-bold')
+
+             if not queue_items:
+                 ui.label("Queue is empty.").classes('p-4 text-gray-500 italic')
+             else:
+                 with ui.column().classes('w-full gap-1 p-2'):
+                     for i, item in enumerate(queue_items):
+                         with ui.row().classes('w-full items-center justify-between bg-gray-800 p-2 rounded border border-gray-700'):
+                             with ui.column().classes('gap-0'):
+                                 ui.label(item.get('filename') or item['type']).classes('text-sm font-bold')
+                                 ui.label(time.strftime("%H:%M:%S", time.localtime(item['timestamp']))).classes('text-xs text-gray-400')
+                             ui.button(icon='delete', color='negative',
+                                       on_click=lambda idx=i: self.delete_queue_item(idx)).props('flat size=sm')
+
+    def delete_queue_item(self, index):
+        scanner_manager.remove_scan_request(index)
+        self.render_scan_queue.refresh()
+
+    @ui.refreshable
+    def render_status_controls(self):
+        status = scanner_manager.get_status()
+        is_paused = scanner_manager.is_paused()
+
+        with ui.row().classes('w-full items-center justify-between bg-gray-800 p-2 rounded border border-gray-700'):
+            with ui.row().classes('items-center gap-2'):
+                if status == "Processing...":
+                    ui.spinner(size='sm')
+                elif is_paused:
+                    ui.icon('stop_circle', color='warning').classes('text-xl')
+                else:
+                    ui.icon('check_circle', color='positive').classes('text-xl')
+
+                label_text = status
+                if is_paused and status == "Stopped":
+                     label_text = "Ready to Start"
+                elif is_paused:
+                     label_text = "Paused"
+
+                with ui.column().classes('gap-0'):
+                    ui.label(f"Status: {label_text}").classes('font-bold')
+                    ui.label(f"Mgr: {getattr(scanner_manager, 'instance_id', 'N/A')}").classes('text-[10px] text-gray-600')
+                    current_step = scanner_manager.debug_state.get('current_step', 'Idle')
+                    if scanner_manager.is_processing:
+                        ui.label(f"{current_step}").classes('text-xs text-blue-400')
+
+            # Controls
+            if is_paused:
+                 ui.button('Start Processing', icon='play_arrow', color='positive', on_click=self.toggle_pause).props('size=sm')
+            else:
+                 ui.button('Pause', icon='pause', color='warning', on_click=self.toggle_pause).props('size=sm')
+
+    def toggle_pause(self):
+        scanner_manager.toggle_pause()
+        self.render_status_controls.refresh()
+
     def render_debug_lab(self):
         with ui.grid().classes('grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full'):
 
             # --- CARD 1: CONTROLS & INPUT ---
             with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
                 ui.label("1. Configuration & Input").classes('text-2xl font-bold text-primary')
+                self.render_status_controls()
 
                 # Preprocessing Toggle
                 ui.label("Preprocessing Strategy:").classes('font-bold text-gray-300')
@@ -573,6 +643,7 @@ class ScanPage:
                 ui.separator().classes('bg-gray-600')
                 ui.upload(label="Upload Image", on_upload=self.handle_debug_upload, auto_upload=True).props('accept=.jpg,.png color=secondary').classes('w-full')
 
+                self.render_scan_queue()
                 self.render_debug_results()
 
             # --- CARD 2: VISUAL ---
@@ -595,11 +666,15 @@ class ScanPage:
 
 def scan_page():
     def cleanup():
-        scanner_manager.stop()
+        # Do not stop scanner_manager here, as it's a global service
+        # scanner_manager.stop()
         page.is_active = False
 
     app.on_disconnect(cleanup)
     page = ScanPage()
+
+    # Ensure scanner service is running (idempotent)
+    scanner_manager.start()
     page.is_active = True
 
     if not SCANNER_AVAILABLE:
@@ -657,4 +732,7 @@ def scan_page():
              page.render_debug_lab()
 
     ui.timer(1.0, page.init_cameras, once=True)
-    ui.timer(0.2, page.update_loop) # Slightly slower loop
+
+    # Split loops to prevent blocking UI updates
+    ui.timer(0.1, page.status_loop)      # Fast UI updates
+    ui.timer(0.5, page.processing_loop)  # Heavy processing

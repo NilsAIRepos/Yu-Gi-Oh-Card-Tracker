@@ -239,7 +239,12 @@ class CardScanner:
         if engine == 'paddle':
             ocr = self.get_paddleocr()
             # result = [[[[x1,y1],...], (text, conf)], ...]
-            result = ocr.ocr(image, cls=True)
+            try:
+                result = ocr.ocr(image, cls=True)
+            except TypeError:
+                # Fallback for versions where cls arg is unexpected
+                result = ocr.ocr(image)
+
             if result and result[0]:
                 for line in result[0]:
                     text = line[1][0]

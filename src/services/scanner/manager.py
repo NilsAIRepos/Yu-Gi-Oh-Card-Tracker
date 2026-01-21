@@ -37,23 +37,31 @@ class ScannerManager:
         self.scanner = CardScanner() if SCANNER_AVAILABLE else None
 
         # Queues
-        self.request_queue = queue.Queue() # Manual scan requests
+        self.scan_queue = [] # List of pending scan requests
+        self.queue_lock = threading.Lock()
+
         self.lookup_queue = queue.Queue() # Best result -> DB Lookup
         self.result_queue = queue.Queue() # Finished results -> UI
         self.notification_queue = queue.Queue() # Notifications -> UI
 
         self.thread: Optional[threading.Thread] = None
+        self.instance_id = str(uuid.uuid4())[:6]
+        logger.info(f"ScannerManager initialized with ID: {self.instance_id}")
 
         # State
         self.latest_frame = None
         self.latest_frame_lock = threading.Lock()
 
         self.is_processing = False
-        self.status_message = "Idle"
+        self.paused = True  # Default to paused (Stopped)
+        self.status_message = "Stopped"
 
         # Debug State
         self.debug_state = {
             "logs": [],
+            "queue_len": 0,
+            "paused": True,
+            "current_step": "Idle",
             "captured_image_url": None,
             "scan_result": "N/A",
             "warped_image_url": None,
@@ -114,11 +122,59 @@ class ScannerManager:
                 return
             frame_data = self.latest_frame
 
-        self.request_queue.put({
-            "image": frame_data,
-            "options": options
-        })
-        self._log_debug("Scan Queued")
+        self.submit_scan(frame_data, options, label="Manual Capture")
+
+    def submit_scan(self, image_data: bytes, options: Dict[str, Any], label: str = "Manual Scan", filename: str = None):
+        """Submits a scan task to the queue."""
+        with self.queue_lock:
+            self.scan_queue.append({
+                "id": str(uuid.uuid4())[:8],
+                "timestamp": time.time(),
+                "image": image_data,
+                "options": options,
+                "type": label,
+                "filename": filename
+            })
+        self._log_debug(f"Scan Queued: {label}")
+
+    def pause(self):
+        self.paused = True
+        self.debug_state["paused"] = True
+        self._log_debug("Scanner Paused")
+
+    def resume(self):
+        self.paused = False
+        self.debug_state["paused"] = False
+        self._log_debug("Scanner Resumed")
+
+    def toggle_pause(self):
+        if self.paused:
+            self.resume()
+        else:
+            self.pause()
+
+    def is_paused(self) -> bool:
+        return self.paused
+
+    def get_queue_snapshot(self) -> List[Dict[str, Any]]:
+        with self.queue_lock:
+            # Return metadata only
+            return [
+                {
+                    "id": item["id"],
+                    "timestamp": item["timestamp"],
+                    "type": item.get("type", "Unknown"),
+                    "filename": item.get("filename"),
+                    "options": item["options"]
+                }
+                for item in self.scan_queue
+            ]
+
+    def remove_scan_request(self, index: int):
+        with self.queue_lock:
+            if 0 <= index < len(self.scan_queue):
+                removed = self.scan_queue.pop(index)
+                self._log_debug(f"Removed item {removed['id']} from queue")
 
     async def analyze_static_image(self, image_bytes: bytes, options: Dict[str, Any] = None) -> Dict[str, Any]:
         """
@@ -141,6 +197,8 @@ class ScannerManager:
         return self._process_scan(frame, options)
 
     def get_debug_snapshot(self) -> Dict[str, Any]:
+        with self.queue_lock:
+            self.debug_state["queue_len"] = len(self.scan_queue)
         return self.debug_state.copy()
 
     def _log_debug(self, message: str):
@@ -178,77 +236,99 @@ class ScannerManager:
         return f"/debug/scans/{filename}"
 
     def _worker(self):
+        logger.info(f"Scanner worker thread started (Manager ID: {self.instance_id})")
         while self.running:
             try:
-                task = self.request_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
+                if self.paused:
+                    self.status_message = "Paused"
+                    time.sleep(0.1)
+                    continue
 
-            self.is_processing = True
-            self.status_message = "Processing..."
+                task = None
+                with self.queue_lock:
+                    if self.scan_queue:
+                        task = self.scan_queue.pop(0)
 
-            try:
-                frame_data = task["image"]
-                options = task["options"]
+                if not task:
+                    self.status_message = "Idle"
+                    time.sleep(0.1)
+                    continue
 
-                # Decode
-                nparr = np.frombuffer(frame_data, np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                filename = task.get("filename", "unknown")
+                self.is_processing = True
+                self.status_message = f"Processing: {filename}"
+                logger.info(f"Starting scan for: {filename}")
+                self._log_debug(f"Started: {filename}")
 
-                if frame is not None:
-                    # Update debug state basics
-                    cap_url = self._save_debug_image(frame, "manual_cap")
-                    self.debug_state["captured_image_url"] = cap_url
-                    self.debug_state["preprocessing"] = options.get("preprocessing", "classic")
-                    self.debug_state["active_tracks"] = options.get("tracks", [])
+                try:
+                    frame_data = task["image"]
+                    options = task["options"]
 
-                    # Run Pipeline
-                    report = self._process_scan(frame, options)
+                    # Decode
+                    nparr = np.frombuffer(frame_data, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-                    # Merge report into debug state
-                    self.debug_state.update(report)
+                    if frame is not None:
+                        # Update debug state basics
+                        cap_url = self._save_debug_image(frame, "manual_cap")
+                        self.debug_state["captured_image_url"] = cap_url
+                        self.debug_state["preprocessing"] = options.get("preprocessing", "classic")
+                        self.debug_state["active_tracks"] = options.get("tracks", [])
 
-                    # If we found a card, push to result queue
-                    # We pick the best result.
-                    best_res = self._pick_best_result(report)
-                    if best_res:
-                         # Enhance with visual traits if warped image exists
-                         warped = None
-                         if frame is not None and task.get('warped_in_state'):
-                             # We didn't save warped in task, but we saved it in report["warped_image_url"]
-                             # Wait, we need the actual numpy array for visual analysis if we assume it wasn't done.
-                             # But _process_scan does run warping.
-                             # Let's pass the warped image back in report or just re-warp/store in _process_scan
-                             pass
+                        # Define status updater
+                        def update_step(step_name):
+                            self.debug_state["current_step"] = step_name
+                            self.status_message = f"Processing: {filename} ({step_name})"
 
-                         # Construct lookup data
-                         # We need to retrieve the warped image if we want to do art matching or visual rarity
-                         # But _process_scan is where that happens.
-                         # Let's ensure _process_scan returns the extra metadata.
+                        # Run Pipeline
+                        report = self._process_scan(frame, options, status_cb=update_step)
 
-                         lookup_data = {
-                             "set_code": best_res['set_id'],
-                             "language": best_res['language'],
-                             "ocr_conf": best_res['set_id_conf'],
-                             "rarity": "Unknown",
-                             "visual_rarity": report.get('visual_rarity', 'Common'),
-                             "first_edition": report.get('first_edition', False),
-                             "warped_image": report.get('warped_image_data')
-                         }
-                         self.lookup_queue.put(lookup_data)
+                        # Merge report into debug state
+                        self.debug_state.update(report)
 
-                    self._log_debug("Scan Complete")
+                        # If we found a card, push to result queue
+                        # We pick the best result.
+                        best_res = self._pick_best_result(report)
+                        if best_res:
+                            # Enhance with visual traits if warped image exists
+                            warped = None
+                            # Construct lookup data
+                            lookup_data = {
+                                "set_code": best_res['set_id'],
+                                "language": best_res['language'],
+                                "ocr_conf": best_res['set_id_conf'],
+                                "rarity": "Unknown",
+                                "visual_rarity": report.get('visual_rarity', 'Common'),
+                                "first_edition": report.get('first_edition', False),
+                                "warped_image": report.get('warped_image_data')
+                            }
+                            self.lookup_queue.put(lookup_data)
+
+                        logger.info(f"Finished scan for: {filename}")
+                        self._log_debug(f"Finished: {filename}")
+                    else:
+                        self._log_debug("Frame decode failed")
+
+                except Exception as e:
+                    logger.error(f"Task Execution Error: {e}", exc_info=True)
+                    self._log_debug(f"Error: {str(e)}")
 
             except Exception as e:
-                logger.error(f"Worker Error: {e}")
-                self._log_debug(f"Error: {e}")
+                logger.error(f"Worker Loop Fatal Error: {e}", exc_info=True)
+                self.status_message = "Error"
+                time.sleep(1.0) # Prevent tight loop on crash
+            finally:
+                self.is_processing = False
+                self.debug_state["current_step"] = "Idle"
+                if not self.paused:
+                     self.status_message = "Idle"
 
-            self.is_processing = False
-            self.status_message = "Idle"
-
-    def _process_scan(self, frame, options) -> Dict[str, Any]:
+    def _process_scan(self, frame, options, status_cb=None) -> Dict[str, Any]:
         """Runs the configured tracks on the frame."""
         if not self.scanner: return {}
+
+        def set_step(msg):
+            if status_cb: status_cb(msg)
 
         report = {
             "steps": [],
@@ -258,6 +338,7 @@ class ScannerManager:
         }
 
         # 1. Preprocessing (Crop)
+        set_step("Preprocessing: Contour/Crop")
         prep_method = options.get("preprocessing", "classic")
         contour = None
         warped = None
@@ -282,11 +363,13 @@ class ScannerManager:
         # Track 1: EasyOCR
         if "easyocr" in tracks:
             try:
+                set_step("Track 1: EasyOCR (Full)")
                 # Full Frame
                 t1_full = self.scanner.ocr_scan(frame, engine='easyocr')
                 t1_full['scope'] = 'full'
                 report["t1_full"] = t1_full
 
+                set_step("Track 1: EasyOCR (Crop)")
                 # Crop
                 if warped is not None:
                     t1_crop = self.scanner.ocr_scan(warped, engine='easyocr')
@@ -299,11 +382,13 @@ class ScannerManager:
         # Track 2: PaddleOCR
         if "paddle" in tracks:
             try:
+                set_step("Track 2: PaddleOCR (Full)")
                 # Full Frame
                 t2_full = self.scanner.ocr_scan(frame, engine='paddle')
                 t2_full['scope'] = 'full'
                 report["t2_full"] = t2_full
 
+                set_step("Track 2: PaddleOCR (Crop)")
                 # Crop
                 if warped is not None:
                     t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
@@ -315,6 +400,7 @@ class ScannerManager:
 
         # Extra Analysis on Warped (if available)
         if warped is not None:
+             set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
              report['first_edition'] = self.scanner.detect_first_edition(warped)
              report['warped_image_data'] = warped # Pass along for Art Match
@@ -341,6 +427,8 @@ class ScannerManager:
             except queue.Empty:
                 return
 
+            logger.info(f"Processing lookup for {data.get('set_code', 'Unknown')}")
+
             set_id = data.get('set_code')
             warped = data.pop('warped_image', None)
 
@@ -349,6 +437,7 @@ class ScannerManager:
             data['image_path'] = None
 
             if set_id:
+                # Wrap heavy DB/IO in io_bound if not already async-optimized
                 card_info = await self._resolve_card_details(set_id)
 
                 if card_info:
@@ -369,9 +458,10 @@ class ScannerManager:
                 data["rarity"] = data["visual_rarity"]
 
             self.result_queue.put(data)
+            logger.info(f"Lookup complete for {data.get('set_code')}")
 
         except Exception as e:
-            logger.error(f"Error in process_pending_lookups: {e}")
+            logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)
 
     async def _resolve_card_details(self, set_id: str) -> Optional[Dict[str, Any]]:
         set_id = set_id.upper()
