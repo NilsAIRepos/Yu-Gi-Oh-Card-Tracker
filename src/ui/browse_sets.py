@@ -212,9 +212,95 @@ class BrowseSetsPage:
         files = persistence.list_collections()
         self.state['selected_collection_file'] = None
 
+        # Load persisted selection
+        try:
+            ui_state = persistence.load_ui_state()
+            last_col = ui_state.get('last_collection')
+            if last_col and last_col in files:
+                self.state['selected_collection_file'] = last_col
+        except Exception as e:
+            logger.error(f"Error loading UI state: {e}")
+
         self.single_card_view = SingleCardView()
         self.filter_pane = None # For detail view
         self.filter_dialog = None
+
+    async def select_collection_dialog(self):
+        files = persistence.list_collections()
+        if not files:
+            ui.notify("No collections found. Please create one first in the Collections tab.", type='warning')
+            return None
+
+        # Use a localized state for the dialog
+        dialog_state = {'selected': files[0]}
+        result = asyncio.Future()
+
+        with ui.dialog() as dialog, ui.card():
+            ui.label("Select Collection").classes('text-h6')
+            ui.label("You are currently in 'All Owned' view.").classes('text-sm text-gray-400')
+            ui.label("Please select a collection to add this card to.").classes('text-sm text-gray-400')
+
+            def on_change(e):
+                dialog_state['selected'] = e.value
+
+            ui.select(files, value=files[0], on_change=on_change).classes('w-full').props('dark')
+
+            with ui.row().classes('w-full justify-end q-mt-md gap-4'):
+                ui.button('Cancel', on_click=lambda: dialog.close()).props('flat')
+                ui.button('Select', on_click=lambda: result.set_result(dialog_state['selected'])).props('color=primary')
+
+        # Handle cleanup
+        def on_close():
+             if not result.done():
+                 result.set_result(None)
+
+        dialog.on('close', on_close)
+        dialog.open()
+
+        return await result
+
+    async def handle_card_save(self, c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, **kwargs):
+        # Check if collection is selected
+        if not self.state['current_collection']:
+             # Prompt user
+             filename = await self.select_collection_dialog()
+             if not filename:
+                 return # Cancelled
+
+             # Set and Load
+             self.state['selected_collection_file'] = filename
+             try:
+                 persistence.save_ui_state({'last_collection': filename})
+                 self.state['current_collection'] = await run.io_bound(persistence.load_collection, filename)
+                 # Update Header UI (Dropdown)
+                 if hasattr(self, 'render_set_header'):
+                     self.render_set_header.refresh()
+             except Exception as e:
+                 logger.error(f"Error loading selected collection: {e}")
+                 ui.notify(f"Error loading collection: {e}", type='negative')
+                 return
+
+        # Proceed with Save
+        col = self.state['current_collection']
+        from src.services.collection_editor import CollectionEditor
+
+        try:
+            CollectionEditor.apply_change(col, c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, **kwargs)
+            await run.io_bound(persistence.save_collection, col, self.state['selected_collection_file'])
+
+            # Refresh Details
+            # If we are in detail view, we likely want to reload the set details to update counts
+            if self.state['view'] == 'detail' and self.state['selected_set']:
+                 await self.load_set_details(self.state['selected_set'])
+                 self.render_detail_grid.refresh()
+                 # Also refresh header stats
+                 if hasattr(self, 'render_set_header'):
+                    self.render_set_header.refresh()
+
+            ui.notify('Collection Updated', type='positive')
+        except Exception as e:
+            logger.error(f"Error saving card: {e}")
+            ui.notify(f"Error saving card: {e}", type='negative')
 
     async def load_data(self):
         # Load Sets
@@ -1044,6 +1130,10 @@ class BrowseSetsPage:
 
                  async def change_col(e):
                      self.state['selected_collection_file'] = e.value
+                     try:
+                        persistence.save_ui_state({'last_collection': e.value})
+                     except Exception as e:
+                        logger.error(f"Error saving UI state: {e}")
                      await self.load_data() # Reloads collection
                      # Need to reload rows too
                      await self.load_set_details(self.state['selected_set'])
@@ -1147,20 +1237,6 @@ class BrowseSetsPage:
             ui.button('Filters', icon='filter_list', on_click=self.filter_dialog.open).props('color=primary')
 
     async def open_consolidated_view(self, vm: CardViewModel):
-         async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
-             if not self.state['current_collection']:
-                 ui.notify("Cannot edit 'All Owned' view.", type='warning')
-                 return
-
-             col = self.state['current_collection']
-             from src.services.collection_editor import CollectionEditor
-             CollectionEditor.apply_change(col, c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode)
-             await run.io_bound(persistence.save_collection, col, self.state['selected_collection_file'])
-
-             await self.load_set_details(self.state['selected_set'])
-             self.render_detail_grid.refresh()
-             ui.notify('Collection Updated', type='positive')
-
          owned_breakdown = {}
          if self.state['current_collection']:
              for c in self.state['current_collection'].cards:
@@ -1174,7 +1250,7 @@ class BrowseSetsPage:
              card=vm.api_card,
              total_owned=vm.owned_quantity,
              owned_breakdown=owned_breakdown,
-             save_callback=on_save
+             save_callback=self.handle_card_save
          )
 
     @ui.refreshable
@@ -1263,22 +1339,6 @@ class BrowseSetsPage:
 
     async def open_single_view(self, row: CollectorRow):
         # Wrapper for SingleCardView
-        async def on_save(c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
-             # Save to collection
-             if not self.state['current_collection']:
-                 ui.notify("Cannot edit 'All Owned' view.", type='warning')
-                 return
-
-             col = self.state['current_collection']
-             from src.services.collection_editor import CollectionEditor
-             CollectionEditor.apply_change(col, c, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode)
-             await run.io_bound(persistence.save_collection, col, self.state['selected_collection_file'])
-
-             # Reload details
-             await self.load_set_details(self.state['selected_set'])
-             self.render_detail_grid.refresh()
-             ui.notify('Collection Updated', type='positive')
-
         await self.single_card_view.open_collectors(
             card=row.api_card,
             owned_count=row.owned_count,
@@ -1292,7 +1352,7 @@ class BrowseSetsPage:
             image_id=row.image_id,
             set_price=row.price,
             current_collection=self.state['current_collection'],
-            save_callback=on_save,
+            save_callback=self.handle_card_save,
             variant_id=row.variant_id
         )
 
