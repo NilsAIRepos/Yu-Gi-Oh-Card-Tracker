@@ -376,13 +376,26 @@ class ScanPage:
     async def handle_debug_upload(self, e: events.UploadEventArguments):
         self.latest_capture_src = None
         try:
-            content = await e.file.read()
+            # Handle NiceGUI version differences
+            file_obj = getattr(e, 'content', getattr(e, 'file', None))
+            if not file_obj:
+                raise ValueError("No file content found in event")
+
+            content = await file_obj.read()
+
+            # Extract filename safely
+            filename = getattr(e, 'name', None)
+            if not filename and hasattr(file_obj, 'name'):
+                filename = file_obj.name
+            if not filename:
+                filename = "upload.jpg"
+
             options = {
                 "tracks": self.ocr_tracks,
                 "preprocessing": self.preprocessing_mode
             }
-            scanner_manager.submit_scan(content, options, label="Image Upload", filename=e.name)
-            ui.notify(f"Queued: {e.name}", type='positive')
+            scanner_manager.submit_scan(content, options, label="Image Upload", filename=filename)
+            ui.notify(f"Queued: {filename}", type='positive')
         except Exception as err:
             ui.notify(f"Upload failed: {err}", type='negative')
         self.refresh_debug_ui()
@@ -419,19 +432,14 @@ class ScanPage:
 
         # Poll Debug State
         self.debug_report = scanner_manager.get_debug_snapshot()
-        if self.debug_report.get('logs') and self.debug_loading:
-             # If we were loading, check if done?
-             # Simple logic: just refresh UI periodically if visible
-             pass
 
-        # Only refresh if something changed?
-        # For now, let's refresh periodically if loading, or if we have new data.
-        # Ideally we'd have a dirty flag.
-        # We can refresh the debug UI every loop? Might be too heavy.
-        # Let's refresh only if status is "Processing..." or similar.
-        if scanner_manager.is_processing or scanner_manager.is_paused():
+        # Always refresh status controls to stay in sync
+        self.render_status_controls.refresh()
+
+        # Conditionally refresh full debug UI
+        if scanner_manager.is_processing:
              self.refresh_debug_ui()
-        elif self.debug_loading: # Should turn off
+        elif self.debug_loading:
              self.debug_loading = False
              self.refresh_debug_ui()
 
