@@ -45,6 +45,7 @@ class ScannerManager:
         self.notification_queue = queue.Queue() # Notifications -> UI
 
         self.thread: Optional[threading.Thread] = None
+        self.worker_run_id: Optional[str] = None
         self.instance_id = str(uuid.uuid4())[:6]
         logger.info(f"ScannerManager initialized with ID: {self.instance_id}")
 
@@ -83,13 +84,15 @@ class ScannerManager:
             logger.error("Scanner dependencies missing. Cannot start.")
             return
 
-        if self.running:
-            return
-
+        # Ensure previous run is stopped or invalidated
+        self.worker_run_id = str(uuid.uuid4())
         self.running = True
-        self.thread = threading.Thread(target=self._worker, daemon=True)
+
+        # If a thread is already running, it will check worker_run_id and exit
+        # We start a new thread for the new run
+        self.thread = threading.Thread(target=self._worker, args=(self.worker_run_id,), daemon=True)
         self.thread.start()
-        logger.info(f"Scanner started (Client-Side Mode)")
+        logger.info(f"Scanner started (Run ID: {self.worker_run_id})")
 
     def stop(self):
         if not self.running:
@@ -242,9 +245,14 @@ class ScannerManager:
         cv2.imwrite(path, image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         return f"/debug/scans/{filename}"
 
-    def _worker(self):
-        logger.info(f"Scanner worker thread started (Manager ID: {self.instance_id})")
+    def _worker(self, run_id: str):
+        logger.info(f"Scanner worker thread started (Run ID: {run_id})")
         while self.running:
+            # Zombie Check: If run_id changed, we are a zombie. Die.
+            if self.worker_run_id != run_id:
+                logger.info(f"Worker {run_id} replaced by {self.worker_run_id}. Exiting.")
+                return
+
             try:
                 if self.paused:
                     self._set_status("Paused")
