@@ -425,9 +425,9 @@ class ScannerManager:
         warped = None
 
         if prep_method == "yolo":
-             contour = self.scanner.find_card_yolo(frame, model_name='yolov8l.pt')
+             contour = self.scanner.find_card_yolo(frame, model_name='yolov8n-obb.pt')
         elif prep_method == "yolo26":
-             contour = self.scanner.find_card_yolo(frame, model_name='yolo26n.pt')
+             contour = self.scanner.find_card_yolo(frame, model_name='yolo26n-obb.pt')
         else:
              contour = self.scanner.find_card_contour(frame)
 
