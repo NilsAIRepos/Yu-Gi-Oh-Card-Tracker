@@ -55,6 +55,7 @@ class CardScanner:
         # Lazy Init
         self.easyocr_reader = None
         self.yolo_model = None
+        self.yolo_model_name = None
         self.keras_pipeline = None
         self.mmocr_inferencer = None
         self.doctr_model = None
@@ -66,11 +67,19 @@ class CardScanner:
             self.easyocr_reader = easyocr.Reader(['en'], gpu=use_gpu)
         return self.easyocr_reader
 
-    def get_yolo(self):
-        if self.yolo_model is None:
-            logger.info("Initializing YOLO model (Large)...")
-            # Upgraded to yolov8l.pt as requested
-            self.yolo_model = YOLO('yolov8l.pt')
+    def get_yolo(self, model_name: str = 'yolov8l.pt'):
+        # If model is not loaded or loaded model is different from requested
+        if self.yolo_model is None or self.yolo_model_name != model_name:
+            logger.info(f"Initializing YOLO model ({model_name})...")
+            try:
+                self.yolo_model = YOLO(model_name)
+                self.yolo_model_name = model_name
+            except Exception as e:
+                logger.error(f"Failed to load YOLO model {model_name}: {e}. Falling back to yolov8l.pt")
+                if model_name != 'yolov8l.pt':
+                    return self.get_yolo('yolov8l.pt')
+                else:
+                    raise
         return self.yolo_model
 
     def get_keras(self):
@@ -199,9 +208,9 @@ class CardScanner:
 
         return None
 
-    def find_card_yolo(self, frame) -> Optional[np.ndarray]:
+    def find_card_yolo(self, frame, model_name='yolov8l.pt') -> Optional[np.ndarray]:
         """Finds card using YOLO object detection."""
-        model = self.get_yolo()
+        model = self.get_yolo(model_name)
         # Run inference
         results = model(frame, verbose=False)
 

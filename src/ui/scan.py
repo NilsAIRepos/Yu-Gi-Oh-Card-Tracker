@@ -211,7 +211,7 @@ class ScanPage:
 
         # Config
         self.ocr_tracks = ['doctr'] # Default to DocTR
-        self.preprocessing_mode = 'classic' # 'classic' or 'yolo'
+        self.preprocessing_mode = 'classic' # 'classic', 'yolo', or 'yolo26'
 
         # Debug Lab State (local cache of Pydantic model dump)
         self.debug_report = {}
@@ -649,7 +649,7 @@ class ScanPage:
                 # Preprocessing Toggle
                 ui.label("Preprocessing Strategy:").classes('font-bold text-gray-300')
                 with ui.row():
-                    ui.radio(['classic', 'yolo'], value=self.preprocessing_mode, on_change=lambda e: setattr(self, 'preprocessing_mode', e.value)).props('inline')
+                    ui.radio(['classic', 'yolo', 'yolo26'], value=self.preprocessing_mode, on_change=lambda e: setattr(self, 'preprocessing_mode', e.value)).props('inline')
 
                 # Tracks Selector
                 ui.label("Active Tracks:").classes('font-bold text-gray-300')
