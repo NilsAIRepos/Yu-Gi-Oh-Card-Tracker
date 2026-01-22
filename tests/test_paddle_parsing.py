@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import sys
 from dataclasses import dataclass
 
@@ -18,34 +18,48 @@ sys.modules['numpy'] = MagicMock()
 sys.modules['langdetect'] = MagicMock()
 sys.modules['easyocr'] = MagicMock()
 sys.modules['torch'] = MagicMock()
-sys.modules['paddleocr'] = MagicMock()
+# sys.modules['paddleocr'] = MagicMock() # Removed from pipeline
 sys.modules['ultralytics'] = MagicMock()
 
-# Mock models module but provide our real dummy class for usage
+# Mock models module
 mock_models = MagicMock()
 mock_models.OCRResult = OCRResult
 sys.modules['src.services.scanner.models'] = mock_models
 
+# We need to mock concurrent.futures before importing pipeline
+sys.modules['concurrent.futures'] = MagicMock()
+
 from src.services.scanner.pipeline import CardScanner
 
 class TestPaddleParsing(unittest.TestCase):
-    def test_paddle_malformed_result(self):
+
+    @patch('src.services.scanner.pipeline.ProcessPoolExecutor')
+    @patch('src.services.scanner.pipeline.cv2.imwrite') # Prevent file write
+    @patch('src.services.scanner.pipeline.os.remove')   # Prevent file delete
+    def test_paddle_subprocess_handling(self, mock_remove, mock_imwrite, mock_executor_cls):
         """
-        Verify that ocr_scan handles malformed PaddleOCR results without crashing.
-        Case: line[1] has only text, no confidence.
+        Verify that ocr_scan correctly handles data returned from the subprocess.
         """
-        # Setup
         scanner = CardScanner()
-        mock_ocr_instance = MagicMock()
 
-        # Simulate a result where one line is malformed: ("TextOnly",) instead of ("Text", Conf)
-        malformed_line = [ [[0,0]], ("BadLine",) ]
-        good_line = [ [[0,0]], ("GoodLine", 0.99) ]
+        # Mock Executor Context Manager
+        mock_executor = MagicMock()
+        mock_executor_cls.return_value.__enter__.return_value = mock_executor
 
-        mock_ocr_instance.ocr.return_value = [ [good_line, malformed_line] ]
+        # Mock Future
+        mock_future = MagicMock()
+        mock_executor.submit.return_value = mock_future
 
-        # Inject our mock into the scanner
-        scanner.paddle_ocr = mock_ocr_instance
+        # Mock Worker Result
+        # The worker returns {"status": "success", "data": [{"text": "...", "conf": ...}]}
+        worker_result = {
+            "status": "success",
+            "data": [
+                {"text": "GoodLine", "conf": 0.99},
+                {"text": "BadLine", "conf": 0.0}
+            ]
+        }
+        mock_future.result.return_value = worker_result
 
         mock_image = MagicMock()
         mock_image.shape = (100, 100, 3)
@@ -57,24 +71,31 @@ class TestPaddleParsing(unittest.TestCase):
         self.assertIn("GoodLine", result.raw_text)
         self.assertIn("BadLine", result.raw_text)
 
-    def test_paddle_very_malformed_result(self):
+        # Verify timeout was passed
+        mock_future.result.assert_called_with(timeout=60)
+
+    @patch('src.services.scanner.pipeline.ProcessPoolExecutor')
+    @patch('src.services.scanner.pipeline.cv2.imwrite')
+    @patch('src.services.scanner.pipeline.os.remove')
+    def test_paddle_subprocess_timeout(self, mock_remove, mock_imwrite, mock_executor_cls):
         """
-        Verify skipping of completely broken lines.
+        Verify handling of TimeoutError from subprocess.
         """
         scanner = CardScanner()
-        mock_ocr_instance = MagicMock()
+        mock_executor = MagicMock()
+        mock_executor_cls.return_value.__enter__.return_value = mock_executor
+        mock_future = MagicMock()
+        mock_executor.submit.return_value = mock_future
 
-        # Line too short: [ [coords] ] (missing text element)
-        bad_structure = [ [[0,0]] ]
+        # Simulate Timeout
+        mock_future.result.side_effect = TimeoutError()
 
-        mock_ocr_instance.ocr.return_value = [ [bad_structure] ]
-        scanner.paddle_ocr = mock_ocr_instance
         mock_image = MagicMock()
         mock_image.shape = (100, 100, 3)
 
         result = scanner.ocr_scan(mock_image, engine='paddle')
 
-        # Should just be empty string, no crash
+        # Should handle timeout gracefully and return empty result
         self.assertEqual(result.raw_text, "")
 
 if __name__ == '__main__':

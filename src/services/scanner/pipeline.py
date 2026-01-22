@@ -9,10 +9,15 @@ try:
     from langdetect import detect, LangDetectException
     import easyocr
     import torch
-    from paddleocr import PaddleOCR
+    # PaddleOCR import removed from top-level to avoid main process pollution/crashes
+    # from paddleocr import PaddleOCR
     from ultralytics import YOLO
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
 except ImportError:
     pass  # Handled in __init__.py
+
+from src.services.scanner.paddle_worker import run_paddle_ocr
 
 if 'src.services.scanner.models' in locals() or 'src.services.scanner.models' in globals():
     from src.services.scanner.models import OCRResult
@@ -50,7 +55,7 @@ class CardScanner:
 
         # Lazy Init
         self.easyocr_reader = None
-        self.paddle_ocr = None
+        # self.paddle_ocr = None # No longer stored in main process
         self.yolo_model = None
 
     def get_easyocr(self):
@@ -60,23 +65,7 @@ class CardScanner:
             self.easyocr_reader = easyocr.Reader(['en'], gpu=use_gpu)
         return self.easyocr_reader
 
-    def get_paddleocr(self, use_angle_cls=True):
-        # Check if we need to re-init due to config change
-        if self.paddle_ocr is not None:
-             # Basic check: PaddleOCR doesn't expose config easily, so we track it manually?
-             # Or we just assume if it's there we use it.
-             # To support toggling, we need to track the current state.
-             current_use_angle = getattr(self, '_current_paddle_angle_cls', True)
-             if current_use_angle != use_angle_cls:
-                 logger.info(f"Re-initializing PaddleOCR (Angle CLS changed to {use_angle_cls})...")
-                 self.paddle_ocr = None
-
-        if self.paddle_ocr is None:
-            logger.info(f"Initializing PaddleOCR (Angle CLS: {use_angle_cls})...")
-            # suppress console output
-            self.paddle_ocr = PaddleOCR(use_angle_cls=use_angle_cls, lang='en', enable_mkldnn=False)
-            self._current_paddle_angle_cls = use_angle_cls
-        return self.paddle_ocr
+    # get_paddleocr removed - we use subprocess now
 
     def get_yolo(self):
         if self.yolo_model is None:
@@ -272,41 +261,50 @@ class CardScanner:
             image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
 
         if engine == 'paddle':
-            ocr = self.get_paddleocr(use_angle_cls=use_angle_cls)
-            # result = [[[[x1,y1],...], (text, conf)], ...]
+            # Run in subprocess with timeout
             try:
-                # cls param in ocr() call MUST match initialization?
-                # Actually, if initialized with use_angle_cls=False, passing cls=True might be ignored or warn.
-                # Safest is to pass cls=use_angle_cls
-                result = ocr.ocr(image, cls=use_angle_cls)
-            except TypeError:
-                # Fallback for versions where cls arg is unexpected
-                result = ocr.ocr(image)
+                # We need to save image to temp file to pass to subprocess
+                # passing numpy array via pickle is okay but temp file is safer for isolation
+                import tempfile
 
-            # Debug Logging for Result Structure
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"PaddleOCR Result Type: {type(result)}")
-                if isinstance(result, list):
-                    logger.debug(f"PaddleOCR Result Len: {len(result)}")
-                    if len(result) > 0:
-                         logger.debug(f"PaddleOCR Result[0] Type: {type(result[0])}")
+                # Windows-safe temp file handling: Close file immediately so cv2 can write to it
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix='.png')
+                os.close(tmp_fd) # Close file descriptor
 
-            if result and result[0]:
-                for line in result[0]:
-                    # line format expected: [ [[x1,y1],...], ("text", conf) ]
-                    if len(line) < 2 or not isinstance(line[1], (list, tuple)):
-                        continue
+                cv2.imwrite(tmp_path, image)
 
-                    text_element = line[1]
-                    if len(text_element) >= 2:
-                        text = text_element[0]
-                        conf = text_element[1]
-                        raw_text_list.append(text)
-                        confidences.append(conf)
-                    elif len(text_element) == 1:
-                        text = text_element[0]
-                        raw_text_list.append(text)
-                        confidences.append(0.0) # Default confidence
+                try:
+                    # Timeout 60s as requested
+                    with ProcessPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(
+                            run_paddle_ocr,
+                            tmp_path,
+                            use_angle_cls,
+                            False, # enable_mkldnn=False
+                            'en',
+                            'PP-OCRv4' # FORCE v4
+                        )
+                        result_data = future.result(timeout=60)
+
+                    if result_data.get('status') == 'success':
+                        for item in result_data.get('data', []):
+                            raw_text_list.append(item['text'])
+                            confidences.append(item['conf'])
+                    else:
+                        logger.error(f"Paddle Subprocess Error: {result_data.get('message')}")
+                        # Don't crash main app, just log
+
+                except TimeoutError:
+                    logger.error("PaddleOCR Subprocess Timed Out (60s)")
+                except Exception as e:
+                    logger.error(f"PaddleOCR Execution Failed: {e}")
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+
+            except Exception as e:
+                 logger.error(f"PaddleOCR Wrapper Failed: {e}")
+
         else: # easyocr
             reader = self.get_easyocr()
             # mag_ratio=1.5 for better small text
