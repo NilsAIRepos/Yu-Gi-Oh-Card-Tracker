@@ -556,6 +556,8 @@ class ScanPage:
                 if data:
                     with ui.column().classes('p-2 w-full'):
                         ui.label(f"Set ID: {data.get('set_id', 'N/A')}").classes('font-bold text-green-400')
+                        if data.get('card_name'):
+                             ui.label(f"Name: {data.get('card_name')}").classes('font-bold text-blue-400')
                         ui.label(f"Conf: {data.get('set_id_conf', 0):.1f}%").classes('text-sm')
                         ui.label(f"Lang: {data.get('language', 'N/A')}").classes('text-sm')
                         ui.separator().classes('bg-gray-600 my-1')

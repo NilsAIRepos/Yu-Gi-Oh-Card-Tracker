@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+import json
 from typing import Optional, Tuple, List, Dict, Any
 
 # Force legacy keras for keras-ocr compatibility with TF 2.x
@@ -76,6 +77,23 @@ class CardScanner:
         self.keras_pipeline = None
         self.mmocr_inferencer = None
         self.doctr_model = None
+
+        self.valid_set_codes = set()
+        self._load_valid_sets()
+
+    def _load_valid_sets(self):
+        try:
+            path = os.path.join(os.getcwd(), "data", "db", "card_db.json")
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for card in data:
+                        if 'card_sets' in card and card['card_sets']:
+                            for s in card['card_sets']:
+                                self.valid_set_codes.add(s['set_code'])
+            logger.info(f"Loaded {len(self.valid_set_codes)} valid set codes for validation.")
+        except Exception as e:
+            logger.error(f"Failed to load validation data: {e}")
 
     def get_easyocr(self):
         if self.easyocr_reader is None:
@@ -408,7 +426,7 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr') -> 'OCRResult':
+    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr', scope: str = 'full') -> 'OCRResult':
         """
         Runs OCR on the provided image using the specified engine.
         Returns an OCRResult Pydantic model.
@@ -419,6 +437,7 @@ class CardScanner:
         set_id = None
         set_id_conf = 0.0
         lang = "EN"
+        card_name = None
 
         try:
             # Resize for better small text detection (standard strategy)
@@ -465,6 +484,10 @@ class CardScanner:
                                 raw_text_list.append(word.value)
                                 confidences.append(word.confidence)
 
+                # Card Name Extraction (DocTR + Crop)
+                if scope == 'crop':
+                    card_name = self._parse_card_name(result, engine)
+
             elif engine == 'easyocr':
                 reader = self.get_easyocr()
                 results = reader.readtext(image, detail=1, paragraph=False, mag_ratio=1.5)
@@ -477,8 +500,8 @@ class CardScanner:
 
             full_text = " | ".join(raw_text_list)
 
-            # Parse Set ID
-            set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences)
+            # Parse Set ID (pass full_text for global regex fallback)
+            set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences, full_text)
 
         except Exception as e:
             logger.error(f"OCR Scan Error ({engine}): {e}")
@@ -486,43 +509,131 @@ class CardScanner:
 
         return OCRResult(
             engine=engine,
+            scope=scope,
             raw_text=full_text,
             set_id=set_id,
+            card_name=card_name,
             set_id_conf=set_id_conf * 100, # Normalize to 0-100
             language=lang
         )
 
-    def _parse_set_id(self, texts: List[str], confs: List[float]) -> Tuple[Optional[str], float, str]:
-        """Extracts Set ID and Language from text lines."""
-        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
-        matches = []
+    def _parse_card_name(self, raw_result: Any, engine: str) -> Optional[str]:
+        """Extracts card name from OCR result based on position (Top 15%)."""
+        if engine == 'doctr':
+            potential_names = []
+            try:
+                # raw_result is doctr Document
+                for page in raw_result.pages:
+                    for block in page.blocks:
+                        # geometry is ((xmin, ymin), (xmax, ymax)) relative coords
+                        (xmin, ymin), (xmax, ymax) = block.geometry
+                        # Check top Y. Card name is usually very top.
+                        if ymin < 0.15:
+                            # Join lines
+                            block_text = []
+                            for line in block.lines:
+                                line_text = " ".join([w.value for w in line.words])
+                                block_text.append(line_text)
+                            full_block = " ".join(block_text)
+                            potential_names.append(full_block)
+            except Exception as e:
+                logger.error(f"Error parsing card name (DocTR): {e}")
 
+            if potential_names:
+                # Join with space
+                return " ".join(potential_names).strip()
+        return None
+
+    def _parse_set_id(self, texts: List[str], confs: List[float], full_text: str = "") -> Tuple[Optional[str], float, str]:
+        """Extracts Set ID and Language from text lines."""
+        # Groups: 1=Prefix, 2=Region(Optional), 3=Number
+        # Allow letters in Number group for typo detection (S, O, Z, etc.)
+        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z0-9]{0,2})?[-]?([A-Z0-9]{3})')
+
+        candidates = []
+
+        typo_map = {
+            'S': '5', 'I': '1', 'O': '0', 'Z': '7',
+            'B': '8', 'G': '6', 'Q': '0', 'D': '0'
+        }
+
+        def normalize_number_part(txt):
+            res = ""
+            for char in txt:
+                res += typo_map.get(char, char)
+            return res
+
+        def validate_and_score(raw_code, region_part, base_conf):
+            is_valid = raw_code in self.valid_set_codes
+
+            score = base_conf
+            if is_valid:
+                score += 0.5 # Boost for valid DB match
+
+            # Region boost
+            if region_part in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
+                score += 0.2
+
+            return raw_code, score
+
+        # A. Line-by-line Search
         for i, text in enumerate(texts):
-            text = text.strip().upper()
-            clean_text = text.replace(" ", "")
-            m = pattern.search(clean_text)
-            if m:
+            # Try both raw (stripped) and space-merged versions
+            text_stripped = text.strip().upper()
+            text_merged = text_stripped.replace(" ", "")
+
+            # Use a set to avoid duplicates per line
+            line_candidates = set()
+
+            for t_in in [text_stripped, text_merged]:
+                matches = pattern.finditer(t_in)
+                for m in matches:
+                    prefix = m.group(1)
+                    region = m.group(2) if m.group(2) else ""
+                    number_raw = m.group(3)
+
+                    # 1. Direct Match
+                    code_direct = f"{prefix}-{region}{number_raw}" if region else f"{prefix}-{number_raw}"
+                    line_candidates.add((code_direct, region, number_raw))
+
+                    # 2. Typo Fixes
+                    number_fixed = normalize_number_part(number_raw)
+                    region_fixed = region.replace('0', 'O')
+
+                    code_fixed = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
+                    line_candidates.add((code_fixed, region_fixed, number_fixed))
+
+            # Process candidates for this line
+            base_conf = confs[i] if i < len(confs) else 0.5
+
+            for code, region, num_part in line_candidates:
+                # Basic sanity check: Number part must be digits after fix
+                if num_part.isdigit():
+                    v_code, v_score = validate_and_score(code, region, base_conf)
+                    candidates.append((v_code, v_score, region))
+
+        # B. Fallback: Full Text Regex
+        if not candidates and full_text:
+             clean_full = full_text.upper().replace(" ", "")
+             matches = pattern.finditer(clean_full)
+             for m in matches:
                 prefix = m.group(1)
                 region = m.group(2) if m.group(2) else ""
-                number = m.group(3)
+                number_raw = m.group(3)
 
-                found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
+                number_fixed = normalize_number_part(number_raw)
+                region_fixed = region.replace('0', 'O')
 
-                # Handle mismatch in list lengths (defensive)
-                score = 0.0
-                if i < len(confs):
-                    score = confs[i]
+                if number_fixed.isdigit():
+                    code_cand = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
+                    v_code, v_score = validate_and_score(code_cand, region_fixed, 0.4)
+                    candidates.append((v_code, v_score, region_fixed))
 
-                if region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
-                    score += 0.2
-
-                matches.append((found_id, score, region))
-
-        if not matches:
+        if not candidates:
             return None, 0.0, "EN"
 
-        matches.sort(key=lambda x: x[1], reverse=True)
-        best_id, best_score, best_region = matches[0]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_id, best_score, best_region = candidates[0]
 
         lang = "EN"
         if best_region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
