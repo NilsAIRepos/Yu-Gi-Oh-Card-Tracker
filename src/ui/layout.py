@@ -23,7 +23,7 @@ def create_layout(content_function):
                     # Reloading simply via JS since ui.navigate.reload might not be available or reliable in all versions
                     ui.run_javascript('window.location.reload()')
 
-            ui.select(['en', 'de', 'fr', 'it', 'pt'],
+            ui.select(['en', 'de', 'fr', 'it', 'pt', 'es'],
                       label='Language',
                       value=config_manager.get_language(),
                       on_change=change_lang).classes('w-full')
@@ -71,6 +71,21 @@ def create_layout(content_function):
 
             with ui.button('Update Card Database', on_click=update_db, icon='cloud_download').classes('w-full').props('color=secondary'):
                 ui.tooltip('Fetch the latest card data from the remote API')
+
+            async def update_all_dbs():
+                languages = ['en', 'de', 'fr', 'it', 'pt', 'es']
+                for lang in languages:
+                    n = ui.notification(f'Updating {lang}...', type='info', spinner=True, timeout=None)
+                    try:
+                        count = await ygo_service.fetch_card_database(lang)
+                        n.dismiss()
+                        ui.notify(f'Updated {lang}: {count} cards.', type='positive')
+                    except Exception as e:
+                        n.dismiss()
+                        ui.notify(f'Failed to update {lang}: {e}', type='negative')
+
+            with ui.button('Update All Languages DB', on_click=update_all_dbs, icon='cloud_sync').classes('w-full q-mt-sm').props('color=accent'):
+                ui.tooltip('Fetch the latest card data for all supported languages')
 
             async def download_all_imgs():
                 # Dialog for progress
