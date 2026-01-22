@@ -297,10 +297,10 @@ class ScannerManager:
                         cap_url = self._save_debug_image(frame, "manual_cap")
 
                         # Reset previous results to avoid confusion
-                        self.debug_state.t1_full = None
-                        self.debug_state.t1_crop = None
-                        self.debug_state.t2_full = None
-                        self.debug_state.t2_crop = None
+                        for i in range(1, 7):
+                            setattr(self.debug_state, f"t{i}_full", None)
+                            setattr(self.debug_state, f"t{i}_crop", None)
+
                         self.debug_state.warped_image_url = None
                         self.debug_state.roi_viz_url = None
 
@@ -413,9 +413,10 @@ class ScannerManager:
         # Temporary dict to hold results (kept for return value)
         report = {
             "steps": [],
-            "t1_full": None, "t1_crop": None,
-            "t2_full": None, "t2_crop": None
         }
+        for i in range(1, 7):
+            report[f"t{i}_full"] = None
+            report[f"t{i}_crop"] = None
 
         # 1. Preprocessing (Crop)
         set_step("Preprocessing: Contour/Crop")
@@ -455,56 +456,41 @@ class ScannerManager:
 
         check_pause()
 
-        tracks = options.get("tracks", ["easyocr"]) # ['easyocr', 'paddle']
+        tracks = options.get("tracks", ["easyocr"]) # ['easyocr', 'paddle', 'keras', 'mmocr', 'doctr', 'tesseract']
 
-        # 2. Run Tracks
-        # Track 1: EasyOCR
-        if "easyocr" in tracks:
-            try:
-                set_step("Track 1: EasyOCR (Full)")
-                t1_full = self.scanner.ocr_scan(frame, engine='easyocr')
-                t1_full.scope = 'full'
-                report["t1_full"] = t1_full
-                if self.debug_state: self.debug_state.t1_full = t1_full
+        # Config mapping: (engine_key, label_base, field_prefix)
+        track_config = [
+            ("easyocr", "Track 1: EasyOCR", "t1"),
+            ("paddle", "Track 2: PaddleOCR", "t2"),
+            ("keras", "Track 3: Keras-OCR", "t3"),
+            ("mmocr", "Track 4: MMOCR", "t4"),
+            ("doctr", "Track 5: DocTR", "t5"),
+            ("tesseract", "Track 6: Tesseract", "t6"),
+        ]
 
-                check_pause()
+        for engine_key, label_base, field_prefix in track_config:
+            if engine_key in tracks:
+                 try:
+                     check_pause()
+                     set_step(f"{label_base} (Full)")
+                     res_full = self.scanner.ocr_scan(frame, engine=engine_key)
+                     res_full.scope = 'full'
+                     report[f"{field_prefix}_full"] = res_full
+                     if self.debug_state: setattr(self.debug_state, f"{field_prefix}_full", res_full)
 
-                set_step("Track 1: EasyOCR (Crop)")
-                if warped is not None:
-                    t1_crop = self.scanner.ocr_scan(warped, engine='easyocr')
-                    t1_crop.scope = 'crop'
-                    report["t1_crop"] = t1_crop
-                    if self.debug_state: self.debug_state.t1_crop = t1_crop
-            except ScanAborted:
-                raise
-            except Exception as e:
-                logger.error(f"Track 1 (EasyOCR) Failed: {e}")
-                report["steps"].append(ScanStep(name="Track 1", status="FAIL", details=str(e)))
+                     check_pause()
 
-        check_pause()
-
-        # Track 2: PaddleOCR
-        if "paddle" in tracks:
-            try:
-                set_step("Track 2: PaddleOCR (Full)")
-                t2_full = self.scanner.ocr_scan(frame, engine='paddle')
-                t2_full.scope = 'full'
-                report["t2_full"] = t2_full
-                if self.debug_state: self.debug_state.t2_full = t2_full
-
-                check_pause()
-
-                set_step("Track 2: PaddleOCR (Crop)")
-                if warped is not None:
-                    t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
-                    t2_crop.scope = 'crop'
-                    report["t2_crop"] = t2_crop
-                    if self.debug_state: self.debug_state.t2_crop = t2_crop
-            except ScanAborted:
-                raise
-            except Exception as e:
-                logger.error(f"Track 2 (PaddleOCR) Failed: {e}")
-                report["steps"].append(ScanStep(name="Track 2", status="FAIL", details=str(e)))
+                     set_step(f"{label_base} (Crop)")
+                     if warped is not None:
+                         res_crop = self.scanner.ocr_scan(warped, engine=engine_key)
+                         res_crop.scope = 'crop'
+                         report[f"{field_prefix}_crop"] = res_crop
+                         if self.debug_state: setattr(self.debug_state, f"{field_prefix}_crop", res_crop)
+                 except ScanAborted:
+                     raise
+                 except Exception as e:
+                     logger.error(f"{label_base} Failed: {e}")
+                     report["steps"].append(ScanStep(name=label_base, status="FAIL", details=str(e)))
 
         # Extra Analysis on Warped (if available)
         if warped is not None:
@@ -521,12 +507,14 @@ class ScannerManager:
         return report
 
     def _pick_best_result(self, report):
-        """Heuristic to pick the best result from the 4 zones."""
+        """Heuristic to pick the best result from all zones."""
         candidates = []
-        for key in ["t1_full", "t1_crop", "t2_full", "t2_crop"]:
-            res = report.get(key)
-            if res and res.set_id:
-                candidates.append(res)
+        for i in range(1, 7):
+            for scope in ["full", "crop"]:
+                key = f"t{i}_{scope}"
+                res = report.get(key)
+                if res and res.set_id:
+                    candidates.append(res)
 
         if not candidates: return None
         # Sort by confidence

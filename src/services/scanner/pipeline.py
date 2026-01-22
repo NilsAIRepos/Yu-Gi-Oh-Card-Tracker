@@ -3,6 +3,9 @@ import re
 import os
 from typing import Optional, Tuple, List, Dict, Any
 
+# Force legacy keras for keras-ocr compatibility with TF 2.x
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 try:
     import cv2
     import numpy as np
@@ -11,19 +14,22 @@ try:
     import torch
     from paddleocr import PaddleOCR
     from ultralytics import YOLO
+
+    # New Engines
+    import keras_ocr
+    import pytesseract
+    from doctr.io import DocumentFile
+    from doctr.models import ocr_predictor
+    from mmocr.apis import MMOCRInferencer
 except ImportError:
-    pass  # Handled in __init__.py
+    pass  # Handled in __init__.py or via lazy loading checks
 
 if 'src.services.scanner.models' in locals() or 'src.services.scanner.models' in globals():
     from src.services.scanner.models import OCRResult
 else:
-    # Need to handle import if running this file directly or in context where models not loaded
-    # But usually this file is imported by manager which imports models.
-    # To be safe, let's try local import
     try:
         from src.services.scanner.models import OCRResult
     except ImportError:
-        # Fallback for when models is not available (shouldn't happen in prod)
         pass
 
 logger = logging.getLogger(__name__)
@@ -52,6 +58,10 @@ class CardScanner:
         self.easyocr_reader = None
         self.paddle_ocr = None
         self.yolo_model = None
+        self.keras_pipeline = None
+        self.mmocr_inferencer = None
+        self.doctr_model = None
+        # Tesseract is CLI based via pytesseract, no heavy object to init
 
     def get_easyocr(self):
         if self.easyocr_reader is None:
@@ -63,16 +73,43 @@ class CardScanner:
     def get_paddleocr(self):
         if self.paddle_ocr is None:
             logger.info("Initializing PaddleOCR...")
-            # suppress console output
+            # Removed show_log as it causes issues in some versions
             self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
         return self.paddle_ocr
 
     def get_yolo(self):
         if self.yolo_model is None:
-            logger.info("Initializing YOLO model...")
-            # Load a pretrained YOLOv8n model
-            self.yolo_model = YOLO('yolov8n.pt')
+            logger.info("Initializing YOLO model (Small)...")
+            # Upgraded to yolov8s.pt as requested
+            self.yolo_model = YOLO('yolov8s.pt')
         return self.yolo_model
+
+    def get_keras(self):
+        if self.keras_pipeline is None:
+            logger.info("Initializing Keras-OCR...")
+            # Keras-OCR loads models automatically on first use of Pipeline
+            self.keras_pipeline = keras_ocr.pipeline.Pipeline()
+        return self.keras_pipeline
+
+    def get_mmocr(self):
+        if self.mmocr_inferencer is None:
+            logger.info("Initializing MMOCR...")
+            # Using DBNet for detection and SAR for recognition by default
+            try:
+                self.mmocr_inferencer = MMOCRInferencer(det='DBNet', rec='SAR')
+            except Exception as e:
+                logger.error(f"Failed to init MMOCR: {e}")
+                raise
+        return self.mmocr_inferencer
+
+    def get_doctr(self):
+        if self.doctr_model is None:
+            logger.info("Initializing DocTR...")
+            # pretrained=True downloads models if needed
+            self.doctr_model = ocr_predictor(det_arch='db_resnet50', reco_arch='crnn_vgg16_bn', pretrained=True)
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                self.doctr_model = self.doctr_model.cuda()
+        return self.doctr_model
 
     def preprocess_image(self, frame):
         """Basic preprocessing for contour detection."""
@@ -178,13 +215,6 @@ class CardScanner:
         # Run inference
         results = model(frame, verbose=False)
 
-        # Look for the best bounding box
-        # Assuming class 0 is often 'person', but generic YOLOv8n might detect 'book' or 'cell phone' or similar for card.
-        # Actually, standard YOLO classes don't include 'yugioh card'.
-        # But 'book', 'remote', 'cell phone' might be detected.
-        # Ideally we'd retrain, but for now we look for *any* prominent object that fits the AR.
-        # OR we just take the largest detection.
-
         best_box = None
         max_area = 0
         h_img, w_img = frame.shape[:2]
@@ -263,11 +293,9 @@ class CardScanner:
 
             if engine == 'paddle':
                 ocr = self.get_paddleocr()
-                # result = [[[[x1,y1],...], (text, conf)], ...]
                 try:
                     result = ocr.ocr(image, cls=True)
                 except TypeError:
-                    # Fallback for versions where cls arg is unexpected
                     result = ocr.ocr(image)
 
                 if result and result[0]:
@@ -276,9 +304,60 @@ class CardScanner:
                         conf = line[1][1]
                         raw_text_list.append(text)
                         confidences.append(conf)
-            else: # easyocr
+
+            elif engine == 'keras':
+                pipeline = self.get_keras()
+                # Keras-OCR expects a list of images
+                # And it might expect RGB? OpenCV reads BGR.
+                # Keras-OCR uses keras_ocr.tools.read which uses imageio/cv2 logic but pipeline expects numpy array
+                rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                prediction_groups = pipeline.recognize([rgb_img])
+                # prediction_groups[0] contains list of (text, box)
+                for text, box in prediction_groups[0]:
+                    raw_text_list.append(text)
+                    confidences.append(0.9) # Keras-OCR doesn't provide confidence easily, assumes high
+
+            elif engine == 'mmocr':
+                mm = self.get_mmocr()
+                # MMOCRInferencer handles BGR/RGB? Usually BGR via OpenCV is fine.
+                result = mm(image, return_vis=False)
+                # Structure: {'predictions': [{'rec_texts': [...], 'rec_scores': [...]}]}
+                if result and 'predictions' in result:
+                    pred = result['predictions'][0]
+                    texts = pred.get('rec_texts', [])
+                    scores = pred.get('rec_scores', [])
+                    raw_text_list.extend(texts)
+                    confidences.extend(scores)
+
+            elif engine == 'doctr':
+                model = self.get_doctr()
+                # DocTR expects RGB
+                rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                # Pass list of numpy arrays directly to the model
+                result = model([rgb_img])
+                # Iterate result: Document -> Page -> Block -> Line -> Word
+                for page in result.pages:
+                    for block in page.blocks:
+                        for line in block.lines:
+                            for word in line.words:
+                                raw_text_list.append(word.value)
+                                confidences.append(word.confidence)
+
+            elif engine == 'tesseract':
+                # Pytesseract expects RGB
+                rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                data = pytesseract.image_to_data(rgb_img, output_type=pytesseract.Output.DICT)
+                n_boxes = len(data['text'])
+                for i in range(n_boxes):
+                    text = data['text'][i].strip()
+                    if text:
+                        conf = float(data['conf'][i])
+                        if conf > 0: # -1 is often used for empty blocks
+                            raw_text_list.append(text)
+                            confidences.append(conf / 100.0) # Tesseract uses 0-100
+
+            else: # easyocr (default)
                 reader = self.get_easyocr()
-                # mag_ratio=1.5 for better small text
                 results = reader.readtext(image, detail=1, paragraph=False, mag_ratio=1.5)
                 for (bbox, text, conf) in results:
                     raw_text_list.append(text)
@@ -291,7 +370,7 @@ class CardScanner:
 
         except Exception as e:
             logger.error(f"OCR Scan Error ({engine}): {e}")
-            full_text = " | ".join(raw_text_list) # Return whatever we got
+            full_text = " | ".join(raw_text_list)
 
         return OCRResult(
             engine=engine,
@@ -315,11 +394,13 @@ class CardScanner:
                 region = m.group(2) if m.group(2) else ""
                 number = m.group(3)
 
-                # Reconstruct standardized ID
                 found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
 
-                # Score based on OCR confidence + bonus for 'EN' or known region
-                score = confs[i]
+                # Handle mismatch in list lengths (defensive)
+                score = 0.0
+                if i < len(confs):
+                    score = confs[i]
+
                 if region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
                     score += 0.2
 
@@ -331,7 +412,6 @@ class CardScanner:
         matches.sort(key=lambda x: x[1], reverse=True)
         best_id, best_score, best_region = matches[0]
 
-        # Deduce language
         lang = "EN"
         if best_region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
             lang = best_region
@@ -343,7 +423,6 @@ class CardScanner:
         x, y, w, h = self.roi_1st_ed
         roi = warped[y:y+h, x:x+w]
 
-        # Fast scan on ROI
         res = self.ocr_scan(roi, engine=engine)
         text = res.raw_text.lower()
 
@@ -360,17 +439,9 @@ class CardScanner:
                 if suffix in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
                     return suffix
 
-        # Fallback: check full text using langdetect on a sample
-        # We can re-use OCR result from previous steps if available,
-        # but here we might need a quick check if set_id failed.
-        # For efficiency, we assume the caller passes the best info they have.
-        # If we really need to scan:
         try:
-             # Just crop the description box for language detection
              x, y, w, h = self.roi_desc
              roi = warped[y:y+h, x:x+w]
-             # Run a quick OCR? Or assume the caller has full text?
-             # Let's run a quick EasyOCR on description if needed.
              res = self.ocr_scan(roi, engine='easyocr')
              text = res.raw_text
              if len(text) > 5:
