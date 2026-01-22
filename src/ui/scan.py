@@ -232,7 +232,7 @@ class ScanPage:
 
     def on_scanner_event(self, event):
         """Callback for scanner events."""
-        if not self.is_active: return
+        # if not self.is_active: return # REMOVED: Blocking events unnecessarily
 
         # Push state immediately
         if event.snapshot:

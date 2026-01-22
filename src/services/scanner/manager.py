@@ -82,11 +82,15 @@ class ScannerManager:
         with self.listeners_lock:
             if callback not in self.listeners:
                 self.listeners.append(callback)
+                # DEBUG
+                print(f"DEBUG_MGR [{self.instance_id}]: Listener registered. Total: {len(self.listeners)}", flush=True)
 
     def unregister_listener(self, callback: Callable[["ScanEvent"], None]):
         with self.listeners_lock:
             if callback in self.listeners:
                 self.listeners.remove(callback)
+                # DEBUG
+                print(f"DEBUG_MGR [{self.instance_id}]: Listener unregistered. Total: {len(self.listeners)}", flush=True)
 
     def _emit(self, event_type: str, data: Dict[str, Any] = {}):
         """Emits an event to all listeners."""
@@ -100,6 +104,10 @@ class ScannerManager:
         event = ScanEvent(type=event_type, data=data, snapshot=snapshot)
 
         with self.listeners_lock:
+            # DEBUG
+            if event_type in ["scan_finished", "step_complete", "scan_started", "status_update"]:
+                 print(f"DEBUG_MGR [{self.instance_id}]: Emitting {event_type} to {len(self.listeners)} listeners", flush=True)
+
             for listener in self.listeners:
                 try:
                     listener(event)
@@ -411,14 +419,10 @@ class ScannerManager:
         """Runs the configured tracks on the frame."""
         if not self.scanner: return {}
 
-        def check_pause():
-            if self.paused:
-                raise ScanAborted()
+        # Removed check_pause logic to ensure current scan finishes even if paused
 
         def set_step(msg):
             if status_cb: status_cb(msg)
-
-        check_pause()
 
         # Temporary dict to hold results before updating debug_state
         report = {
@@ -438,8 +442,6 @@ class ScannerManager:
         else:
              contour = self.scanner.find_card_contour(frame)
 
-        check_pause()
-
         if contour is not None:
              warped = self.scanner.warp_card(frame, contour)
              report["warped_image_url"] = self._save_debug_image(warped, "warped")
@@ -452,9 +454,6 @@ class ScannerManager:
              roi_viz = self.scanner.debug_draw_rois(warped)
              report["roi_viz_url"] = self._save_debug_image(roi_viz, "roi_viz")
 
-
-        check_pause()
-
         tracks = options.get("tracks", ["easyocr"]) # ['easyocr', 'paddle']
 
         # 2. Run Tracks
@@ -466,20 +465,14 @@ class ScannerManager:
                 t1_full.scope = 'full'
                 report["t1_full"] = t1_full
 
-                check_pause()
-
                 set_step("Track 1: EasyOCR (Crop)")
                 if warped is not None:
                     t1_crop = self.scanner.ocr_scan(warped, engine='easyocr')
                     t1_crop.scope = 'crop'
                     report["t1_crop"] = t1_crop
-            except ScanAborted:
-                raise
             except Exception as e:
                 logger.error(f"Track 1 (EasyOCR) Failed: {e}")
                 report["steps"].append(ScanStep(name="Track 1", status="FAIL", details=str(e)))
-
-        check_pause()
 
         # Track 2: PaddleOCR
         if "paddle" in tracks:
@@ -489,22 +482,17 @@ class ScannerManager:
                 t2_full.scope = 'full'
                 report["t2_full"] = t2_full
 
-                check_pause()
-
                 set_step("Track 2: PaddleOCR (Crop)")
                 if warped is not None:
                     t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
                     t2_crop.scope = 'crop'
                     report["t2_crop"] = t2_crop
-            except ScanAborted:
-                raise
             except Exception as e:
                 logger.error(f"Track 2 (PaddleOCR) Failed: {e}")
                 report["steps"].append(ScanStep(name="Track 2", status="FAIL", details=str(e)))
 
         # Extra Analysis on Warped (if available)
         if warped is not None:
-             check_pause()
              set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
              report['first_edition'] = self.scanner.detect_first_edition(warped)
