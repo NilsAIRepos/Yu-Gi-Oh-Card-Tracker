@@ -248,15 +248,22 @@ class ScannerManager:
         cv2.imwrite(path, image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         return f"/debug/scans/{filename}"
 
-    def _build_art_index(self):
+    def rebuild_art_index(self, force=False):
+        """Public method to rebuild the art index, possibly forcing a refresh."""
+        if not self.scanner: return
+
+        # Run in a separate thread to avoid blocking if called from UI main thread
+        threading.Thread(target=self._build_art_index, args=(force,), daemon=True).start()
+
+    def _build_art_index(self, force=False):
         """Builds or loads the Art Match index from data/images."""
         if not self.scanner: return
 
         index_path = os.path.join(self.debug_dir, "art_index_yolo.pkl")
         img_dir = "data/images"
 
-        # Load Cache
-        if os.path.exists(index_path) and not self.art_index:
+        # Load Cache (if not forced)
+        if not force and os.path.exists(index_path) and not self.art_index:
             try:
                 with open(index_path, "rb") as f:
                     loaded_index = pickle.load(f)
@@ -506,7 +513,7 @@ class ScannerManager:
         if prep_method == "yolo":
              contour = self.scanner.find_card_yolo(frame, model_name='yolov8n-obb.pt')
         elif prep_method == "yolo26":
-             contour = self.scanner.find_card_yolo(frame, model_name='yolo26n-obb.pt')
+             contour = self.scanner.find_card_yolo(frame, model_name='yolo26l-obb.pt')
         else:
              contour = self.scanner.find_card_contour(frame)
 

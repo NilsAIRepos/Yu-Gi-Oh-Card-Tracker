@@ -669,7 +669,9 @@ class ScanPage:
                 # Art Match
                 with ui.row().classes('items-center justify-between w-full'):
                     ui.label("Art Style Match (YOLO):").classes('font-bold text-gray-300')
-                    ui.switch(value=self.art_match_yolo, on_change=lambda e: setattr(self, 'art_match_yolo', e.value)).props('color=purple')
+                    with ui.row().classes('items-center gap-2'):
+                         ui.button(icon='refresh', on_click=lambda: scanner_service.scanner_manager.rebuild_art_index(force=True)).props('flat dense color=purple').tooltip("Rebuild Index")
+                         ui.switch(value=self.art_match_yolo, on_change=lambda e: setattr(self, 'art_match_yolo', e.value)).props('color=purple')
 
                 # Tracks Selector
                 ui.label("Active Tracks:").classes('font-bold text-gray-300')
