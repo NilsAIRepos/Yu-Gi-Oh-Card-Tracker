@@ -486,8 +486,9 @@ class ScannerManager:
         # Track 2: PaddleOCR
         if "paddle" in tracks:
             try:
+                use_angle_cls = options.get("use_angle_cls", True)
                 set_step("Track 2: PaddleOCR (Full)")
-                t2_full = self.scanner.ocr_scan(frame, engine='paddle')
+                t2_full = self.scanner.ocr_scan(frame, engine='paddle', use_angle_cls=use_angle_cls)
                 t2_full.scope = 'full'
                 report["t2_full"] = t2_full
                 if self.debug_state: self.debug_state.t2_full = t2_full
@@ -496,7 +497,7 @@ class ScannerManager:
 
                 set_step("Track 2: PaddleOCR (Crop)")
                 if warped is not None:
-                    t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
+                    t2_crop = self.scanner.ocr_scan(warped, engine='paddle', use_angle_cls=use_angle_cls)
                     t2_crop.scope = 'crop'
                     report["t2_crop"] = t2_crop
                     if self.debug_state: self.debug_state.t2_crop = t2_crop

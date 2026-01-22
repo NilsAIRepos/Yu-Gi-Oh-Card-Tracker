@@ -212,6 +212,7 @@ class ScanPage:
         # Config
         self.ocr_tracks = ['easyocr'] # ['easyocr', 'paddle']
         self.preprocessing_mode = 'classic' # 'classic' or 'yolo'
+        self.use_angle_cls = True # Toggle for PaddleOCR
 
         # Debug Lab State (local cache of Pydantic model dump)
         self.debug_report = {}
@@ -416,7 +417,8 @@ class ScanPage:
 
             options = {
                 "tracks": self.ocr_tracks,
-                "preprocessing": self.preprocessing_mode
+                "preprocessing": self.preprocessing_mode,
+                "use_angle_cls": self.use_angle_cls
             }
             fname = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -451,7 +453,8 @@ class ScanPage:
 
             options = {
                 "tracks": self.ocr_tracks,
-                "preprocessing": self.preprocessing_mode
+                "preprocessing": self.preprocessing_mode,
+                "use_angle_cls": self.use_angle_cls
             }
             # Use dynamic import access
             scanner_service.scanner_manager.submit_scan(content, options, label="Image Upload", filename=filename)
@@ -478,7 +481,8 @@ class ScanPage:
 
             options = {
                 "tracks": self.ocr_tracks,
-                "preprocessing": self.preprocessing_mode
+                "preprocessing": self.preprocessing_mode,
+                "use_angle_cls": self.use_angle_cls
             }
             fname = f"capture_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -652,6 +656,12 @@ class ScanPage:
                 with ui.row():
                     ui.checkbox('EasyOCR', value='easyocr' in self.ocr_tracks, on_change=lambda e: self.toggle_track('easyocr', e.value))
                     ui.checkbox('PaddleOCR', value='paddle' in self.ocr_tracks, on_change=lambda e: self.toggle_track('paddle', e.value))
+
+                # Advanced Settings
+                with ui.expansion('Advanced Settings', icon='settings').classes('w-full bg-gray-800'):
+                     with ui.column().classes('p-2'):
+                         ui.checkbox('Paddle: Use Angle Classifier', value=self.use_angle_cls, on_change=lambda e: setattr(self, 'use_angle_cls', e.value))
+                         ui.label('Disable this if scans are too slow on CPU.').classes('text-xs text-gray-400')
 
                 # Camera Preview
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):

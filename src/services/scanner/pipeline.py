@@ -60,11 +60,22 @@ class CardScanner:
             self.easyocr_reader = easyocr.Reader(['en'], gpu=use_gpu)
         return self.easyocr_reader
 
-    def get_paddleocr(self):
+    def get_paddleocr(self, use_angle_cls=True):
+        # Check if we need to re-init due to config change
+        if self.paddle_ocr is not None:
+             # Basic check: PaddleOCR doesn't expose config easily, so we track it manually?
+             # Or we just assume if it's there we use it.
+             # To support toggling, we need to track the current state.
+             current_use_angle = getattr(self, '_current_paddle_angle_cls', True)
+             if current_use_angle != use_angle_cls:
+                 logger.info(f"Re-initializing PaddleOCR (Angle CLS changed to {use_angle_cls})...")
+                 self.paddle_ocr = None
+
         if self.paddle_ocr is None:
-            logger.info("Initializing PaddleOCR...")
+            logger.info(f"Initializing PaddleOCR (Angle CLS: {use_angle_cls})...")
             # suppress console output
-            self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
+            self.paddle_ocr = PaddleOCR(use_angle_cls=use_angle_cls, lang='en', enable_mkldnn=False)
+            self._current_paddle_angle_cls = use_angle_cls
         return self.paddle_ocr
 
     def get_yolo(self):
@@ -242,7 +253,7 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr') -> 'OCRResult':
+    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr', use_angle_cls: bool = True) -> 'OCRResult':
         """
         Runs OCR on the provided image using the specified engine.
         Returns an OCRResult Pydantic model.
@@ -261,10 +272,13 @@ class CardScanner:
             image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
 
         if engine == 'paddle':
-            ocr = self.get_paddleocr()
+            ocr = self.get_paddleocr(use_angle_cls=use_angle_cls)
             # result = [[[[x1,y1],...], (text, conf)], ...]
             try:
-                result = ocr.ocr(image, cls=True)
+                # cls param in ocr() call MUST match initialization?
+                # Actually, if initialized with use_angle_cls=False, passing cls=True might be ignored or warn.
+                # Safest is to pass cls=use_angle_cls
+                result = ocr.ocr(image, cls=use_angle_cls)
             except TypeError:
                 # Fallback for versions where cls arg is unexpected
                 result = ocr.ocr(image)
