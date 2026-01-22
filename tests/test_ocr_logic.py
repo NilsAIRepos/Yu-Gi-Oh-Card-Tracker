@@ -95,17 +95,17 @@ class TestOCRLogic(unittest.TestCase):
         set_id, score, lang = self.scanner._parse_set_id(texts, confs)
         self.assertEqual(set_id, "ABC-EN007")
 
-    def test_card_name_crop(self):
-        # DocTR result with top text
+    def test_card_name_crop_db_match(self):
+        # DocTR result matching DB, regardless of position
         block = MockBlock("Blue-Eyes White Dragon", geometry=((0, 0.05), (1, 0.10)))
         res = MockDocTRResult([block])
 
         name = self.scanner._parse_card_name(res, 'doctr', scope='crop')
         self.assertEqual(name, "Blue-Eyes White Dragon")
 
-        # Ignore bottom text
-        block_bottom = MockBlock("Effect Monster", geometry=((0, 0.8), (1, 0.9)))
-        res_mixed = MockDocTRResult([block, block_bottom])
+        # Should find it even if mixed with other text
+        block_noise = MockBlock("Effect Monster", geometry=((0, 0.8), (1, 0.9)))
+        res_mixed = MockDocTRResult([block, block_noise])
         name = self.scanner._parse_card_name(res_mixed, 'doctr', scope='crop')
         self.assertEqual(name, "Blue-Eyes White Dragon")
 

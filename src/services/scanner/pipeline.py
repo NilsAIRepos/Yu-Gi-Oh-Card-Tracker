@@ -523,48 +523,30 @@ class CardScanner:
         )
 
     def _parse_card_name(self, raw_result: Any, engine: str, scope: str = 'full') -> Optional[str]:
-        """Extracts card name from OCR result."""
+        """Extracts card name from OCR result using Database Matching."""
         if engine != 'doctr':
              return None
 
         try:
-            # Strategy A: Position Based (Crop only)
-            if scope == 'crop':
-                potential_names = []
-                for page in raw_result.pages:
-                    for block in page.blocks:
-                        (xmin, ymin), (xmax, ymax) = block.geometry
-                        # Check top 15%
-                        if ymin < 0.15:
-                            block_text = []
-                            for line in block.lines:
-                                line_text = " ".join([w.value for w in line.words])
-                                block_text.append(line_text)
-                            full_block = " ".join(block_text)
-                            potential_names.append(full_block)
+            # Strategy: Database Match (Used for both Crop and Full)
+            # Iterate through all blocks/lines and check if they match a known card name
+            for page in raw_result.pages:
+                for block in page.blocks:
+                    block_text = []
+                    for line in block.lines:
+                        line_text = " ".join([w.value for w in line.words])
+                        block_text.append(line_text)
 
-                if potential_names:
-                    return " ".join(potential_names).strip()
+                    full_block = " ".join(block_text).strip()
 
-            # Strategy B: Database Match (Full Frame)
-            elif scope == 'full':
-                 for page in raw_result.pages:
-                    for block in page.blocks:
-                        block_text = []
-                        for line in block.lines:
-                            line_text = " ".join([w.value for w in line.words])
-                            block_text.append(line_text)
+                    # Exact match check (case-insensitive)
+                    if full_block.lower() in self.valid_card_names:
+                        return full_block # Return original casing
 
-                        full_block = " ".join(block_text).strip()
-
-                        # Exact match check (case-insensitive)
-                        if full_block.lower() in self.valid_card_names:
-                            return full_block # Return original casing
-
-                        # Fallback: Check individual lines if block contains noise
-                        for line_txt in block_text:
-                             if line_txt.strip().lower() in self.valid_card_names:
-                                 return line_txt.strip()
+                    # Fallback: Check individual lines if block contains noise
+                    for line_txt in block_text:
+                            if line_txt.strip().lower() in self.valid_card_names:
+                                return line_txt.strip()
 
         except Exception as e:
             logger.error(f"Error parsing card name (DocTR): {e}")
