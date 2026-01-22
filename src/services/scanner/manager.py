@@ -410,7 +410,7 @@ class ScannerManager:
 
         check_pause()
 
-        # Temporary dict to hold results before updating debug_state
+        # Temporary dict to hold results (kept for return value)
         report = {
             "steps": [],
             "t1_full": None, "t1_crop": None,
@@ -432,15 +432,25 @@ class ScannerManager:
 
         if contour is not None:
              warped = self.scanner.warp_card(frame, contour)
-             report["warped_image_url"] = self._save_debug_image(warped, "warped")
+             url = self._save_debug_image(warped, "warped")
+             report["warped_image_url"] = url
+             if self.debug_state: self.debug_state.warped_image_url = url
+
              roi_viz = self.scanner.debug_draw_rois(warped)
-             report["roi_viz_url"] = self._save_debug_image(roi_viz, "roi_viz")
+             url_roi = self._save_debug_image(roi_viz, "roi_viz")
+             report["roi_viz_url"] = url_roi
+             if self.debug_state: self.debug_state.roi_viz_url = url_roi
         else:
              report["steps"].append(ScanStep(name="Contour", status="FAIL", details=f"{prep_method} failed"))
              warped = self.scanner.get_fallback_crop(frame) # Fallback for crop tracks
-             report["warped_image_url"] = self._save_debug_image(warped, "warped")
+             url = self._save_debug_image(warped, "warped")
+             report["warped_image_url"] = url
+             if self.debug_state: self.debug_state.warped_image_url = url
+
              roi_viz = self.scanner.debug_draw_rois(warped)
-             report["roi_viz_url"] = self._save_debug_image(roi_viz, "roi_viz")
+             url_roi = self._save_debug_image(roi_viz, "roi_viz")
+             report["roi_viz_url"] = url_roi
+             if self.debug_state: self.debug_state.roi_viz_url = url_roi
 
 
         check_pause()
@@ -455,6 +465,7 @@ class ScannerManager:
                 t1_full = self.scanner.ocr_scan(frame, engine='easyocr')
                 t1_full.scope = 'full'
                 report["t1_full"] = t1_full
+                if self.debug_state: self.debug_state.t1_full = t1_full
 
                 check_pause()
 
@@ -463,6 +474,7 @@ class ScannerManager:
                     t1_crop = self.scanner.ocr_scan(warped, engine='easyocr')
                     t1_crop.scope = 'crop'
                     report["t1_crop"] = t1_crop
+                    if self.debug_state: self.debug_state.t1_crop = t1_crop
             except ScanAborted:
                 raise
             except Exception as e:
@@ -478,6 +490,7 @@ class ScannerManager:
                 t2_full = self.scanner.ocr_scan(frame, engine='paddle')
                 t2_full.scope = 'full'
                 report["t2_full"] = t2_full
+                if self.debug_state: self.debug_state.t2_full = t2_full
 
                 check_pause()
 
@@ -486,6 +499,7 @@ class ScannerManager:
                     t2_crop = self.scanner.ocr_scan(warped, engine='paddle')
                     t2_crop.scope = 'crop'
                     report["t2_crop"] = t2_crop
+                    if self.debug_state: self.debug_state.t2_crop = t2_crop
             except ScanAborted:
                 raise
             except Exception as e:
@@ -499,6 +513,10 @@ class ScannerManager:
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
              report['first_edition'] = self.scanner.detect_first_edition(warped)
              report['warped_image_data'] = warped # Pass along for Art Match
+
+             if self.debug_state:
+                 if hasattr(self.debug_state, 'visual_rarity'): self.debug_state.visual_rarity = report['visual_rarity']
+                 if hasattr(self.debug_state, 'first_edition'): self.debug_state.first_edition = report['first_edition']
 
         return report
 
