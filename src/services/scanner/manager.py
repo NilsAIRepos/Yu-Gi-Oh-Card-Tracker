@@ -269,28 +269,41 @@ class ScannerManager:
         if not os.path.exists(img_dir):
             return
 
-        logger.info("Building Art Index (YOLO)...")
-        files = os.listdir(img_dir)
+        logger.info(f"Building Art Index (YOLO) from {img_dir}...")
+        try:
+            files = os.listdir(img_dir)
+        except OSError as e:
+            logger.error(f"Could not list {img_dir}: {e}")
+            return
+
         count = 0
         new_index = {}
+
+        # Check dependencies
+        if cv2 is None:
+            logger.error("CV2 is not available. Skipping Art Index.")
+            return
 
         for f in files:
             if not f.lower().endswith(('.jpg', '.png', '.jpeg')): continue
             path = os.path.join(img_dir, f)
             try:
-                # We need to read image. Manager has cv2 imported conditionally.
-                if cv2 is None: break
-
                 img = cv2.imread(path)
-                if img is None: continue
+                if img is None:
+                    logger.warning(f"Failed to read image: {f}")
+                    continue
 
                 # extract_yolo_features(image, model_name='yolo26n-cls.pt')
                 feat = self.scanner.extract_yolo_features(img)
                 if feat is not None:
                     new_index[f] = feat
                     count += 1
+                else:
+                    # Log failure to help debug (throttled?)
+                    if count < 5:
+                        logger.warning(f"Feature extraction failed for {f}")
 
-                if count % 50 == 0:
+                if count > 0 and count % 50 == 0:
                     logger.info(f"Indexed {count} images...")
 
             except Exception as e:

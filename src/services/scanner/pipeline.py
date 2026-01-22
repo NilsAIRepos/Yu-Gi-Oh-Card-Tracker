@@ -9,11 +9,26 @@ os.environ["TF_USE_LEGACY_KERAS"] = "1"
 try:
     import cv2
     import numpy as np
-    from langdetect import detect, LangDetectException
-    import easyocr
+except ImportError:
+    pass
+
+try:
     import torch
     from ultralytics import YOLO
+except ImportError:
+    pass
 
+try:
+    from langdetect import detect, LangDetectException
+except ImportError:
+    pass
+
+try:
+    import easyocr
+except ImportError:
+    pass
+
+try:
     # New Engines
     import keras_ocr
     from doctr.io import DocumentFile
