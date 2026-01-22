@@ -664,7 +664,7 @@ class ScanPage:
                 # Preprocessing Toggle
                 ui.label("Preprocessing Strategy:").classes('font-bold text-gray-300')
                 with ui.row():
-                    ui.radio(['classic', 'yolo', 'yolo26'], value=self.preprocessing_mode, on_change=lambda e: setattr(self, 'preprocessing_mode', e.value)).props('inline')
+                    ui.radio(['classic', 'classic_white_bg', 'yolo', 'yolo26'], value=self.preprocessing_mode, on_change=lambda e: setattr(self, 'preprocessing_mode', e.value)).props('inline')
 
                 # Art Match
                 with ui.row().classes('items-center justify-between w-full'):

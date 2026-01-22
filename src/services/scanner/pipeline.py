@@ -331,6 +331,79 @@ class CardScanner:
 
         return None
 
+    def find_card_contour_white_bg(self, frame) -> Optional[np.ndarray]:
+        """
+        Optimized contour detection for white backgrounds.
+        Uses inverted thresholding to isolate darker cards from light background.
+        """
+        # 1. Convert to Gray
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # 2. Gaussian Blur
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        # 3. Inverted Threshold (Background white -> Black, Card dark -> White)
+        _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # 4. Morphological Cleanup
+        kernel = np.ones((5, 5), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        # 5. Find Contours
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return None
+
+        h_img, w_img = frame.shape[:2]
+        total_area = h_img * w_img
+        candidates = []
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+
+            # Ignore small noise/internal boxes (increased threshold compared to classic)
+            if area < 50000:
+                continue
+
+            # Ignore massive blobs (e.g. lighting shadows covering whole frame)
+            if area > total_area * 0.95:
+                continue
+
+            hull = cv2.convexHull(cnt)
+            peri = cv2.arcLength(hull, True)
+            approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
+
+            if len(approx) == 4:
+                rect_cnt = approx
+            else:
+                rect = cv2.minAreaRect(hull)
+                box = cv2.boxPoints(rect)
+                rect_cnt = np.int32(box)
+
+            # Aspect Ratio Check
+            rect = cv2.minAreaRect(rect_cnt)
+            (center), (w, h), angle = rect
+
+            if w == 0 or h == 0: continue
+
+            ar = w / h
+            if ar > 1: ar = 1 / ar
+
+            # Strict AR filter for cards
+            if 0.55 < ar < 0.85:
+                # Store (Area, Contour)
+                candidates.append((area, rect_cnt))
+
+        # Sort by Area Descending (Largest valid object is likely the card, not the art box)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        if candidates:
+            # Return the largest candidate
+            return candidates[0][1].reshape(4, 1, 2)
+
+        return None
+
     def find_card_yolo(self, frame, model_name='yolov8l.pt') -> Optional[np.ndarray]:
         """Finds card using YOLO object detection (Supports AABB and OBB)."""
         model = self.get_yolo(model_name)

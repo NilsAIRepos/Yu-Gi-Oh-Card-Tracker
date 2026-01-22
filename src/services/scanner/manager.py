@@ -514,6 +514,8 @@ class ScannerManager:
              contour = self.scanner.find_card_yolo(frame, model_name='yolov8n-obb.pt')
         elif prep_method == "yolo26":
              contour = self.scanner.find_card_yolo(frame, model_name='yolo26l-obb.pt')
+        elif prep_method == "classic_white_bg":
+             contour = self.scanner.find_card_contour_white_bg(frame)
         else:
              contour = self.scanner.find_card_contour(frame)
 
