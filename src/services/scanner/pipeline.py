@@ -356,14 +356,8 @@ class CardScanner:
                     if area > 25000:
                          if area > max_area:
                              max_area = area
-                             # Regularize with minAreaRect to match Geometric quality
-                             # This removes jitter and enforces a perfect rectangle
-                             rect = cv2.minAreaRect(cnt_temp)
-                             box = cv2.boxPoints(rect)
-                             box = np.int32(box)
-
                              # Ensure shape is (4, 1, 2)
-                             best_box = box.reshape(4, 1, 2)
+                             best_box = cnt_temp.reshape(4, 1, 2)
 
             # Fallback to Axis-Aligned Boxes if no OBB found (or mixed usage)
             elif result.boxes is not None:
@@ -391,46 +385,17 @@ class CardScanner:
 
         return best_box
 
-    def order_points(self, pts):
-        """
-         robustly orders points (TL, TR, BR, BL) using Euclidean distance approach
-         to avoid issues with rotated rectangles (diamond shapes).
-         Enforces Portrait orientation to prevent aspect ratio distortion.
-        """
-        # Sort based on x-coordinates
-        xSorted = pts[np.argsort(pts[:, 0]), :]
-
-        # Grab left-most and right-most
-        leftMost = xSorted[:2, :]
-        rightMost = xSorted[2:, :]
-
-        # Sort left-most by y-coordinate (TL is the one with smaller y)
-        leftMost = leftMost[np.argsort(leftMost[:, 1]), :]
-        (tl, bl) = leftMost
-
-        # Euclidean distance from tl to right-most points
-        # The point with the max distance is the bottom-right (diagonal)
-        D = np.linalg.norm(rightMost - tl, axis=1)
-        (br, tr) = rightMost[np.argsort(D)[::-1], :]
-
-        ordered = np.array([tl, tr, br, bl], dtype="float32")
-
-        # Check Aspect Ratio and enforce Portrait (Width < Height)
-        # Width: Distance(TL, TR)
-        width = np.linalg.norm(tr - tl)
-        # Height: Distance(TL, BL)
-        height = np.linalg.norm(bl - tl)
-
-        if width > height:
-            # Shift: [TL, TR, BR, BL] -> [BL, TL, TR, BR]
-            # This makes the "Left" side the new "Top", effectively rotating 90 deg clockwise
-            ordered = np.roll(ordered, 1, axis=0)
-
-        return ordered
-
     def warp_card(self, frame, contour) -> np.ndarray:
         pts = contour.reshape(4, 2)
-        rect = self.order_points(pts)
+        rect = np.zeros((4, 2), dtype="float32")
+
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
 
         dst = np.array([
             [0, 0],
