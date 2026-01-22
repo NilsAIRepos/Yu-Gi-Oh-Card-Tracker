@@ -532,6 +532,32 @@ class ScanPage:
 
     @ui.refreshable
     def render_debug_pipeline_results(self):
+        # Match Results
+        match_info = self.debug_report.get('match_info')
+        if match_info:
+             with ui.card().classes('w-full bg-gray-800 border border-green-500 mb-4'):
+                 ui.label("Smart Match Result").classes('text-xl font-bold text-green-400')
+
+                 best = match_info.get('best_match')
+                 if best:
+                     with ui.row().classes('items-center gap-4'):
+                         if best.get('image_path'):
+                             ui.image(f"/images/{os.path.basename(best['image_path'])}").classes('w-16 h-24 object-contain')
+                         with ui.column():
+                             ui.label(best.get('name')).classes('font-bold text-lg')
+                             ui.label(f"{best.get('set_code')} | {best.get('rarity')}").classes('text-sm')
+                             ui.label(f"Confidence: {best.get('confidence', 0):.1f}%").classes('text-xs text-gray-400')
+                             ui.label(f"Reason: {best.get('reason')}").classes('text-[10px] text-gray-500 italic')
+                 else:
+                     ui.label("No confident match found.").classes('text-gray-400 italic')
+
+                 if match_info.get('ambiguous'):
+                     with ui.row().classes('w-full items-center justify-between bg-yellow-900 p-2 rounded mt-2'):
+                         with ui.row().classes('items-center gap-2'):
+                             ui.icon('warning', color='warning')
+                             ui.label(f"Ambiguous! ({len(match_info.get('candidates', []))} candidates)").classes('font-bold text-yellow-200')
+                         ui.button("Resolve", on_click=self.open_resolve_dialog).props('color=warning size=sm text-color=black')
+
         # 4 Collapsable Zones
 
         def render_zone(title, key):
@@ -664,6 +690,15 @@ class ScanPage:
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
                     ui.html('<video id="debug-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
 
+                # Matching Settings
+                ui.separator().classes('bg-gray-600')
+                ui.label("Matching Confidence Cutoff:").classes('font-bold text-gray-300')
+
+                # Bind to manager.matcher.min_confidence if available
+                if getattr(scanner_service.scanner_manager, 'matcher', None):
+                     ui.slider(min=0, max=100, step=1, value=scanner_service.scanner_manager.matcher.min_confidence,
+                               on_change=lambda e: setattr(scanner_service.scanner_manager.matcher, 'min_confidence', e.value)).props('label-always color=green')
+
                 # Controls
                 with ui.row().classes('w-full gap-2'):
                     ui.button("Capture & Analyze", on_click=self.handle_debug_capture, icon='camera_alt').classes('flex-grow bg-accent text-black font-bold')
@@ -691,6 +726,38 @@ class ScanPage:
             if track not in self.ocr_tracks: self.ocr_tracks.append(track)
         else:
             if track in self.ocr_tracks: self.ocr_tracks.remove(track)
+
+    def open_resolve_dialog(self):
+        match_info = self.debug_report.get('match_info')
+        if not match_info: return
+
+        candidates = match_info.get('candidates', [])
+
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-4xl bg-gray-900 border border-gray-700'):
+            ui.label("Resolve Ambiguity").classes('text-xl font-bold mb-4 text-primary')
+            ui.label("Select the correct card from the candidates below:").classes('text-gray-400 mb-2')
+
+            with ui.grid().classes('grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 w-full'):
+                for cand in candidates:
+                    with ui.card().classes('cursor-pointer hover:bg-gray-800 border border-gray-600').on('click', lambda _, c=cand: self.resolve_candidate(c, dialog)):
+                        with ui.row().classes('gap-2 items-start'):
+                            if cand.get('image_path'):
+                                ui.image(f"/images/{os.path.basename(cand['image_path'])}").classes('w-16 h-24 object-contain')
+                            with ui.column().classes('gap-1'):
+                                ui.label(cand.get('name')).classes('font-bold text-sm leading-tight')
+                                ui.label(f"{cand.get('set_code')}").classes('text-xs text-blue-300 font-mono')
+                                ui.label(cand.get('rarity')).classes('text-[10px] text-gray-400')
+                                ui.label(f"{cand.get('confidence'):.1f}%").classes('text-xs text-green-400 font-bold')
+                                ui.label(cand.get('reason')).classes('text-[10px] text-gray-500 italic break-words')
+
+            with ui.row().classes('w-full justify-end mt-4'):
+                ui.button('Cancel', on_click=dialog.close).props('flat color=negative')
+        dialog.open()
+
+    def resolve_candidate(self, candidate, dialog):
+        dialog.close()
+        scanner_service.scanner_manager.confirm_match(candidate)
+        ui.notify(f"Confirmed: {candidate.get('name')}", type='positive')
 
 def scan_page():
     page = ScanPage()

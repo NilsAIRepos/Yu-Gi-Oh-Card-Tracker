@@ -393,6 +393,10 @@ class YugiohService:
         logger.info(f"Deleted variant {variant_id} from card {card_id}")
         return True
 
+    def get_cards_from_cache(self, language: str = "en") -> Optional[List[ApiCard]]:
+        """Synchronously retrieves cards from cache if available."""
+        return self._cards_cache.get(language)
+
     async def load_card_database(self, language: str = "en") -> List[ApiCard]:
         """Loads the database from disk. If missing, fetches it."""
         if language in self._cards_cache:

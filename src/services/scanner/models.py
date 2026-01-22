@@ -22,6 +22,20 @@ class ScanRequest(BaseModel):
     type: str = "Manual Scan"
     filename: str
 
+class MatchCandidate(BaseModel):
+    card_id: int
+    name: str
+    set_code: str
+    rarity: str
+    image_path: Optional[str] = None
+    confidence: float
+    reason: str
+
+class MatchResultInfo(BaseModel):
+    candidates: List[MatchCandidate] = []
+    best_match: Optional[MatchCandidate] = None
+    ambiguous: bool = False
+
 class ScanResult(BaseModel):
     """Final result for consumption by the UI/DB"""
     name: str = "Unknown Card"
@@ -31,11 +45,13 @@ class ScanResult(BaseModel):
     visual_rarity: str = "Common"
     language: str = "EN"
     first_edition: bool = False
+    edition: str = "Unlimited"
     ocr_conf: float = 0.0
     image_path: Optional[str] = None
     match_score: int = 0
     # For UI display
     raw_ocr: Optional[List[OCRResult]] = None
+    match_info: Optional[MatchResultInfo] = None
 
 class ScanDebugReport(BaseModel):
     """Comprehensive state for the Debug Lab"""
@@ -58,7 +74,8 @@ class ScanDebugReport(BaseModel):
     t4_full: Optional[OCRResult] = None # MMOCR
     t4_crop: Optional[OCRResult] = None
 
-    # Removed t5 and t6
+    # Match Results
+    match_info: Optional[MatchResultInfo] = None
 
     # Metadata
     preprocessing: str = "classic"

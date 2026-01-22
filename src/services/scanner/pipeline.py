@@ -357,6 +357,17 @@ class CardScanner:
             # Parse Set ID
             set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences)
 
+            # Refine Language with Description Analysis if EN and sufficient text
+            if lang == "EN" and len(full_text) > 30:
+                 try:
+                     # Attempt to detect language from the full text blob
+                     # This usually works if the text contains the description
+                     det = detect(full_text).upper()
+                     if det in ['DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
+                         lang = det
+                 except Exception:
+                     pass
+
         except Exception as e:
             logger.error(f"OCR Scan Error ({engine}): {e}")
             full_text = " | ".join(raw_text_list)
@@ -415,9 +426,23 @@ class CardScanner:
         res = self.ocr_scan(roi, engine=engine)
         text = res.raw_text.lower()
 
-        if '1st' in text or 'edition' in text:
+        if '1st' in text:
             return True
         return False
+
+    def detect_edition_string(self, warped, engine='easyocr') -> str:
+        """Returns '1st Edition', 'Limited Edition', or 'Unlimited'."""
+        x, y, w, h = self.roi_1st_ed
+        roi = warped[y:y+h, x:x+w]
+
+        res = self.ocr_scan(roi, engine=engine)
+        text = res.raw_text.lower()
+
+        if '1st' in text:
+            return "1st Edition"
+        if 'limit' in text:
+            return "Limited Edition"
+        return "Unlimited"
 
     def detect_language(self, warped, set_id: Optional[str]) -> str:
         """Determines card language."""

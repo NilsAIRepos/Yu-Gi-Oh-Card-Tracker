@@ -36,6 +36,7 @@ else:
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
+from src.services.scanner.matcher import CardMatcher
 from nicegui import run
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ class ScannerManager:
 
         # Debug State (using Model)
         self.debug_state = ScanDebugReport() if SCANNER_AVAILABLE else None
+
+        # Matcher
+        self.matcher = CardMatcher(ygo_service) if SCANNER_AVAILABLE else None
 
         # Event System
         self.listeners: List[Callable[[ScanEvent], None]] = []
@@ -180,6 +184,31 @@ class ScannerManager:
             self.resume()
         else:
             self.pause()
+
+    def confirm_match(self, match_candidate_dict: Dict[str, Any]):
+        """Manually confirms a match candidate (e.g. from UI resolution)."""
+        if not SCANNER_AVAILABLE: return
+
+        try:
+            # Reconstruct ScanResult from dict
+            res = ScanResult(
+                 name=match_candidate_dict.get('name', 'Unknown'),
+                 card_id=match_candidate_dict.get('card_id'),
+                 set_code=match_candidate_dict.get('set_code'),
+                 rarity=match_candidate_dict.get('rarity'),
+                 visual_rarity='User Confirmed',
+                 first_edition=False,
+                 edition="Unlimited",
+                 image_path=match_candidate_dict.get('image_path'),
+                 match_score=int(match_candidate_dict.get('confidence', 0))
+            )
+
+            self.result_queue.put(res)
+            self._emit("result_ready", {"set_code": res.set_code})
+            logger.info(f"User confirmed match: {res.set_code}")
+
+        except Exception as e:
+            logger.error(f"Error confirming match: {e}")
 
     def is_paused(self) -> bool:
         return self.paused
@@ -326,24 +355,59 @@ class ScannerManager:
                              if hasattr(self.debug_state, key):
                                  setattr(self.debug_state, key, value)
 
-                        # If we found a card, push to result queue
-                        # We pick the best result.
-                        best_res = self._pick_best_result(report)
-                        if best_res:
-                            # Enhance with visual traits if warped image exists
-                            warped = report.get('warped_image_data') # Not in model, but returned by _process_scan
+                        # Intelligent Matching
+                        warped = report.get('warped_image_data')
+                        if self.matcher and self.debug_state:
+                             # Use asyncio.run to execute async matcher in this thread
+                             try:
+                                 self._log_debug("Matching candidates...")
+                                 update_step("Matching")
 
-                            # Construct lookup data (Internal structure for LookupQueue)
-                            lookup_data = {
-                                "set_code": best_res.set_id,
-                                "language": best_res.language,
-                                "ocr_conf": best_res.set_id_conf,
-                                "rarity": "Unknown",
-                                "visual_rarity": report.get('visual_rarity', 'Common'),
-                                "first_edition": report.get('first_edition', False),
-                                "warped_image": warped
-                            }
-                            self.lookup_queue.put(lookup_data)
+                                 # Convert report to dict for matcher (handles Pydantic objects)
+                                 report_dump = {}
+                                 for k, v in report.items():
+                                     if hasattr(v, 'model_dump'):
+                                         report_dump[k] = v.model_dump()
+                                     else:
+                                         report_dump[k] = v
+
+                                 match_info = self.matcher.match_card(report_dump)
+                                 self.debug_state.match_info = match_info
+
+                                 if match_info.best_match and not match_info.ambiguous:
+                                     self._log_debug(f"Matched: {match_info.best_match.set_code} ({match_info.best_match.confidence:.1f}%)")
+
+                                     # Create ScanResult and push to Queue
+                                     bm = match_info.best_match
+                                     res = ScanResult(
+                                         name=bm.name,
+                                         card_id=bm.card_id,
+                                         set_code=bm.set_code,
+                                         rarity=bm.rarity,
+                                         visual_rarity=report.get('visual_rarity', 'Unknown'),
+                                         first_edition=report.get('first_edition', False),
+                                         edition=report.get('edition', "Unlimited"),
+                                         image_path=bm.image_path,
+                                         match_score=int(bm.confidence),
+                                         match_info=match_info
+                                     )
+
+                                     # Art Match Refinement (optional, could use warped image)
+                                     # match_artwork is synchronous CV task.
+                                     # But we can skip it for now or do it later if needed.
+                                     # The matcher relies on text which is fast.
+
+                                     self.result_queue.put(res)
+                                     self._emit("result_ready", {"set_code": bm.set_code})
+
+                                 elif match_info.ambiguous:
+                                      self._log_debug(f"Ambiguous Match ({len(match_info.candidates)} candidates)")
+                                 else:
+                                      self._log_debug("No strong match found")
+
+                             except Exception as match_err:
+                                 logger.error(f"Matching Error: {match_err}")
+                                 self._log_debug(f"Match Error: {str(match_err)}")
 
                         logger.info(f"Finished scan for: {filename}")
                         self._log_debug(f"Finished: {filename}")
@@ -498,6 +562,7 @@ class ScannerManager:
              set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
              report['first_edition'] = self.scanner.detect_first_edition(warped)
+             report['edition'] = self.scanner.detect_edition_string(warped)
              report['warped_image_data'] = warped # Pass along for Art Match
 
              if self.debug_state:
