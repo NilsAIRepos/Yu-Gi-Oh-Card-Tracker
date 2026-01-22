@@ -279,10 +279,20 @@ class CardScanner:
 
             if result and result[0]:
                 for line in result[0]:
-                    text = line[1][0]
-                    conf = line[1][1]
-                    raw_text_list.append(text)
-                    confidences.append(conf)
+                    # line format expected: [ [[x1,y1],...], ("text", conf) ]
+                    if len(line) < 2 or not isinstance(line[1], (list, tuple)):
+                        continue
+
+                    text_element = line[1]
+                    if len(text_element) >= 2:
+                        text = text_element[0]
+                        conf = text_element[1]
+                        raw_text_list.append(text)
+                        confidences.append(conf)
+                    elif len(text_element) == 1:
+                        text = text_element[0]
+                        raw_text_list.append(text)
+                        confidences.append(0.0) # Default confidence
         else: # easyocr
             reader = self.get_easyocr()
             # mag_ratio=1.5 for better small text
