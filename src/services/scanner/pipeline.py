@@ -209,7 +209,7 @@ class CardScanner:
         return None
 
     def find_card_yolo(self, frame, model_name='yolov8l.pt') -> Optional[np.ndarray]:
-        """Finds card using YOLO object detection."""
+        """Finds card using YOLO object detection (Supports AABB and OBB)."""
         model = self.get_yolo(model_name)
         # Run inference
         results = model(frame, verbose=False)
@@ -219,34 +219,48 @@ class CardScanner:
         h_img, w_img = frame.shape[:2]
 
         for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                w = x2 - x1
-                h = y2 - y1
-                area = w * h
+            # Check for OBB results first
+            if result.obb is not None:
+                for obb in result.obb:
+                    # OBB format: xyxyxyxy (4 points)
+                    # shape: (1, 4, 2)
+                    points = obb.xyxyxyxy.cpu().numpy().reshape(4, 2)
 
-                ar = w / h
-                if ar > 1: ar = 1 / ar
+                    # Calculate Area via Polygon
+                    cnt_temp = points.astype(np.int32)
+                    area = cv2.contourArea(cnt_temp)
 
-                # Check AR match
-                if 0.55 < ar < 0.85 and area > 25000:
-                    if area > max_area:
-                        max_area = area
-                        best_box = [x1, y1, x2, y2]
+                    if area > 25000:
+                         if area > max_area:
+                             max_area = area
+                             # Ensure shape is (4, 1, 2)
+                             best_box = cnt_temp.reshape(4, 1, 2)
 
-        if best_box:
-            x1, y1, x2, y2 = best_box
-            # Convert to contour format (TL, TR, BR, BL)
-            cnt = np.array([
-                [[x1, y1]],
-                [[x2, y1]],
-                [[x2, y2]],
-                [[x1, y2]]
-            ], dtype=np.int32)
-            return cnt
+            # Fallback to Axis-Aligned Boxes if no OBB found (or mixed usage)
+            elif result.boxes is not None:
+                boxes = result.boxes
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    w = x2 - x1
+                    h = y2 - y1
+                    area = w * h
 
-        return None
+                    ar = w / h
+                    if ar > 1: ar = 1 / ar
+
+                    # Check AR match
+                    if 0.55 < ar < 0.85 and area > 25000:
+                        if area > max_area:
+                            max_area = area
+                            # Convert AABB to contour (TL, TR, BR, BL)
+                            best_box = np.array([
+                                [[x1, y1]],
+                                [[x2, y1]],
+                                [[x2, y2]],
+                                [[x1, y2]]
+                            ], dtype=np.int32)
+
+        return best_box
 
     def warp_card(self, frame, contour) -> np.ndarray:
         pts = contour.reshape(4, 2)
