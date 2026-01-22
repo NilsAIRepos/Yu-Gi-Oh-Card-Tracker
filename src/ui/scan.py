@@ -296,7 +296,7 @@ class ScanPage:
             if self.watchdog_counter >= 10:
                 self.watchdog_counter = 0
                 snapshot = scanner_service.scanner_manager.get_debug_snapshot()
-                if snapshot:
+                if snapshot and snapshot != self.debug_report:
                     self.debug_report = snapshot
                     self.refresh_debug_ui()
 
