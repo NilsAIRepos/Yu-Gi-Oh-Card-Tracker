@@ -18,6 +18,7 @@ from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
 from src.services.ygo_api import ygo_service
 from src.ui.components.ambiguity_dialog import AmbiguityDialog
 from src.core import config_manager
+from src.core.utils import generate_variant_id
 
 logger = logging.getLogger(__name__)
 
@@ -418,21 +419,35 @@ class ScanPage:
                                        if v.set_code == item['set_code'] and v.rarity == item['rarity']), None)
 
                 if not target_variant:
-                    api_card = ygo_service.get_card(item['card_id'])
-                    variant_id = str(item['card_id'])
-                    image_id = None
+                    # Logic to determine new variant ID and Image ID
+                    variant_id = None
+                    image_id = item.get('image_id') # Prioritize user selection from Ambiguity Dialog
 
-                    # If we have variant info from matching
+                    # 1. If exact variant ID was matched by scanner
                     if item.get('variant_id'):
-                         variant_id = item['variant_id']
-                         image_id = item.get('image_id')
-                    elif api_card:
-                         # Fallback search
-                        for s in api_card.card_sets:
-                            if s.set_code == item['set_code'] and s.set_rarity == item['rarity']:
-                                variant_id = s.variant_id
-                                image_id = s.image_id
-                                break
+                        variant_id = item['variant_id']
+                        if not image_id:
+                             image_id = item.get('image_id')
+
+                    # 2. If not, try to find in API by Set Code + Rarity
+                    if not variant_id:
+                        api_card = ygo_service.get_card(item['card_id'])
+                        if api_card:
+                            for s in api_card.card_sets:
+                                if s.set_code == item['set_code'] and s.set_rarity == item['rarity']:
+                                    variant_id = s.variant_id
+                                    if not image_id: image_id = s.image_id
+                                    break
+
+                    # 3. Fallback: Generate ID (e.g. for custom set codes or unlisted variants)
+                    if not variant_id:
+                        # Use robust deterministic ID generation
+                        variant_id = generate_variant_id(
+                            item['card_id'],
+                            item['set_code'],
+                            item['rarity'],
+                            image_id
+                        )
 
                     target_variant = CollectionVariant(
                         variant_id=variant_id,
