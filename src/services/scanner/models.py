@@ -9,6 +9,8 @@ class OCRResult(BaseModel):
     card_name: Optional[str] = None
     set_id_conf: float = 0.0
     language: str = "EN"
+    atk: Optional[str] = None
+    def_val: Optional[str] = None
 
 class ScanStep(BaseModel):
     name: str
@@ -35,6 +37,14 @@ class ScanResult(BaseModel):
     ocr_conf: float = 0.0
     image_path: Optional[str] = None
     match_score: int = 0
+
+    atk: Optional[str] = None
+    def_val: Optional[str] = None
+
+    # Ambiguity Resolution
+    ambiguous: bool = False
+    candidates: List[Dict[str, Any]] = []
+
     # For UI display
     raw_ocr: Optional[List[OCRResult]] = None
 

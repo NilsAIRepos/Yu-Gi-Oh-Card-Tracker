@@ -412,27 +412,16 @@ class ScannerManager:
                              if hasattr(self.debug_state, key):
                                  setattr(self.debug_state, key, value)
 
-                        # If we found a card, push to result queue
-                        # We pick the best result.
-                        best_res = self._pick_best_result(report)
-                        if best_res:
-                            # Enhance with visual traits if warped image exists
-                            warped = report.get('warped_image_data') # Not in model, but returned by _process_scan
+                        # MATCHING LOGIC (Async via Lookup Queue)
+                        match_payload = {
+                            "type": "full_match",
+                            "report": report,
+                            "filename": filename
+                        }
+                        self.lookup_queue.put(match_payload)
 
-                            # Construct lookup data (Internal structure for LookupQueue)
-                            lookup_data = {
-                                "set_code": best_res.set_id,
-                                "language": best_res.language,
-                                "ocr_conf": best_res.set_id_conf,
-                                "rarity": "Unknown",
-                                "visual_rarity": report.get('visual_rarity', 'Common'),
-                                "first_edition": report.get('first_edition', False),
-                                "warped_image": warped
-                            }
-                            self.lookup_queue.put(lookup_data)
-
-                        logger.info(f"Finished scan for: {filename}")
-                        self._log_debug(f"Finished: {filename}")
+                        logger.info(f"Queued for matching: {filename}")
+                        self._log_debug(f"Matching: {filename}")
 
                         # Remove from queue and delete file ON SUCCESS (or clean fail)
                         with self.queue_lock:
@@ -583,7 +572,16 @@ class ScannerManager:
              check_pause()
              set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
-             report['first_edition'] = self.scanner.detect_first_edition(warped)
+
+             # Aggregate text/name for 1st Ed context
+             agg_text = ""
+             agg_name = ""
+             for k, v in report.items():
+                 if isinstance(v, OCRResult):
+                     if v.raw_text: agg_text += " " + v.raw_text
+                     if v.card_name: agg_name = v.card_name
+
+             report['first_edition'] = self.scanner.detect_first_edition(warped, full_ocr_text=agg_text, card_name=agg_name)
              report['warped_image_data'] = warped # Pass along for Art Match
 
              if self.debug_state:
@@ -627,21 +625,6 @@ class ScannerManager:
 
         return report
 
-    def _pick_best_result(self, report):
-        """Heuristic to pick the best result from all zones."""
-        candidates = []
-        for i in range(1, 5): # 1 to 4
-            for scope in ["full", "crop"]:
-                key = f"t{i}_{scope}"
-                res = report.get(key)
-                if res and res.set_id:
-                    candidates.append(res)
-
-        if not candidates: return None
-        # Sort by confidence
-        candidates.sort(key=lambda x: x.set_id_conf, reverse=True)
-        return candidates[0]
-
     async def process_pending_lookups(self):
         try:
             try:
@@ -649,79 +632,276 @@ class ScannerManager:
             except queue.Empty:
                 return
 
-            logger.info(f"Processing lookup for {data.get('set_code', 'Unknown')}")
+            # Check if this is a legacy lookup or new full match
+            if "report" in data:
+                # Full Match Logic
+                report = data['report']
+                filename = data.get('filename')
 
-            set_id = data.get('set_code')
-            warped = data.pop('warped_image', None)
+                result = await self._match_card(report)
 
-            # Create base result
-            result = ScanResult()
-            result.set_code = set_id
-            result.language = data.get('language', 'EN')
-            result.ocr_conf = data.get('ocr_conf', 0.0)
-            result.visual_rarity = data.get('visual_rarity', 'Common')
-            result.first_edition = data.get('first_edition', False)
-
-            if set_id:
-                card_info = await self._resolve_card_details(set_id)
-
-                if card_info:
-                    result.name = card_info['name']
-                    result.card_id = card_info['card_id']
-                    result.rarity = card_info['rarity']
-
-                    if warped is not None and card_info.get("potential_art_paths"):
-                        match_path, match_score = await run.io_bound(
-                            self.scanner.match_artwork, warped, card_info["potential_art_paths"]
-                        )
-                        if match_path:
-                            result.image_path = match_path
-                            result.match_score = match_score
-                        else:
-                            result.image_path = card_info["potential_art_paths"][0]
-                            result.match_score = 0
-
-            if result.rarity == "Unknown":
-                result.rarity = result.visual_rarity
-
-            self.result_queue.put(result)
-            logger.info(f"Lookup complete for {result.set_code}")
-
-            # Emit event for live results
-            self._emit("result_ready", {"set_code": result.set_code})
+                if result:
+                    if result.ambiguous:
+                         self._emit("scan_ambiguous", {"result": result.model_dump()})
+                    else:
+                         self.result_queue.put(result)
+                         self._emit("result_ready", {"set_code": result.set_code})
+            else:
+                # Legacy fallback (if any tasks remain)
+                logger.warning("Legacy lookup task found")
 
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)
 
+    async def _match_card(self, report: Dict[str, Any]) -> Optional["ScanResult"]:
+        """
+        Sophisticated matching algorithm using Set ID, Name, Art, and ATK/DEF.
+        Resolves ambiguity or returns a high-confidence match.
+        """
+        # 1. Gather Text Candidates (Set ID & Name)
+        ocr_results: List[OCRResult] = []
+        for i in range(1, 5):
+            for scope in ["full", "crop"]:
+                res = report.get(f"t{i}_{scope}")
+                if res: ocr_results.append(res)
+
+        # Aggregate ATK/DEF findings (Validation)
+        detected_atk = None
+        detected_def = None
+        for res in ocr_results:
+            if res.atk and detected_atk is None: detected_atk = res.atk
+            if res.def_val and detected_def is None: detected_def = res.def_val
+
+        # Best Set ID
+        set_id_counts = {}
+        for res in ocr_results:
+            if res.set_id:
+                w = res.set_id_conf
+                if w < 10: w = 10 # Floor
+                set_id_counts[res.set_id] = set_id_counts.get(res.set_id, 0) + w
+
+        sorted_sets = sorted(set_id_counts.items(), key=lambda x: x[1], reverse=True)
+        top_set_id = sorted_sets[0][0] if sorted_sets else None
+
+        # Best Name
+        name_counts = {}
+        for res in ocr_results:
+            if res.card_name:
+                name_counts[res.card_name] = name_counts.get(res.card_name, 0) + 1
+
+        sorted_names = sorted(name_counts.items(), key=lambda x: x[1], reverse=True)
+        top_name = sorted_names[0][0] if sorted_names else None
+
+        # Art Match Result
+        art_match = report.get("art_match_yolo")
+        art_filename = art_match.get("filename") if art_match else None
+
+        # Candidate Generation
+        potential_cards = []
+
+        # 1. By Set Code
+        if top_set_id:
+            # Load DB (Assuming EN for now, or detect language)
+            # detect language from report?
+            # We use EN DB as master usually.
+            db = await ygo_service.load_card_database('en')
+            for card in db:
+                if not card.card_sets: continue
+                for s in card.card_sets:
+                    if s.set_code == top_set_id:
+                        potential_cards.append({
+                            "source": "set_code",
+                            "card": card,
+                            "set_info": s,
+                            "score": 80
+                        })
+
+        # 2. By Name
+        if top_name:
+            db = await ygo_service.load_card_database('en')
+            for card in db:
+                if card.name == top_name:
+                     potential_cards.append({
+                            "source": "name",
+                            "card": card,
+                            "set_info": None,
+                            "score": 60
+                        })
+
+        # 3. By Art Match
+        if art_filename:
+             try:
+                 card_id_art = int(art_filename.split('.')[0])
+                 card = ygo_service.get_card(card_id_art)
+                 if card:
+                     potential_cards.append({
+                            "source": "art",
+                            "card": card,
+                            "set_info": None,
+                            "score": 50
+                        })
+             except: pass
+
+        # Re-Match Logic: Constrained Art Match
+        # If we have a Top Set ID but low confidence or Art Mismatch?
+        # Actually, if Top Set ID exists, we can fetch its specific arts and compare.
+        if top_set_id and report.get('warped_image_data') is not None:
+             # Find cards for this set
+             # (This mimics the old logic but inside the new flow)
+             warped = report.get('warped_image_data')
+
+             # Get cards for this set
+             set_candidates = [p for p in potential_cards if p.get('source') == 'set_code']
+
+             # For each candidate card, if it has art paths, try to match?
+             # But ORB match is slow?
+             # We should only do this if we are unsure.
+             # If "set_code" candidates have Art Match already?
+             # If art_filename matches one of them, we are good.
+
+             # If NOT matched by art yet:
+             for p in set_candidates:
+                 c = p['card']
+                 # Check if this card was also found by Art Match
+                 is_art_matched = any(x for x in potential_cards if x['source'] == 'art' and x['card'].id == c.id)
+
+                 if not is_art_matched:
+                      # Constrained Match Logic
+                      # Only run if we have visual doubt (e.g. YOLO art match was missing or weak)
+                      # And if we have the resources.
+
+                      # Fetch image path for this candidate
+                      # We reuse image_manager logic if possible
+                      try:
+                          # We need to run this in a thread-safe way if we are inside a thread,
+                          # but here we are in async context (process_pending_lookups calls _match_card)
+                          # So we can await!
+                          if c.card_images:
+                              img_url = c.card_images[0].image_url
+                              # Use small version for speed? High res for accuracy.
+                              local_path = await image_manager.ensure_image(c.id, img_url, high_res=False)
+
+                              if local_path and os.path.exists(local_path):
+                                  # Run feature extraction on this reference image
+                                  # This might be slow if we do it for many cards.
+                                  # But set_candidates is usually 1 (specific set code) or few.
+
+                                  # Use Scanner's feature extractor
+                                  ref_img = cv2.imread(local_path)
+                                  if ref_img is not None:
+                                      # We need to run blocking CPU tasks in executor
+                                      ref_feat = await run.io_bound(self.scanner.extract_yolo_features, ref_img)
+                                      scan_feat = await run.io_bound(self.scanner.extract_yolo_features, warped)
+
+                                      if ref_feat is not None and scan_feat is not None:
+                                          sim = self.scanner.calculate_similarity(scan_feat, ref_feat)
+                                          if sim > 0.85: # High threshold for confirmation
+                                              # Add Art Source Boost
+                                              p['score'] += 40 # Significant boost
+                                              p['source'] = 'set_code+art_recheck'
+                                              # Also create an art candidate entry to boost grouping
+                                              potential_cards.append({
+                                                    "source": "art_recheck",
+                                                    "card": c,
+                                                    "set_info": None,
+                                                    "score": 40
+                                              })
+                      except Exception as e:
+                          logger.error(f"Error in constrained art match: {e}")
+
+        # Consolidate Candidates
+        grouped = {}
+
+        for p in potential_cards:
+            c = p['card']
+            s_info = p['set_info']
+
+            if s_info:
+                key = (c.id, s_info.set_code, s_info.set_rarity)
+                if key not in grouped:
+                    grouped[key] = {"card": c, "set": s_info, "score": 0, "sources": set()}
+                grouped[key]["score"] += p["score"]
+                grouped[key]["sources"].add(p["source"])
+            else:
+                found_specific = False
+                for k, v in grouped.items():
+                    if k[0] == c.id:
+                        v["score"] += p["score"] * 0.5
+                        v["sources"].add(p["source"])
+                        found_specific = True
+
+                if not found_specific:
+                     key = (c.id, "Unknown", "Unknown")
+                     if key not in grouped:
+                         grouped[key] = {"card": c, "set": None, "score": 0, "sources": set()}
+                     grouped[key]["score"] += p["score"]
+                     grouped[key]["sources"].add(p["source"])
+
+        # Validate with ATK/DEF
+        for key, data in grouped.items():
+            c = data['card']
+            if detected_atk and str(c.atk) == detected_atk:
+                data["score"] += 10
+            # Try different attribute names for DEF
+            def_val = getattr(c, 'def_val', getattr(c, 'def', None))
+            if detected_def and str(def_val) == detected_def:
+                data["score"] += 10
+
+            if "art" in data["sources"]: data["score"] += 20
+            if "set_code" in data["sources"]: data["score"] += 30
+
+        # Sort Candidates
+        final_candidates = []
+        for key, data in grouped.items():
+            final_candidates.append({
+                "name": data['card'].name,
+                "card_id": data['card'].id,
+                "set_code": key[1] if key[1] != "Unknown" else top_set_id,
+                "rarity": key[2] if key[2] != "Unknown" else "Common",
+                "score": data['score'],
+                "image_path": f"./data/images/{data['card'].id}.jpg"
+            })
+
+        final_candidates.sort(key=lambda x: x['score'], reverse=True)
+
+        # AMBIGUITY CHECK
+        is_ambiguous = False
+        if not final_candidates:
+             return None
+
+        best = final_candidates[0]
+
+        if len(final_candidates) > 1:
+            second = final_candidates[1]
+            if (best['score'] - second['score']) < 30:
+                is_ambiguous = True
+
+        if best['set_code'] is None or best['set_code'] == "Unknown":
+            is_ambiguous = True
+
+        if best['score'] < 50:
+             is_ambiguous = True
+
+        res = ScanResult()
+        res.name = best['name']
+        res.card_id = best['card_id']
+        res.set_code = best['set_code']
+        res.rarity = best['rarity']
+        res.visual_rarity = report.get('visual_rarity', 'Unknown')
+        res.first_edition = report.get('first_edition', False)
+        res.atk = detected_atk
+        res.def_val = detected_def
+        res.image_path = best['image_path']
+        res.ambiguous = is_ambiguous
+        res.candidates = final_candidates[:5]
+
+        return res
+
     async def _resolve_card_details(self, set_id: str) -> Optional[Dict[str, Any]]:
-        set_id = set_id.upper()
-        cards = await ygo_service.load_card_database("en")
-
-        candidates = []
-        for card in cards:
-            if not card.card_sets: continue
-            for s in card.card_sets:
-                if s.set_code == set_id:
-                    candidates.append((card, s))
-
-        if not candidates:
-            return None
-
-        card, card_set = candidates[0]
-
-        potential_paths = []
-        if card.card_images:
-            for img in card.card_images:
-                path = await image_manager.ensure_image(card.id, img.image_url, high_res=True)
-                if path:
-                    potential_paths.append(path)
-
-        return {
-            "name": card.name,
-            "card_id": card.id,
-            "rarity": card_set.set_rarity,
-            "potential_art_paths": potential_paths
-        }
+        # Legacy: Kept for compatibility if needed, but _match_card replaces it.
+        # Actually it's used inside _match_card logic indirectly via manual loop,
+        # so we can keep it for single lookups if needed.
+        pass
 
 # Singleton instantiation logic
 # To avoid multiple instances during reload, we might need a more complex strategy if this wasn't enough.

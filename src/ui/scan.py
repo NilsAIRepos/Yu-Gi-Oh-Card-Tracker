@@ -214,6 +214,9 @@ class ScanPage:
         self.preprocessing_mode = 'classic' # 'classic', 'yolo', or 'yolo26'
         self.art_match_yolo = False
 
+        # New Settings
+        self.default_condition = 'Near Mint'
+
         # Debug Lab State (local cache of Pydantic model dump)
         self.debug_report = {}
         self.debug_loading = False
@@ -285,6 +288,10 @@ class ScanPage:
                     if event.type in ['status_update', 'scan_queued', 'scan_started', 'step_complete', 'scan_finished']:
                         self.refresh_debug_ui()
 
+                    # Handle Ambiguity
+                    if event.type == 'scan_ambiguous':
+                        self.show_ambiguity_dialog(event.data.get('result'))
+
                     if event.type == 'error':
                         ui.notify(event.data.get('message', 'Error'), type='negative')
 
@@ -304,6 +311,8 @@ class ScanPage:
             # 3. Check result queue
             res = scanner_service.scanner_manager.get_latest_result()
             if res:
+                # Append default condition
+                res['condition'] = self.default_condition
                 self.scanned_cards.insert(0, res)
                 self.render_live_list.refresh()
                 ui.notify(f"Scanned: {res.get('name')}", type='positive')
@@ -311,6 +320,142 @@ class ScanPage:
 
         except Exception as e:
             logger.error(f"Error in event_consumer: {e}")
+
+    def show_ambiguity_dialog(self, result_data):
+        """Shows the ambiguity resolution dialog."""
+        if not result_data: return
+
+        with ui.dialog() as dialog, ui.card().classes('w-[600px] h-auto p-4 flex flex-col gap-4'):
+            dialog.open()
+
+            ui.label("Resolve Ambiguity").classes('text-xl font-bold text-warning')
+
+            # Preview Image
+            img_path = result_data.get('image_path')
+            if img_path and os.path.exists(img_path):
+                 ui.image(f"/images/{os.path.basename(img_path)}").classes('h-48 object-contain self-center')
+            else:
+                 ui.label("No Image Preview").classes('self-center italic text-gray-500')
+
+            # Form Data (Reactive)
+            state = {
+                'set_code': result_data.get('set_code'),
+                'rarity': result_data.get('rarity'),
+                'language': result_data.get('language', 'EN'),
+                'first_edition': result_data.get('first_edition', False)
+            }
+
+            # Candidates Helper
+            candidates = result_data.get('candidates', [])
+
+            # Constraint Logic
+            # Filter available rarities based on set code if known from candidates
+            # And update country code in set code based on language selection
+
+            def update_constraints():
+                # 1. Update Rarity Options based on Set Code
+                current_set = state['set_code']
+                possible_rarities = set()
+
+                # Check candidates for this set code
+                for c in candidates:
+                    if c.get('set_code') == current_set:
+                        possible_rarities.add(c.get('rarity'))
+
+                # If we found matches, restrict rarity. Else default list.
+                default_rarities = ["Common", "Rare", "Super Rare", "Ultra Rare", "Secret Rare", "Ultimate Rare", "Ghost Rare", "Prismatic Secret Rare"]
+
+                if possible_rarities:
+                     # Merge with defaults but prioritize existing
+                     rarity_sel.options = sorted(list(possible_rarities)) + [r for r in default_rarities if r not in possible_rarities]
+                     rarity_sel.update()
+
+                # 2. Update Set Code Region based on Language
+                # "LOB-EN001" -> Select DE -> "LOB-DE001"
+                # Logic: Regex replace region code
+                import re
+                lang = state['language']
+                s_code = state['set_code']
+
+                if s_code and lang:
+                     # Regex: Prefix-RegionNumber
+                     # We need to map Language to Region Code (DE->DE, EN->EN/E/AE, etc)
+                     # Using simple mapping for now
+                     region_map = {'EN': 'EN', 'DE': 'DE', 'FR': 'FR', 'IT': 'IT', 'ES': 'ES', 'PT': 'PT', 'JP': 'JP'}
+                     target_region = region_map.get(lang, lang)
+
+                     # Check if set code has a region part
+                     match = re.match(r'^([A-Z0-9]+)-([A-Z]+)(\d+)$', s_code)
+                     if match:
+                         prefix, region, number = match.groups()
+                         if region != target_region:
+                             new_code = f"{prefix}-{target_region}{number}"
+                             state['set_code'] = new_code
+                             set_input.value = new_code
+
+            # Dropdowns
+            with ui.grid().classes('grid-cols-2 gap-4 w-full'):
+                 def on_lang_change(e):
+                     state.update({'language': e.value})
+                     update_constraints()
+
+                 lang_sel = ui.select(['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP'], label="Language",
+                           value=state['language'], on_change=on_lang_change)
+
+                 first_ed_chk = ui.checkbox("1st Edition", value=state['first_edition'],
+                             on_change=lambda e: state.update({'first_edition': e.value}))
+
+                 # Set Code Input (Editable)
+                 def on_set_change(e):
+                     state.update({'set_code': e.value})
+                     update_constraints()
+
+                 set_input = ui.input(label="Set Code", value=state['set_code'],
+                          on_change=on_set_change)
+
+                 # Rarity Input
+                 rarity_sel = ui.select(["Common", "Rare", "Super Rare", "Ultra Rare", "Secret Rare", "Ultimate Rare", "Ghost Rare", "Prismatic Secret Rare"],
+                           label="Rarity", value=state['rarity'],
+                           on_change=lambda e: state.update({'rarity': e.value})).props('use-input')
+
+            if candidates:
+                ui.separator()
+                ui.label("Suggestions:").classes('font-bold text-gray-400')
+
+                with ui.column().classes('gap-1'):
+                    for c in candidates:
+                        label = f"{c.get('set_code')} - {c.get('name')} ({c.get('rarity')}) - {c.get('score', 0):.0f}"
+
+                        def pick_candidate(cand=c):
+                            state['set_code'] = cand.get('set_code')
+                            state['rarity'] = cand.get('rarity')
+                            state['first_edition'] = cand.get('first_edition', state['first_edition']) # Preserve if not in cand
+
+                            set_input.value = state['set_code']
+                            rarity_sel.value = state['rarity']
+                            first_ed_chk.value = state['first_edition']
+
+                        ui.button(label, on_click=pick_candidate).props('flat size=sm align=left').classes('w-full text-left normal-case')
+
+            with ui.row().classes('w-full justify-end gap-2 mt-4'):
+                ui.button("Discard", on_click=dialog.close, color='negative').props('flat')
+
+                def confirm():
+                    # Construct Final Result
+                    final_res = result_data.copy()
+                    final_res['set_code'] = state['set_code']
+                    final_res['rarity'] = state['rarity']
+                    final_res['language'] = state['language']
+                    final_res['first_edition'] = state['first_edition']
+                    final_res['condition'] = self.default_condition
+                    final_res['ambiguous'] = False # Resolved
+
+                    self.scanned_cards.insert(0, final_res)
+                    self.render_live_list.refresh()
+                    ui.notify("Added resolved card", type='positive')
+                    dialog.close()
+
+                ui.button("Confirm", on_click=confirm, color='positive')
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
@@ -761,6 +906,11 @@ def scan_page():
                 if page.collections:
                     ui.select(options=page.collections, value=page.target_collection_file, label='Collection',
                               on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-48')
+
+                # Default Condition Dropdown
+                ui.select(options=['Mint', 'Near Mint', 'Excellent', 'Good', 'Light Played', 'Played', 'Poor'],
+                          value=page.default_condition, label='Default Condition',
+                          on_change=lambda e: setattr(page, 'default_condition', e.value)).classes('w-32')
 
                 page.camera_select = ui.select(options={}, label='Camera').classes('w-48')
                 page.start_btn = ui.button('Start', on_click=page.start_camera).props('icon=videocam')
