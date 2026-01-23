@@ -37,6 +37,7 @@ else:
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
+from src.core.utils import normalize_set_code
 from nicegui import run
 
 logger = logging.getLogger(__name__)
@@ -720,6 +721,25 @@ class ScannerManager:
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)
 
+    def _score_set_code_match(self, ocr_code: str, db_code: str) -> float:
+        if not ocr_code or not db_code: return 0.0
+
+        # 1. Exact Match
+        if ocr_code == db_code:
+            return 80.0
+
+        # 2. Normalized Match (Cross-Region)
+        # Matches EEN-DE041 to EEN-EN041, SRL-G021 to SRL-E021
+        try:
+             norm_ocr = normalize_set_code(ocr_code)
+             norm_db = normalize_set_code(db_code)
+             if norm_ocr == norm_db:
+                 return 75.0
+        except:
+             pass
+
+        return 0.0
+
     async def find_best_match(self, ocr_res: 'OCRResult', art_match: Dict, threshold: float = 10.0) -> Dict[str, Any]:
         """
         Weighted matching algorithm.
@@ -752,7 +772,7 @@ class ScannerManager:
 
             # Check Set Code
             if ocr_res.set_id and card.card_sets:
-                 if any(s.set_code == ocr_res.set_id for s in card.card_sets):
+                 if any(self._score_set_code_match(ocr_res.set_id, s.set_code) > 0 for s in card.card_sets):
                      is_candidate = True
 
             # Check Name (if Set Code didn't match or missing)
@@ -780,8 +800,9 @@ class ScannerManager:
                 score = 0.0
 
                 # A. Set Code (80+)
-                if ocr_res.set_id and variant.set_code == ocr_res.set_id:
-                    score += 80.0
+                set_score = self._score_set_code_match(ocr_res.set_id, variant.set_code)
+                if set_score > 0:
+                    score += set_score
                     score += (ocr_res.set_id_conf / 100.0) * 10.0
 
                 # B. Name (50+)
