@@ -124,6 +124,13 @@ class ApiCard(BaseModel):
     card_sets: List[ApiCardSet] = []
     card_prices: List[ApiCardPrice] = []
 
+    # New fields (populated from misc_info)
+    formats: List[str] = []
+    genesys_points: Optional[int] = None
+    has_effect: Optional[bool] = None
+    tcg_date: Optional[str] = None
+    treated_as: Optional[str] = None
+
     def matches_category(self, category: str) -> bool:
         """
         Checks if the card belongs to the specified monster category (e.g., 'Normal', 'Effect', 'Synchro').

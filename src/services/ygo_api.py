@@ -20,8 +20,30 @@ SETS_FILE = os.path.join(DB_DIR, "sets.json")
 
 logger = logging.getLogger(__name__)
 
-def parse_cards_data(data: List[dict]) -> List[ApiCard]:
-    return [ApiCard(**c) for c in data]
+def parse_cards_data(data: List[dict], genesys_map: Optional[Dict[int, int]] = None) -> List[ApiCard]:
+    processed_cards = []
+    for c in data:
+        # Extract fields from misc_info if present
+        if "misc_info" in c and c["misc_info"]:
+            misc = c["misc_info"][0]
+            c["formats"] = misc.get("formats", [])
+            c["tcg_date"] = misc.get("tcg_date")
+            c["treated_as"] = misc.get("treated_as")
+            c["has_effect"] = bool(misc.get("has_effect")) if "has_effect" in misc else None
+            # We don't rely on misc_info for genesys_points unless already present (e.g. from direct genesys fetch)
+            # but usually we use the genesys_map
+
+        # Apply Genesys data if available
+        if genesys_map and c.get("id") in genesys_map:
+            c["genesys_points"] = genesys_map[c["id"]]
+            # Ensure Genesys is in formats
+            if "formats" not in c:
+                c["formats"] = []
+            if "Genesys" not in c["formats"]:
+                c["formats"].append("Genesys")
+
+        processed_cards.append(ApiCard(**c))
+    return processed_cards
 
 class YugiohService:
     def __init__(self):
@@ -50,10 +72,38 @@ class YugiohService:
         filename = "card_db.json" if language == "en" else f"card_db_{language}.json"
         return os.path.join(DB_DIR, filename)
 
+    async def _fetch_genesys_data(self, language: str = "en") -> Dict[int, int]:
+        """Fetches Genesys format data to get genesys_points."""
+        logger.info(f"Fetching Genesys data for language: {language}")
+        params = {"format": "Genesys", "misc": "yes"}
+        if language != "en":
+            params["language"] = language
+
+        try:
+            response = await run.io_bound(requests.get, API_URL, params=params)
+        except RuntimeError:
+            response = await asyncio.to_thread(requests.get, API_URL, params=params)
+
+        genesys_map = {}
+        if response.status_code == 200:
+            data = response.json()
+            for c in data.get("data", []):
+                card_id = c.get("id")
+                points = 0
+                if "misc_info" in c and c["misc_info"]:
+                    points = c["misc_info"][0].get("genesys_points", 0)
+                if card_id:
+                    genesys_map[card_id] = points
+            logger.info(f"Fetched {len(genesys_map)} Genesys entries.")
+        else:
+             logger.warning(f"Failed to fetch Genesys data: {response.status_code}")
+
+        return genesys_map
+
     async def fetch_card_database(self, language: str = "en") -> int:
         """Downloads the full database from the API and merges it with local data."""
         logger.info(f"Fetching card database for language: {language}")
-        params = {}
+        params = {"misc": "yes"} # Request misc info for new fields
         if language != "en":
             params["language"] = language
 
@@ -68,11 +118,14 @@ class YugiohService:
             cards_data = data.get("data", [])
             logger.info(f"Fetched {len(cards_data)} cards from API.")
 
+            # Fetch Genesys data to merge
+            genesys_map = await self._fetch_genesys_data(language)
+
             # Parse new API data
             try:
-                api_cards = await run.io_bound(parse_cards_data, cards_data)
+                api_cards = await run.io_bound(parse_cards_data, cards_data, genesys_map)
             except RuntimeError:
-                api_cards = parse_cards_data(cards_data)
+                api_cards = parse_cards_data(cards_data, genesys_map)
 
             # Filter out cards without sets (unreleased/leaked cards)
             api_cards = [c for c in api_cards if c.card_sets]
