@@ -355,6 +355,7 @@ class ScanPage:
                 'language': res.get('language', 'EN'),
                 'condition': self.default_condition,
                 'first_edition': res.get('first_edition', False),
+                'variant_id': res.get('variant_id'),
             }
 
             # Fetch variants for dropdowns
@@ -377,6 +378,14 @@ class ScanPage:
             if state['rarity'] and state['rarity'] not in rarities:
                 rarities.append(state['rarity'])
 
+            def update_variant_id():
+                """Finds the variant ID matching current Set Code and Rarity selection."""
+                found_variant = next((v for v in variants if v.set_code == state['set_code'] and v.set_rarity == state['rarity']), None)
+                if found_variant:
+                    state['variant_id'] = found_variant.variant_id
+                else:
+                    state['variant_id'] = None
+
             def update_rarities_based_on_set():
                 valid_rarities = [v.set_rarity for v in variants if v.set_code == state['set_code']]
                 if not valid_rarities: valid_rarities = rarities
@@ -387,6 +396,7 @@ class ScanPage:
                      state['rarity'] = rarity_select.options[0]
                      rarity_select.value = state['rarity']
                      rarity_select.update()
+                update_variant_id()
 
             with ui.row().classes('w-full gap-4'):
                  # Left: Image
@@ -420,7 +430,7 @@ class ScanPage:
                                             on_change=lambda e: [state.update(set_code=e.value), update_rarities_based_on_set()]).classes('w-full')
 
                      rarity_select = ui.select(rarities, label='Rarity', value=state['rarity'],
-                                               on_change=lambda e: state.update(rarity=e.value)).classes('w-full')
+                                               on_change=lambda e: [state.update(rarity=e.value), update_variant_id()]).classes('w-full')
 
                      ui.select(["Mint", "Near Mint", "Excellent", "Good", "Light Played", "Played", "Poor"],
                                label='Condition', value=state['condition'],
@@ -484,15 +494,24 @@ class ScanPage:
 
                 if not target_variant:
                     api_card = ygo_service.get_card(item['card_id'])
-                    variant_id = str(item['card_id'])
+                    # Prioritize item['variant_id'] if available
+                    variant_id = item.get('variant_id')
                     image_id = None
 
-                    if api_card:
-                        for s in api_card.card_sets:
-                            if s.set_code == item['set_code'] and s.set_rarity == item['rarity']:
-                                variant_id = s.variant_id
-                                image_id = s.image_id
-                                break
+                    if not variant_id:
+                        # Fallback lookup
+                        variant_id = str(item['card_id'])
+                        if api_card:
+                            for s in api_card.card_sets:
+                                if s.set_code == item['set_code'] and s.set_rarity == item['rarity']:
+                                    variant_id = s.variant_id
+                                    image_id = s.image_id
+                                    break
+                    elif api_card:
+                         # Ensure we get image_id too if we have variant_id
+                         found = next((s for s in api_card.card_sets if s.variant_id == variant_id), None)
+                         if found:
+                             image_id = found.image_id
 
                     target_variant = CollectionVariant(
                         variant_id=variant_id,

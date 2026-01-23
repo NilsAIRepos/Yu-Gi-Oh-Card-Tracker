@@ -829,6 +829,7 @@ class ScannerManager:
         final_res.card_id = card.id
         final_res.set_code = selected_variant.set_code if selected_variant else top_set_code
         final_res.rarity = selected_variant.set_rarity if selected_variant else "Unknown"
+        final_res.variant_id = selected_variant.variant_id if selected_variant else None
         final_res.language = lang.upper()
 
         # Populate candidates list for UI
@@ -838,6 +839,7 @@ class ScannerManager:
                  "name": c['card'].name,
                  "set_code": c['variant'].set_code if c['variant'] else "N/A",
                  "rarity": c['variant'].set_rarity if c['variant'] else "N/A",
+                 "variant_id": c['variant'].variant_id if c['variant'] else None,
                  "score": c['score'],
                  "reason": c['reason']
              })

@@ -39,6 +39,7 @@ class ScanResult(BaseModel):
     match_score: int = 0
     atk: Optional[str] = None
     def_val: Optional[str] = Field(None, alias='def')
+    variant_id: Optional[str] = None
     ambiguity_flag: bool = False
     candidates: Optional[List[Dict[str, Any]]] = None
     # For UI display
