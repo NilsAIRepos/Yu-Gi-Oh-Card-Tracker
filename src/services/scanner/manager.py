@@ -703,20 +703,30 @@ class ScannerManager:
 
         # 1. By Set Code (Primary Source)
         if top_set_id:
-            # Load DB (Assuming EN for now, or detect language)
-            # detect language from report?
-            # We use EN DB as master usually.
+            # Load DB
             db = await ygo_service.load_card_database('en')
+            found_set_match = False
             for card in db:
                 if not card.card_sets: continue
                 for s in card.card_sets:
+                    # EXACT MATCH
                     if s.set_code == top_set_id:
                         potential_cards.append({
                             "source": "set_code",
                             "card": card,
                             "set_info": s,
-                            "score": 120 # High score for Set Code
+                            "score": 120
                         })
+                        found_set_match = True
+
+            # FUZZY SET MATCH (Fallback if exact failed)
+            # This handles "Z" vs "2" typos if the OCR was slightly off but close to a real set code
+            if not found_set_match and len(top_set_id) > 3:
+                # We need to find the closest valid set code in the DB?
+                # That's expensive (thousands of cards).
+                # Optimization: Only check if we have other signals (Name/Art) later?
+                # OR: Check known set prefixes?
+                pass
 
         # 2. By Name
         if top_name:
@@ -811,12 +821,34 @@ class ScannerManager:
                       except Exception as e:
                           logger.error(f"Error in constrained art match: {e}")
 
-        # Consolidate Candidates
+        # Consolidate Candidates & Fuzzy Set Correction
         grouped = {}
+
+        # If we matched by Name/Art but Set Code was "Unknown" or Mismatched (Typo),
+        # we can use the card's valid sets to "Snap" the typo.
 
         for p in potential_cards:
             c = p['card']
             s_info = p['set_info']
+
+            # FUZZY CORRECTION LOGIC
+            # If we don't have s_info (e.g. matched by Name), but we have a top_set_id (OCR),
+            # check if any of this card's sets are close to top_set_id.
+            if not s_info and top_set_id and c.card_sets:
+                from difflib import SequenceMatcher
+                best_ratio = 0
+                best_s = None
+                for s in c.card_sets:
+                    ratio = SequenceMatcher(None, s.set_code, top_set_id).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_s = s
+
+                # Threshold for "Correction" (e.g. > 0.8 means 1-2 char diff usually)
+                if best_ratio > 0.8:
+                    s_info = best_s # Snap to valid set
+                    p['score'] += 30 # Boost for "Found valid set code via correction"
+                    p['source'] = f"{p['source']}+set_fuzzy"
 
             if s_info:
                 key = (c.id, s_info.set_code, s_info.set_rarity)
@@ -825,6 +857,7 @@ class ScannerManager:
                 grouped[key]["score"] += p["score"]
                 grouped[key]["sources"].add(p["source"])
             else:
+                # Still generic? Try to merge.
                 found_specific = False
                 for k, v in grouped.items():
                     if k[0] == c.id:
@@ -833,6 +866,9 @@ class ScannerManager:
                         found_specific = True
 
                 if not found_specific:
+                     # Add as generic, but we must display SOMETHING valid if possible.
+                     # If we have card_sets, pick the first one as "Unknown Variant"?
+                     # Or keep "Unknown".
                      key = (c.id, "Unknown", "Unknown")
                      if key not in grouped:
                          grouped[key] = {"card": c, "set": None, "score": 0, "sources": set()}
