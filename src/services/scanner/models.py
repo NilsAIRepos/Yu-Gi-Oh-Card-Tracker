@@ -54,12 +54,6 @@ class ScanDebugReport(BaseModel):
     t1_crop: Optional[OCRResult] = None
     t2_full: Optional[OCRResult] = None # DocTR
     t2_crop: Optional[OCRResult] = None
-    t3_full: Optional[OCRResult] = None # Keras-OCR
-    t3_crop: Optional[OCRResult] = None
-    t4_full: Optional[OCRResult] = None # MMOCR
-    t4_crop: Optional[OCRResult] = None
-
-    # Removed t5 and t6
 
     # YOLO Art Match
     art_match_yolo: Optional[Dict[str, Any]] = None

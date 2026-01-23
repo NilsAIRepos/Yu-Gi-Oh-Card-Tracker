@@ -4,9 +4,6 @@ import os
 import json
 from typing import Optional, Tuple, List, Dict, Any
 
-# Force legacy keras for keras-ocr compatibility with TF 2.x
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
-
 try:
     import cv2
     import numpy as np
@@ -31,10 +28,8 @@ except ImportError:
 
 try:
     # New Engines
-    import keras_ocr
     from doctr.io import DocumentFile
     from doctr.models import ocr_predictor
-    from mmocr.apis import MMOCRInferencer
 except ImportError:
     pass  # Handled in __init__.py or via lazy loading checks
 
@@ -87,8 +82,6 @@ class CardScanner:
         self.yolo_model_name = None
         self.yolo_cls_model = None
         self.yolo_cls_model_name = None
-        self.keras_pipeline = None
-        self.mmocr_inferencer = None
         self.doctr_model = None
 
         self.valid_set_codes = set()
@@ -326,25 +319,6 @@ class CardScanner:
             return 0.0
 
         return np.dot(embedding1, embedding2) / (norm_1 * norm_2)
-
-    def get_keras(self):
-        if self.keras_pipeline is None:
-            logger.info("Initializing Keras-OCR...")
-            # Keras-OCR loads models automatically on first use of Pipeline
-            self.keras_pipeline = keras_ocr.pipeline.Pipeline()
-        return self.keras_pipeline
-
-    def get_mmocr(self):
-        if self.mmocr_inferencer is None:
-            logger.info("Initializing MMOCR...")
-            # Using DBNet for detection and SAR for recognition by default
-            try:
-                device = 'cuda' if hasattr(torch, 'cuda') and torch.cuda.is_available() else 'cpu'
-                self.mmocr_inferencer = MMOCRInferencer(det='DBNet', rec='SAR', device=device)
-            except Exception as e:
-                logger.error(f"Failed to init MMOCR: {e}")
-                raise
-        return self.mmocr_inferencer
 
     def get_doctr(self):
         if self.doctr_model is None:
@@ -623,31 +597,7 @@ class CardScanner:
                  scale = 1600 / w
                  image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
 
-            if engine == 'keras':
-                pipeline = self.get_keras()
-                # Keras-OCR expects a list of images
-                # And it might expect RGB? OpenCV reads BGR.
-                # Keras-OCR uses keras_ocr.tools.read which uses imageio/cv2 logic but pipeline expects numpy array
-                rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                prediction_groups = pipeline.recognize([rgb_img])
-                # prediction_groups[0] contains list of (text, box)
-                for text, box in prediction_groups[0]:
-                    raw_text_list.append(text)
-                    confidences.append(0.9) # Keras-OCR doesn't provide confidence easily, assumes high
-
-            elif engine == 'mmocr':
-                mm = self.get_mmocr()
-                # MMOCRInferencer handles BGR/RGB? Usually BGR via OpenCV is fine.
-                result = mm(image, return_vis=False)
-                # Structure: {'predictions': [{'rec_texts': [...], 'rec_scores': [...]}]}
-                if result and 'predictions' in result:
-                    pred = result['predictions'][0]
-                    texts = pred.get('rec_texts', [])
-                    scores = pred.get('rec_scores', [])
-                    raw_text_list.extend(texts)
-                    confidences.extend(scores)
-
-            elif engine == 'doctr':
+            if engine == 'doctr':
                 model = self.get_doctr()
                 # DocTR expects RGB
                 rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)

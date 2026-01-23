@@ -10,12 +10,5 @@ langdetect
 pypdf
 easyocr
 ultralytics
-keras-ocr
-tensorflow
-tf_keras
 python-doctr[torch]
 numpy<2
-mmengine
-mmcv==2.0.1
-mmdet==3.1.0
-mmocr>=1.0.0

@@ -9,7 +9,7 @@ try:
     import langdetect
     import numpy as np
     import easyocr
-    import paddleocr
+    from doctr.io import DocumentFile
     import ultralytics
     SCANNER_AVAILABLE = True
 except ImportError as e:
