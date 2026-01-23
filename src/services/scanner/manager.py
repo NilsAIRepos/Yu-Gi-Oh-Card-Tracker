@@ -34,9 +34,12 @@ else:
     class ScanEvent: pass
     class ScanRequest: pass
     class ScanDebugReport: pass
+    class ScanResult: pass
+    class OCRResult: pass
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
+from src.core.utils import transform_set_code, extract_language_code, REGION_TO_LANGUAGE_MAP
 from nicegui import run
 
 logger = logging.getLogger(__name__)
@@ -53,7 +56,7 @@ class ScannerManager:
         self.scan_queue: List[ScanRequest] = []
         self.queue_lock = threading.Lock()
 
-        self.lookup_queue = queue.Queue() # Best result -> DB Lookup
+        self.lookup_queue = queue.Queue() # Raw Report -> DB Lookup
         self.result_queue = queue.Queue() # Finished results (ScanResult) -> UI
         self.notification_queue = queue.Queue() # Notifications -> UI
 
@@ -412,24 +415,20 @@ class ScannerManager:
                              if hasattr(self.debug_state, key):
                                  setattr(self.debug_state, key, value)
 
-                        # If we found a card, push to result queue
-                        # We pick the best result.
-                        best_res = self._pick_best_result(report)
-                        if best_res:
-                            # Enhance with visual traits if warped image exists
-                            warped = report.get('warped_image_data') # Not in model, but returned by _process_scan
+                        # Push Raw Report to Lookup Queue
+                        # Extract art features for lookup if available
+                        warped = report.get('warped_image_data')
+                        art_features = None
+                        if warped is not None and self.scanner:
+                             art_features = self.scanner.extract_yolo_features(warped)
 
-                            # Construct lookup data (Internal structure for LookupQueue)
-                            lookup_data = {
-                                "set_code": best_res.set_id,
-                                "language": best_res.language,
-                                "ocr_conf": best_res.set_id_conf,
-                                "rarity": "Unknown",
-                                "visual_rarity": report.get('visual_rarity', 'Common'),
-                                "first_edition": report.get('first_edition', False),
-                                "warped_image": warped
-                            }
-                            self.lookup_queue.put(lookup_data)
+                        lookup_data = {
+                            "report": report, # Contains OCRResults
+                            "warped_image": warped,
+                            "art_features": art_features,
+                            "filename": filename
+                        }
+                        self.lookup_queue.put(lookup_data)
 
                         logger.info(f"Finished scan for: {filename}")
                         self._log_debug(f"Finished: {filename}")
@@ -554,6 +553,9 @@ class ScannerManager:
             ("doctr", "Track 2: DocTR", "t2"),
         ]
 
+        # Flag to pass context
+        full_text_context = ""
+
         for engine_key, label_base, field_prefix in track_config:
             if engine_key in tracks:
                  try:
@@ -561,6 +563,7 @@ class ScannerManager:
                      set_step(f"{label_base} (Full)")
                      res_full = self.scanner.ocr_scan(frame, engine=engine_key, scope='full')
                      report[f"{field_prefix}_full"] = res_full
+                     full_text_context = res_full.raw_text # Use last available
                      if self.debug_state: setattr(self.debug_state, f"{field_prefix}_full", res_full)
 
                      check_pause()
@@ -581,14 +584,26 @@ class ScannerManager:
              check_pause()
              set_step("Analysis: Visual Features")
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
-             report['first_edition'] = self.scanner.detect_first_edition(warped)
+
+             # Robust 1st Edition Check
+             # Pass full text context from last OCR run if available
+             card_name_context = ""
+             if report.get('t2_full'): card_name_context = report['t2_full'].card_name or ""
+             elif report.get('t1_full'): card_name_context = report['t1_full'].card_name or ""
+
+             report['first_edition'] = self.scanner.detect_first_edition(
+                 warped,
+                 full_text_context=full_text_context,
+                 card_name_context=card_name_context
+             )
+
              report['warped_image_data'] = warped # Pass along for Art Match
 
              if self.debug_state:
                  if hasattr(self.debug_state, 'visual_rarity'): self.debug_state.visual_rarity = report['visual_rarity']
                  if hasattr(self.debug_state, 'first_edition'): self.debug_state.first_edition = report['first_edition']
 
-        # Art Match (YOLO)
+        # Art Match (YOLO) - Initial Global Match
         if options.get("art_match_yolo", False) and self.scanner:
              check_pause()
              set_step("Art Match: YOLO")
@@ -625,21 +640,6 @@ class ScannerManager:
 
         return report
 
-    def _pick_best_result(self, report):
-        """Heuristic to pick the best result from all zones."""
-        candidates = []
-        for i in range(1, 3): # 1 to 2
-            for scope in ["full", "crop"]:
-                key = f"t{i}_{scope}"
-                res = report.get(key)
-                if res and res.set_id:
-                    candidates.append(res)
-
-        if not candidates: return None
-        # Sort by confidence
-        candidates.sort(key=lambda x: x.set_id_conf, reverse=True)
-        return candidates[0]
-
     async def process_pending_lookups(self):
         try:
             try:
@@ -647,83 +647,275 @@ class ScannerManager:
             except queue.Empty:
                 return
 
-            logger.info(f"Processing lookup for {data.get('set_code', 'Unknown')}")
+            logger.info(f"Processing lookup for {data.get('filename', 'scan')}")
 
-            set_id = data.get('set_code')
-            warped = data.pop('warped_image', None)
+            # Use the robust algorithm
+            result = await self._resolve_match(data)
 
-            # Create base result
-            result = ScanResult()
-            result.set_code = set_id
-            result.language = data.get('language', 'EN')
-            result.ocr_conf = data.get('ocr_conf', 0.0)
-            result.visual_rarity = data.get('visual_rarity', 'Common')
-            result.first_edition = data.get('first_edition', False)
+            # Check for ambiguity
+            if result.ambiguity_data:
+                # Notify UI of ambiguity
+                self._emit("scan_ambiguous", {"result": result.model_dump()})
+                self.result_queue.put(result) # Still put it? UI might need to consume it to show dialog.
+                # Actually, if we put it in result_queue, ScanPage.event_consumer handles it as success unless checked.
+                # I'll emit "scan_ambiguous" and also put it in result queue but marked as ambiguous.
+            else:
+                self.result_queue.put(result)
+                # Emit event for live results
+                self._emit("result_ready", {"set_code": result.set_code})
 
-            if set_id:
-                card_info = await self._resolve_card_details(set_id)
-
-                if card_info:
-                    result.name = card_info['name']
-                    result.card_id = card_info['card_id']
-                    result.rarity = card_info['rarity']
-
-                    if warped is not None and card_info.get("potential_art_paths"):
-                        match_path, match_score = await run.io_bound(
-                            self.scanner.match_artwork, warped, card_info["potential_art_paths"]
-                        )
-                        if match_path:
-                            result.image_path = match_path
-                            result.match_score = match_score
-                        else:
-                            result.image_path = card_info["potential_art_paths"][0]
-                            result.match_score = 0
-
-            if result.rarity == "Unknown":
-                result.rarity = result.visual_rarity
-
-            self.result_queue.put(result)
-            logger.info(f"Lookup complete for {result.set_code}")
-
-            # Emit event for live results
-            self._emit("result_ready", {"set_code": result.set_code})
+            logger.info(f"Lookup complete. Ambiguous: {bool(result.ambiguity_data)}")
 
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)
 
-    async def _resolve_card_details(self, set_id: str) -> Optional[Dict[str, Any]]:
-        set_id = set_id.upper()
-        cards = await ygo_service.load_card_database("en")
+    async def _resolve_match(self, data: Dict[str, Any]) -> ScanResult:
+        """
+        Weighted Matching Algorithm.
+        """
+        report = data.get('report', {})
+        warped = data.get('warped_image')
+        scan_features = data.get('art_features')
 
-        candidates = []
-        for card in cards:
-            if not card.card_sets: continue
-            for s in card.card_sets:
-                if s.set_code == set_id:
-                    candidates.append((card, s))
+        # 1. Gather Signals
+        # Collect all valid Set IDs and Names from all OCR tracks
+        candidates_set_ids = []
+        candidates_names = []
 
-        if not candidates:
-            return None
+        best_ocr_conf = 0.0
+        best_ocr_lang = "EN"
 
-        card, card_set = candidates[0]
+        ocr_atk = None
+        ocr_def = None
+        ocr_1st_ed = report.get('first_edition', False)
+        visual_rarity = report.get('visual_rarity', 'Common')
 
-        potential_paths = []
-        if card.card_images:
-            for img in card.card_images:
-                path = await image_manager.ensure_image(card.id, img.image_url, high_res=True)
-                if path:
-                    potential_paths.append(path)
+        for key, res in report.items():
+            if isinstance(res, OCRResult):
+                if res.set_id:
+                    candidates_set_ids.append((res.set_id, res.set_id_conf))
+                    if res.set_id_conf > best_ocr_conf:
+                        best_ocr_conf = res.set_id_conf
+                        best_ocr_lang = res.language
+                if res.card_name:
+                    candidates_names.append(res.card_name)
+                if res.atk: ocr_atk = res.atk
+                if res.def_val: ocr_def = res.def_val
 
-        return {
-            "name": card.name,
-            "card_id": card.id,
-            "rarity": card_set.set_rarity,
-            "potential_art_paths": potential_paths
-        }
+        # Art Match
+        art_match_info = report.get('art_match_yolo', {})
+        art_match_filename = art_match_info.get('filename')
+        art_match_score = art_match_info.get('score', 0.0)
+
+        print(f"MATCHING DEBUG: Candidates SetIDs: {candidates_set_ids}", flush=True)
+        print(f"MATCHING DEBUG: Candidates Names: {candidates_names}", flush=True)
+        print(f"MATCHING DEBUG: Art Match: {art_match_filename} ({art_match_score})", flush=True)
+
+        # 2. Load Database (Async)
+        # We load 'en' as base, but if best_ocr_lang is different, we might need that too.
+        # Ideally, we load based on detected language, but for now stick to EN + mappings.
+        all_cards = await ygo_service.load_card_database("en")
+
+        scored_candidates = {} # card_id -> {score, card, reasons}
+
+        def add_points(card, points, reason):
+            if card.id not in scored_candidates:
+                scored_candidates[card.id] = {"score": 0, "card": card, "reasons": []}
+            scored_candidates[card.id]["score"] += points
+            scored_candidates[card.id]["reasons"].append(reason)
+
+        # A. Score by Set Code (Very High Weight)
+        for set_id, conf in candidates_set_ids:
+            # Normalize set_id
+            norm_id = transform_set_code(set_id, "EN") # Normalize to EN base
+
+            # Find cards with this set code
+            for card in all_cards:
+                if not card.card_sets: continue
+                for s in card.card_sets:
+                    # Check compatibility (allowing for region differences handled by transform)
+                    if s.set_code == norm_id or s.set_code == set_id:
+                        # Weight based on OCR confidence
+                        points = 50 * (conf / 100.0)
+                        add_points(card, points, f"Set Code {set_id}")
+
+        # B. Score by Name (Medium High Weight)
+        for name in candidates_names:
+            norm_name = self.scanner._normalize_card_name(name)
+            for card in all_cards:
+                # Fuzzy or exact? Exact normalized is safer for now as per instructions.
+                db_norm = self.scanner._normalize_card_name(card.name)
+                if norm_name == db_norm:
+                    add_points(card, 40, f"Name {name}")
+                elif norm_name in db_norm or db_norm in norm_name:
+                    # Partial match
+                    if len(norm_name) > 4:
+                        add_points(card, 20, f"Partial Name {name}")
+
+        # C. Score by Art Match (Medium Weight)
+        # If we have a filename, try to find the card it belongs to.
+        # Filename is usually card_id.jpg
+        if art_match_filename:
+            try:
+                # stored as "12345.jpg" or "12345_1.jpg"
+                base_id = art_match_filename.split('_')[0].split('.')[0]
+                if base_id.isdigit():
+                    art_id = int(base_id)
+                    # Find card with this ID
+                    # Note: Card ID in DB matches image ID usually.
+                    card = next((c for c in all_cards if c.id == art_id), None)
+                    if card:
+                         add_points(card, 30 * art_match_score, f"Art Match {art_match_filename}")
+            except:
+                pass
+
+        # D. Validate with Stats (Tiebreaker)
+        if ocr_atk or ocr_def:
+            for cid, data in scored_candidates.items():
+                c = data['card']
+                # ATK/DEF are often integers, OCR returns strings with possible ?
+                # Normalize
+                def norm_stat(s): return str(s).strip()
+
+                matched_stats = False
+                if ocr_atk and norm_stat(c.atk) == norm_stat(ocr_atk):
+                    add_points(c, 10, f"ATK {ocr_atk}")
+                    matched_stats = True
+                if ocr_def and norm_stat(c.def_val) == norm_stat(ocr_def):
+                    add_points(c, 10, f"DEF {ocr_def}")
+                    matched_stats = True
+
+        # 3. Constrained Art Match (Refinement)
+        # If top candidate has low Art score (or no art score), but we have warped image,
+        # Try to match against the top candidate's specific art variants.
+
+        # Sort current candidates
+        sorted_cands = sorted(scored_candidates.values(), key=lambda x: x['score'], reverse=True)
+
+        if sorted_cands and self.scanner and warped is not None and scan_features is not None:
+            top = sorted_cands[0]
+            card = top['card']
+
+            # Check if we already matched this card via Art
+            already_matched_art = any("Art Match" in r for r in top['reasons'])
+
+            if not already_matched_art or art_match_score < 0.85:
+                # Fetch images for this card
+                logger.info(f"Running Constrained Art Match for {card.name}")
+                if card.card_images:
+                    # We need to download them if not present?
+                    # Use high res or small? Manager uses cache.
+                    # We can use `ygo_service` to get paths.
+                    for img in card.card_images:
+                        path = await image_manager.ensure_image(card.id, img.image_url, high_res=True)
+                        if path and os.path.exists(path):
+                            # Read and extract features
+                            # This is synchronous I/O, might block loop slightly.
+                            # Run in thread if heavy.
+                            try:
+                                ref_img = cv2.imread(path)
+                                if ref_img is not None:
+                                    ref_feat = self.scanner.extract_yolo_features(ref_img)
+                                    sim = self.scanner.calculate_similarity(scan_features, ref_feat)
+
+                                    if sim > 0.8:
+                                        add_points(card, 30 * sim, f"Constrained Art Match ({sim:.2f})")
+                                        print(f"MATCHING DEBUG: Constrained Match Success {sim:.2f}", flush=True)
+                                        break
+                            except Exception as e:
+                                logger.error(f"Constrained match error: {e}")
+
+        # Re-sort after updates
+        sorted_cands = sorted(scored_candidates.values(), key=lambda x: x['score'], reverse=True)
+
+        print(f"MATCHING DEBUG: Top Candidates: {[(c['card'].name, c['score']) for c in sorted_cands[:3]]}", flush=True)
+
+        # 4. Determine Result & Ambiguity
+        result = ScanResult()
+        result.ocr_conf = best_ocr_conf
+        result.first_edition = ocr_1st_ed
+        result.visual_rarity = visual_rarity
+        result.language = best_ocr_lang
+
+        is_ambiguous = False
+        ambiguity_reason = ""
+
+        if not sorted_cands:
+            result.name = "Unknown Card"
+            is_ambiguous = True
+            ambiguity_reason = "No candidates found"
+        else:
+            best = sorted_cands[0]
+            card = best['card']
+            result.name = card.name
+            result.card_id = card.id
+            result.match_score = int(best['score'])
+
+            # Determine Set Code & Rarity
+            # If we have a Set Code from OCR that matches this card, use it.
+            # Otherwise use the most common/likely?
+
+            matching_set = None
+            if card.card_sets:
+                # Try to find the exact set code extracted
+                for sid, _ in candidates_set_ids:
+                    norm_sid = transform_set_code(sid, "EN")
+                    for s in card.card_sets:
+                        if s.set_code == norm_sid or s.set_code == sid:
+                            matching_set = s
+                            break
+                    if matching_set: break
+
+            if matching_set:
+                result.set_code = matching_set.set_code
+                result.rarity = matching_set.set_rarity
+
+                # Ambiguity Check: Does this Set Code have multiple rarities?
+                # E.g. LOB-EN001 exists as Ultra Rare and ...?
+                # Check other sets with same code
+                same_code_sets = [s for s in card.card_sets if s.set_code == matching_set.set_code]
+                if len(same_code_sets) > 1:
+                    # Check visual rarity to resolve
+                    # If visual rarity matches one, pick it.
+                    # Else ambiguous.
+                    # Simplification: If multiple rarities, mark ambiguous.
+                    # Unless visual_rarity is strong?
+
+                    # For now, mark ambiguous to let user confirm.
+                    is_ambiguous = True
+                    ambiguity_reason = "Multiple rarities for Set Code"
+
+            else:
+                # We matched card (maybe by name/art) but Set Code is unknown or doesn't match.
+                is_ambiguous = True
+                ambiguity_reason = "Set Code mismatch or unknown"
+                # Default to first set?
+                if card.card_sets:
+                    result.set_code = card.card_sets[0].set_code
+                    result.rarity = card.card_sets[0].set_rarity
+
+        # 5. Populate Result
+        if is_ambiguous:
+            # Prepare data for dialog
+            # Candidates for dropdowns
+            # Current best guess
+            result.ambiguity_data = {
+                "reason": ambiguity_reason,
+                "candidates": [
+                    {
+                        "card_id": c['card'].id,
+                        "name": c['card'].name,
+                        "score": c['score'],
+                        "sets": [s.model_dump() for s in c['card'].card_sets] if c['card'].card_sets else []
+                    }
+                    for c in sorted_cands[:5]
+                ],
+                "ocr_set_codes": [sid for sid, _ in candidates_set_ids],
+                "visual_rarity": visual_rarity,
+                "detected_lang": best_ocr_lang
+            }
+
+        return result
 
 # Singleton instantiation logic
-# To avoid multiple instances during reload, we might need a more complex strategy if this wasn't enough.
-# However, module-level variables are usually reset on reload.
-# The issue is typically that the *importing* module holds a reference to the old module's variable.
-# Since we fixed the importing side to use `scanner_service.scanner_manager`, we are good.
 scanner_manager = ScannerManager()

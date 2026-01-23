@@ -589,6 +589,8 @@ class CardScanner:
         set_id_conf = 0.0
         lang = "EN"
         card_name = None
+        atk_val = None
+        def_val = None
 
         try:
             # Resize for better small text detection (standard strategy)
@@ -629,6 +631,9 @@ class CardScanner:
             # Parse Set ID (pass full_text for global regex fallback)
             set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences, full_text)
 
+            # Parse ATK/DEF
+            atk_val, def_val = self._parse_atk_def(full_text)
+
         except Exception as e:
             logger.error(f"OCR Scan Error ({engine}): {e}")
             full_text = " | ".join(raw_text_list)
@@ -639,9 +644,28 @@ class CardScanner:
             raw_text=full_text,
             set_id=set_id,
             card_name=card_name,
+            atk=atk_val,
+            def_val=def_val,
             set_id_conf=set_id_conf * 100, # Normalize to 0-100
             language=lang
         )
+
+    def _parse_atk_def(self, text: str) -> Tuple[Optional[str], Optional[str]]:
+        """Extracts ATK and DEF values using regex."""
+        atk = None
+        def_v = None
+
+        # ATK/XXXX
+        m_atk = re.search(r'ATK\s*/\s*([0-9?]+)', text, re.IGNORECASE)
+        if m_atk:
+            atk = m_atk.group(1)
+
+        # DEF/XXXX
+        m_def = re.search(r'DEF\s*/\s*([0-9?]+)', text, re.IGNORECASE)
+        if m_def:
+            def_v = m_def.group(1)
+
+        return atk, def_v
 
     def _parse_card_name(self, raw_result: Any, engine: str, scope: str = 'full') -> Optional[str]:
         """Extracts card name from OCR result using Robust Database Matching."""
@@ -803,16 +827,60 @@ class CardScanner:
 
         return best_id, best_score, lang
 
-    def detect_first_edition(self, warped, engine='easyocr') -> bool:
-        """Checks for '1st Edition' text using generic OCR on ROI."""
+    def detect_first_edition(self, warped, engine='easyocr', full_text_context: str = "", card_name_context: str = "") -> bool:
+        """
+        Checks for '1st Edition' status.
+        Priority 1: Check specific ROI for '1st Edition' text.
+        Priority 2: Check full text context with exception logic.
+        """
+        # 1. ROI Check (High Confidence)
         x, y, w, h = self.roi_1st_ed
         roi = warped[y:y+h, x:x+w]
 
+        # Quick scan of ROI
         res = self.ocr_scan(roi, engine=engine)
-        text = res.raw_text.lower()
+        roi_text = res.raw_text.lower()
 
-        if '1st' in text or 'edition' in text:
+        # Strict indicators in ROI
+        if "1st" in roi_text or "1." in roi_text or "limited" in roi_text:
             return True
+
+        # 2. Contextual Check (Fallback)
+        text_to_check = (roi_text + " " + full_text_context).lower()
+
+        has_edition_keyword = "edition" in text_to_check or "auflage" in text_to_check
+
+        if has_edition_keyword:
+            # Exception Logic: If "Edition" is in Name or Effect (we approximate Effect by absence of name overlap or position),
+            # we need "1st", "1.", or "LIMITED".
+
+            # Since we can't easily isolate Effect text from full OCR, we assume "Edition" implies 1st UNLESS
+            # we see strong evidence it's not (e.g. it's just the word "Edition" floating in the name).
+            # But "Edition" in name is rare.
+
+            # Let's enforce the "1st" requirement if we are relying on the generic text search
+            # (as opposed to the ROI which is spatially dedicated to the edition marker).
+
+            if "1st" in text_to_check or "1." in text_to_check or "limited" in text_to_check:
+                return True
+
+            # If we found "Edition" but NO "1st"/"Limited", strictly speaking it might be Unlimited (reprint sets often omit text, but some might have "Unlimited Edition"?)
+            # Actually, Unlimited cards usually have NO text there.
+            # But the prompt says: "If the word Edition ... is in the text its marked as first edition".
+            # BUT "EXCEPTION ... Then we need 1st ...".
+
+            # Let's check if "Edition" appears in the Card Name context
+            if card_name_context:
+                norm_name = self._normalize_card_name(card_name_context)
+                if "edition" in norm_name or "auflage" in norm_name:
+                    # It IS in the name (e.g. "Toon Table of Contents" - wait that doesn't have edition. "Second Coin Toss" - no.)
+                    # If it's in the name, we MUST see "1st". We already checked "1st" above and failed.
+                    return False
+
+            # If we are here: We found "Edition", it's NOT in the name, and we didn't find "1st".
+            # According to prompt: "If the word Edition ... is in the text its marked as first edition".
+            return True
+
         return False
 
     def detect_language(self, warped, set_id: Optional[str]) -> str:

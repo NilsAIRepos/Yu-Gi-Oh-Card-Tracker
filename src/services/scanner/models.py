@@ -7,6 +7,8 @@ class OCRResult(BaseModel):
     raw_text: str
     set_id: Optional[str] = None
     card_name: Optional[str] = None
+    atk: Optional[str] = None
+    def_val: Optional[str] = None
     set_id_conf: float = 0.0
     language: str = "EN"
 
@@ -37,6 +39,8 @@ class ScanResult(BaseModel):
     match_score: int = 0
     # For UI display
     raw_ocr: Optional[List[OCRResult]] = None
+    # For Ambiguity Resolution
+    ambiguity_data: Optional[Dict[str, Any]] = None
 
 class ScanDebugReport(BaseModel):
     """Comprehensive state for the Debug Lab"""

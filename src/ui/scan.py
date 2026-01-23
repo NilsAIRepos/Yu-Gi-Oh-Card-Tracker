@@ -15,6 +15,7 @@ from src.services.scanner import SCANNER_AVAILABLE
 from src.core.persistence import persistence
 from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
 from src.services.ygo_api import ygo_service
+from src.core.utils import transform_set_code, REGION_TO_LANGUAGE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +214,7 @@ class ScanPage:
         self.ocr_tracks = ['doctr'] # Default to DocTR
         self.preprocessing_mode = 'classic' # 'classic', 'yolo', or 'yolo26'
         self.art_match_yolo = False
+        self.default_condition = "Near Mint"
 
         # Debug Lab State (local cache of Pydantic model dump)
         self.debug_report = {}
@@ -223,6 +225,12 @@ class ScanPage:
 
         # UI State Persistence
         self.expansion_states = {}
+
+        # Dialog reference
+        self.ambiguity_dialog_ref = None
+
+        # Last Found Card (for Debug Lab display)
+        self.last_scan_result = None
 
     async def init_cameras(self):
         try:
@@ -243,33 +251,6 @@ class ScanPage:
         if event.snapshot:
             self.debug_report = event.snapshot.model_dump()
 
-        # Schedule UI updates on main thread
-        # Using simple lambda might risk late binding? No, context should be preserved by ui.context or similar?
-        # Actually NiceGUI callbacks from threads need specific handling?
-        # Typically we can just refresh directly if we are within the context, but this comes from a background thread.
-        # We need to use `app.call_later` to bridge to the event loop, but specific client context?
-        # ScanPage instance is per-client (in `scan_page` scope).
-
-        # We can trigger a refresh of the elements.
-        # Since this callback runs in the background thread of ScannerManager, we must NOT call UI methods directly.
-        # We assume ScannerManager calls this in its thread.
-
-        # We need to dispatch to the UI thread.
-        # But `app.storage` isn't used here.
-        # We can rely on a timer loop to pick up the state (polling local state),
-        # OR use `ui.timer(..., callback=...)` to poll the event queue if we queued it?
-
-        # WAIT. The user asked for "Event Based System".
-        # If I just update `self.debug_report` here, does the UI see it?
-        # No, the UI is static until `.refresh()` is called.
-        # And I can't call `.refresh()` from a background thread easily without context.
-
-        # However, `scanner_manager` is a global singleton. `ScanPage` is per-user.
-        # If multiple users are on the page, they all get this callback if they registered?
-        # ScannerManager listener list is shared.
-
-        # Let's use a queue on the Page instance to receive events, and a fast timer to consume them.
-        # This effectively keeps the "loop" but makes it responsive to events rather than polling the manager.
         self.event_queue.put(event)
 
     async def event_consumer(self):
@@ -288,8 +269,18 @@ class ScanPage:
                     if event.type in ['status_update', 'scan_queued', 'scan_started', 'step_complete', 'scan_finished']:
                         self.refresh_debug_ui()
 
+                    if event.type == 'scan_ambiguous':
+                        # Open Ambiguity Dialog
+                        self.open_ambiguity_dialog(event.data.get('result'))
+                        # Also refresh debug to show logs
+                        self.refresh_debug_ui()
+
                     if event.type == 'error':
                         ui.notify(event.data.get('message', 'Error'), type='negative')
+
+                    if event.type == 'result_ready':
+                         # Handled by result queue poll below, but good for trigger
+                         pass
 
                 except queue.Empty:
                     break
@@ -307,13 +298,220 @@ class ScanPage:
             # 3. Check result queue
             res = scanner_service.scanner_manager.get_latest_result()
             if res:
-                self.scanned_cards.insert(0, res)
-                self.render_live_list.refresh()
-                ui.notify(f"Scanned: {res.get('name')}", type='positive')
-                self.refresh_debug_ui() # Ensure final result is shown
+                # If ambiguous, it might have been emitted via event.
+                # Check if it has ambiguity_data to avoid double handling if we handled event.
+                # Actually, `scan_ambiguous` event sends data payload. `result_queue` sends ScanResult.
+                # If it's ambiguous, the manager might NOT put it in result_queue or might flag it.
+                # Current manager puts it in result_queue ALWAYS.
+
+                # Check if we should auto-add or wait.
+                # If ambiguous, we rely on the event handling.
+                # But if we missed the event?
+
+                if res.get('ambiguity_data'):
+                     # Do not auto-add. Event handler should have caught it.
+                     pass
+                else:
+                    self.scanned_cards.insert(0, res)
+                    self.last_scan_result = res
+                    self.render_live_list.refresh()
+                    ui.notify(f"Scanned: {res.get('name')}", type='positive')
+                    self.refresh_debug_ui() # Ensure final result is shown
 
         except Exception as e:
             logger.error(f"Error in event_consumer: {e}")
+
+    def open_ambiguity_dialog(self, result_data):
+        if not result_data: return
+        ambiguity = result_data.get('ambiguity_data', {})
+        candidates = ambiguity.get('candidates', [])
+
+        # Default Selections
+        selected_cand_idx = 0
+        current_candidate = candidates[0] if candidates else {}
+
+        # State containers
+        state = {
+            "card_idx": 0,
+            "set_code": result_data.get('set_code'),
+            "rarity": result_data.get('rarity'),
+            "language": result_data.get('language', 'EN'),
+            "first_edition": result_data.get('first_edition', False),
+            "condition": self.default_condition
+        }
+
+        # Helper to get current card sets
+        def get_current_sets():
+            if not candidates: return []
+            return candidates[state["card_idx"]]['sets']
+
+        def update_set_options():
+            sets = get_current_sets()
+            # Filter based on language?
+            # User requirement: "If DE is selected ... only show setcodes with DE country codes"
+            # But we must allow "compatible" codes (e.g. legacy G for DE).
+
+            opts = []
+            target_lang = state['language']
+
+            for s in sets:
+                # Check region
+                # Use util function to extract region
+                # But here we have full set code.
+                code = s['set_code']
+
+                # Check compatibility
+                # We can't strictly hide incompatible ones if that prevents the user from correcting a wrong language selection.
+                # But we should prioritize/filter.
+                # Let's show compatible ones first, or strictly if requested.
+                # Prompt: "Constrain the Dropdowns to only possible options"
+
+                # Implementation: Check if transformed code matches?
+                # Or check region code.
+
+                # Let's filter:
+                # 1. Neutral (no region) -> Always show?
+                # 2. Region matches Language (e.g. DE matches DE)
+                # 3. Legacy Region matches Language (e.g. G matches DE)
+
+                # Simple check:
+                # Transform to target language. If the result equals the code, it's a perfect match for that language.
+                transformed = transform_set_code(code, target_lang)
+                if transformed == code:
+                     opts.append(code)
+                else:
+                    # Also include if it has NO region?
+                     if '-' in code and code.split('-')[1][0].isdigit():
+                         opts.append(code)
+
+            # If filtered list is empty, show all (fallback)
+            if not opts:
+                opts = [s['set_code'] for s in sets]
+
+            # Deduplicate
+            return sorted(list(set(opts)))
+
+        def update_rarity_options():
+            sets = get_current_sets()
+            current_set_code = state['set_code']
+
+            rarities = []
+            for s in sets:
+                if s['set_code'] == current_set_code:
+                    rarities.append(s['set_rarity'])
+
+            if not rarities:
+                # Fallback: all rarities for this card
+                 rarities = [s['set_rarity'] for s in sets]
+
+            return sorted(list(set(rarities)))
+
+        # Dialog
+        with ui.dialog() as dialog, ui.card().classes('w-[600px]'):
+            ui.label("Resolve Ambiguity").classes('text-xl font-bold text-warning')
+            ui.label(ambiguity.get('reason', 'Unknown ambiguity')).classes('text-sm text-gray-400 mb-2')
+
+            with ui.row().classes('w-full gap-4'):
+                # Left: Image Preview
+                with ui.column().classes('w-1/3'):
+                    # Preview should update based on set selection
+                    img = ui.image(result_data.get('image_path') or '/images/placeholder.png').classes('w-full rounded')
+
+                    def update_image():
+                        # Find image for current set/rarity
+                        sets = get_current_sets()
+                        found = False
+                        for s in sets:
+                            if s['set_code'] == state['set_code'] and s['set_rarity'] == state['rarity']:
+                                # We need image path. API Set has image_id.
+                                # Construct path: /images/{id}.jpg
+                                if s.get('image_id'):
+                                    img.source = f"/images/{s['image_id']}.jpg"
+                                    found = True
+                                break
+                        if not found and candidates:
+                             # Fallback to card default
+                             cid = candidates[state['card_idx']]['card_id']
+                             img.source = f"/images/{cid}.jpg"
+
+                # Right: Controls
+                with ui.column().classes('w-2/3'):
+                    # 1. Card Selection
+                    card_opts = {i: f"{c['name']} (Score: {int(c['score'])})" for i, c in enumerate(candidates)}
+                    c_select = ui.select(card_opts, value=state['card_idx'], label="Card Identity").classes('w-full')
+
+                    # 2. Language
+                    l_select = ui.select(['EN', 'DE', 'FR', 'IT', 'PT', 'ES', 'JP', 'KR'], value=state['language'], label="Language").classes('w-full')
+
+                    # 3. Set Code
+                    s_select = ui.select(update_set_options(), value=state['set_code'], label="Set Code").classes('w-full')
+
+                    # 4. Rarity
+                    r_select = ui.select(update_rarity_options(), value=state['rarity'], label="Rarity").classes('w-full')
+
+                    # 5. Condition & 1st Ed
+                    with ui.row().classes('w-full'):
+                        ui.select(['Mint', 'Near Mint', 'Excellent', 'Good', 'Light Played', 'Played', 'Poor'],
+                                  value=state['condition'], label="Condition").classes('w-1/2').bind_value(state, 'condition')
+                        ui.checkbox("1st Edition").bind_value(state, 'first_edition').classes('mt-4')
+
+                    # Event Handlers
+                    def on_card_change(e):
+                        state['card_idx'] = e.value
+                        s_select.options = update_set_options()
+                        s_select.value = s_select.options[0] if s_select.options else ""
+                        update_image()
+
+                    def on_lang_change(e):
+                        state['language'] = e.value
+                        s_select.options = update_set_options()
+                        # Try to keep current value if valid, else pick first
+                        if s_select.value not in s_select.options and s_select.options:
+                             s_select.value = s_select.options[0]
+                        update_image()
+
+                    def on_set_change(e):
+                        state['set_code'] = e.value
+                        r_select.options = update_rarity_options()
+                        if r_select.value not in r_select.options and r_select.options:
+                             r_select.value = r_select.options[0]
+                        update_image()
+
+                    def on_rarity_change(e):
+                        state['rarity'] = e.value
+                        update_image()
+
+                    c_select.on_value_change(on_card_change)
+                    l_select.on_value_change(on_lang_change)
+                    s_select.on_value_change(on_set_change)
+                    r_select.on_value_change(on_rarity_change)
+
+            with ui.row().classes('w-full justify-end mt-4'):
+                ui.button("Abort", on_click=dialog.close).props('flat color=negative')
+
+                def confirm():
+                    # Construct final result
+                    sel_card = candidates[state['card_idx']]
+
+                    final_res = result_data.copy()
+                    final_res['name'] = sel_card['name']
+                    final_res['card_id'] = sel_card['card_id']
+                    final_res['set_code'] = state['set_code']
+                    final_res['rarity'] = state['rarity']
+                    final_res['language'] = state['language']
+                    final_res['first_edition'] = state['first_edition']
+                    final_res.pop('ambiguity_data', None) # Clear ambiguity
+
+                    # Add to scanned list
+                    self.scanned_cards.insert(0, final_res)
+                    self.render_live_list.refresh()
+                    ui.notify(f"Resolved: {sel_card['name']}", type='positive')
+                    self.refresh_debug_ui()
+                    dialog.close()
+
+                ui.button("Confirm", on_click=confirm).props('color=primary')
+
+        dialog.open()
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
@@ -388,8 +586,9 @@ class ScanPage:
                     )
                     target_card.variants.append(target_variant)
 
+                # Use default condition from UI
                 entry = CollectionEntry(
-                    condition="Near Mint",
+                    condition=self.default_condition,
                     language=item['language'],
                     first_edition=item['first_edition'],
                     quantity=1
@@ -436,6 +635,7 @@ class ScanPage:
         self.render_debug_pipeline_results.refresh()
         self.render_scan_queue.refresh()
         self.render_status_controls.refresh()
+        self.render_found_card.refresh()
 
     async def handle_debug_upload(self, e: events.UploadEventArguments):
         self.latest_capture_src = None
@@ -507,7 +707,11 @@ class ScanPage:
                     ui.image(f"/images/{os.path.basename(card['image_path'])}").classes('w-12 h-16 object-contain')
                 with ui.column().classes('flex-grow'):
                     ui.label(card.get('name', 'Unknown')).classes('font-bold')
-                    ui.label(f"{card.get('set_code')}").classes('text-xs text-gray-500')
+                    with ui.row().classes('gap-2 text-xs text-gray-500'):
+                        ui.label(f"{card.get('set_code')}")
+                        ui.label(f"• {card.get('rarity')}")
+                        if card.get('first_edition'):
+                            ui.badge('1st', color='orange').props('size=xs')
 
                 ui.button(icon='delete', color='negative', flat=True,
                           on_click=lambda idx=i: self.remove_card(idx))
@@ -532,6 +736,13 @@ class ScanPage:
             ui.image(self.debug_report['warped_image_url']).classes('w-full h-auto border rounded mb-2')
         else:
             ui.label("Waiting for input...").classes('text-gray-500 italic')
+
+        # Analysis Stats
+        with ui.column().classes('gap-1'):
+            vis_rarity = self.debug_report.get('visual_rarity', 'Unknown')
+            first_ed = self.debug_report.get('first_edition', False)
+            ui.label(f"Visual Rarity: {vis_rarity}").classes('text-sm')
+            ui.label(f"1st Edition (Visual/OCR): {first_ed}").classes('text-sm')
 
         if self.debug_report.get('roi_viz_url'):
             ui.label("Regions of Interest:").classes('font-bold text-lg')
@@ -562,6 +773,12 @@ class ScanPage:
                         ui.label(f"Set ID: {data.get('set_id', 'N/A')}").classes('font-bold text-green-400')
                         if data.get('card_name'):
                              ui.label(f"Name: {data.get('card_name')}").classes('font-bold text-blue-400')
+
+                        # New fields
+                        with ui.row().classes('gap-4'):
+                            if data.get('atk'): ui.label(f"ATK: {data.get('atk')}")
+                            if data.get('def_val'): ui.label(f"DEF: {data.get('def_val')}")
+
                         ui.label(f"Conf: {data.get('set_id_conf', 0):.1f}%").classes('text-sm')
                         ui.label(f"Lang: {data.get('language', 'N/A')}").classes('text-sm')
                         ui.separator().classes('bg-gray-600 my-1')
@@ -645,6 +862,11 @@ class ScanPage:
                     if mgr.is_processing:
                         ui.label(f"{current_step}").classes('text-xs text-blue-400')
 
+            # Add Default Condition Dropdown here for accessibility in Debug Lab as well?
+            # Or just Live Scan. The request said "Live Scan Header".
+            # I'll add it here too if useful, but maybe space is tight.
+            # I'll stick to Live Scan header (Tab 1) for the main dropdown.
+
             # Controls
             if is_paused:
                  ui.button('Start Processing', icon='play_arrow', color='positive', on_click=self.toggle_pause).props('size=sm')
@@ -701,12 +923,35 @@ class ScanPage:
                 ui.label("2. Visual Analysis").classes('text-2xl font-bold text-primary')
                 self.render_debug_analysis()
 
+                ui.separator().classes('bg-gray-600')
+                ui.label("Last Matched Card").classes('text-xl font-bold text-accent')
+                self.render_found_card()
+
             # --- CARD 3: RESULTS ---
             with ui.card().classes('w-full p-4 flex flex-col gap-4 shadow-lg bg-gray-900 border border-gray-700'):
                 ui.label("3. OCR Results").classes('text-2xl font-bold text-primary')
                 self.render_debug_pipeline_results()
 
         ui.run_javascript('initDebugStream()')
+
+    @ui.refreshable
+    def render_found_card(self):
+        if not self.last_scan_result:
+            ui.label("No result yet.").classes('text-gray-500 italic')
+            return
+
+        res = self.last_scan_result
+        with ui.row().classes('w-full gap-4 items-start'):
+            if res.get('image_path'):
+                 ui.image(f"/images/{os.path.basename(res['image_path'])}").classes('w-24 h-auto rounded border')
+
+            with ui.column().classes('gap-1'):
+                ui.label(res.get('name', 'Unknown')).classes('font-bold text-lg')
+                ui.label(f"Set: {res.get('set_code')}").classes('font-mono text-green-400')
+                ui.label(f"Rarity: {res.get('rarity')}").classes('text-sm')
+                ui.label(f"1st Ed: {res.get('first_edition')}").classes('text-sm')
+                ui.label(f"Lang: {res.get('language')}").classes('text-sm')
+                ui.label(f"Match Score: {res.get('match_score')}").classes('text-xs text-gray-400')
 
     def toggle_track(self, track, enabled):
         if enabled:
@@ -761,6 +1006,12 @@ def scan_page():
                               on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-48')
 
                 page.camera_select = ui.select(options={}, label='Camera').classes('w-48')
+
+                # Default Condition Dropdown
+                ui.select(['Mint', 'Near Mint', 'Excellent', 'Good', 'Light Played', 'Played', 'Poor'],
+                          value=page.default_condition, label='Default Condition',
+                          on_change=lambda e: setattr(page, 'default_condition', e.value)).classes('w-40')
+
                 page.start_btn = ui.button('Start', on_click=page.start_camera).props('icon=videocam')
                 page.stop_btn = ui.button('Stop', on_click=page.stop_camera).props('icon=videocam_off color=negative')
                 page.stop_btn.visible = False
