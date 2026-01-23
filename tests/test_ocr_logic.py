@@ -60,11 +60,13 @@ class TestOCRLogic(unittest.TestCase):
             'RA02-DE052' # German code
         }
         self.scanner.valid_card_names_norm = {
-            'blue-eyeswhitedragon': 'Blue-Eyes White Dragon',
+            'blueeyeswhitedragon': 'Blue-Eyes White Dragon',
             'darkmagician': 'Dark Magician',
             'potofgreed': 'Pot of Greed',
             'schwarzermagier': 'Schwarzer Magier',
-            'ruckkehr': 'Rückkehr' # Umlaut normalized
+            'ruckkehr': 'Rückkehr', # Umlaut normalized
+            'kashtiraoger': 'Kashtira Oger',
+            'kangaruchampion': 'Kangaru Champion'
         }
 
     def test_all_number_prefix_penalty(self):
@@ -122,6 +124,20 @@ class TestOCRLogic(unittest.TestCase):
         res = MockDocTRResult([block])
         name = self.scanner._parse_card_name(res, 'doctr')
         self.assertEqual(name, "Rückkehr")
+
+    def test_name_match_pipe_separator(self):
+        # "KASHTIRA | OGER" should match "Kashtira Oger"
+        block = MockBlock("KASHTIRA | OGER")
+        res = MockDocTRResult([block])
+        name = self.scanner._parse_card_name(res, 'doctr')
+        self.assertEqual(name, "Kashtira Oger")
+
+    def test_name_match_hyphen_handling(self):
+        # "KANGARU-CHAMPION" should match "Kangaru Champion"
+        block = MockBlock("KANGARU-CHAMPION")
+        res = MockDocTRResult([block])
+        name = self.scanner._parse_card_name(res, 'doctr')
+        self.assertEqual(name, "Kangaru Champion")
 
 if __name__ == '__main__':
     unittest.main()

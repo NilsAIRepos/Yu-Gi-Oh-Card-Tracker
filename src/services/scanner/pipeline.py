@@ -131,8 +131,9 @@ class CardScanner:
                                 if name not in loaded_names:
                                     loaded_names.add(name)
 
-                                    # Normalized Map: Lowercase, No Spaces, Umlauts replaced
-                                    norm = name.translate(trans_table).lower().replace(" ", "")
+                                    # Normalized Map: Lowercase, No Spaces, Umlauts replaced, Alphanumeric only
+                                    # Strip all non-alphanumeric chars to handle OCR noise (pipes, hyphens)
+                                    norm = re.sub(r'[^a-z0-9]', '', name.translate(trans_table).lower())
                                     self.valid_card_names_norm[norm] = name
 
                             # Load Set Codes
@@ -606,10 +607,9 @@ class CardScanner:
             def check_candidate(candidate_str):
                 if not candidate_str or len(candidate_str) < 3: return None
 
-                # Exact/Normalized Match (Handles missing spaces)
-                # Note: We rely on the fact that OCR usually gets characters right or we handle substitutions.
-                # Since we removed Bag of Words, we enforce order.
-                norm = candidate_str.lower().replace(" ", "")
+                # Exact/Normalized Match (Handles missing spaces & noise)
+                # Use regex to strip non-alphanumeric (handling 'KASHTIRA | OGER' -> 'kashtiraoger')
+                norm = re.sub(r'[^a-z0-9]', '', candidate_str.lower())
 
                 if norm in self.valid_card_names_norm:
                     return self.valid_card_names_norm[norm]
