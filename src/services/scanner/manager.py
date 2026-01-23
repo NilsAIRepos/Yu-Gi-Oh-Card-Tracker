@@ -413,24 +413,8 @@ class ScannerManager:
                              if hasattr(self.debug_state, key):
                                  setattr(self.debug_state, key, value)
 
-                        # If we found a card, push to result queue
-                        # We pick the best result.
-                        best_res = self._pick_best_result(report)
-                        if best_res:
-                            # Enhance with visual traits if warped image exists
-                            warped = report.get('warped_image_data') # Not in model, but returned by _process_scan
-
-                            # Construct lookup data (Internal structure for LookupQueue)
-                            lookup_data = {
-                                "set_code": best_res.set_id,
-                                "language": best_res.language,
-                                "ocr_conf": best_res.set_id_conf,
-                                "rarity": "Unknown",
-                                "visual_rarity": report.get('visual_rarity', 'Common'),
-                                "first_edition": report.get('first_edition', False),
-                                "warped_image": warped
-                            }
-                            self.lookup_queue.put(lookup_data)
+                        # Submit for Asynchronous Matching (Advanced Logic)
+                        self.lookup_queue.put(report)
 
                         logger.info(f"Finished scan for: {filename}")
                         self._log_debug(f"Finished: {filename}")
