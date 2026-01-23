@@ -221,6 +221,7 @@ class ScanPage:
         self.debug_report = {}
         self.debug_loading = False
         self.latest_capture_src = None
+        self.last_scan_result = None # Store final result for Debug View
         # self.was_processing is removed as we use event based updates now
         self.watchdog_counter = 0
 
@@ -313,6 +314,7 @@ class ScanPage:
             if res:
                 # Append default condition
                 res['condition'] = self.default_condition
+                self.last_scan_result = res
                 self.scanned_cards.insert(0, res)
                 self.render_live_list.refresh()
                 ui.notify(f"Scanned: {res.get('name')}", type='positive')
@@ -691,7 +693,36 @@ class ScanPage:
                  ui.image(art_match['image_url']).classes('w-full h-auto border rounded border-purple-500 mb-2')
 
     @ui.refreshable
+    def render_final_match(self):
+        """Displays the final matched card details in the Debug Lab."""
+        res = self.last_scan_result
+        if not res:
+            return
+
+        with ui.card().classes('w-full bg-green-900 border border-green-500 mb-4 p-4'):
+            ui.label("✅ Final Match Result").classes('text-xl font-bold text-white mb-2')
+
+            with ui.row().classes('w-full gap-4'):
+                # Image
+                if res.get('image_path') and os.path.exists(res['image_path']):
+                    ui.image(f"/images/{os.path.basename(res['image_path'])}").classes('w-24 h-auto object-contain rounded')
+
+                # Details
+                with ui.column().classes('flex-grow gap-1'):
+                    ui.label(res.get('name', 'Unknown')).classes('font-bold text-lg text-white')
+                    ui.label(f"Set: {res.get('set_code')}").classes('font-mono text-yellow-300')
+
+                    with ui.row().classes('gap-2'):
+                        ui.badge(res.get('rarity', 'Common'), color='blue')
+                        ui.badge(res.get('language', 'EN'), color='grey')
+                        if res.get('first_edition'):
+                            ui.badge("1st Edition", color='orange')
+                        ui.badge(res.get('condition', 'N/A'), color='purple')
+
+    @ui.refreshable
     def render_debug_pipeline_results(self):
+        self.render_final_match()
+
         # 4 Collapsable Zones
 
         def render_zone(title, key):
@@ -708,6 +739,12 @@ class ScanPage:
                         ui.separator().classes('bg-gray-600 my-1')
                         ui.label("Raw Text:").classes('text-xs text-gray-400')
                         ui.label(data.get('raw_text', '')).classes('font-mono text-xs break-all bg-black p-1 rounded')
+
+                        # Extra info
+                        if data.get('atk') or data.get('def_val'):
+                             with ui.row().classes('gap-2 mt-1'):
+                                 if data.get('atk'): ui.badge(f"ATK: {data['atk']}", color='red')
+                                 if data.get('def_val'): ui.badge(f"DEF: {data['def_val']}", color='blue')
                 else:
                     ui.label("No Data").classes('italic text-gray-500 p-2')
 
