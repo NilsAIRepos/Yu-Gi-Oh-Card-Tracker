@@ -701,7 +701,7 @@ class ScannerManager:
         # Candidate Generation
         potential_cards = []
 
-        # 1. By Set Code
+        # 1. By Set Code (Primary Source)
         if top_set_id:
             # Load DB (Assuming EN for now, or detect language)
             # detect language from report?
@@ -715,7 +715,7 @@ class ScannerManager:
                             "source": "set_code",
                             "card": card,
                             "set_info": s,
-                            "score": 80
+                            "score": 120 # High score for Set Code
                         })
 
         # 2. By Name
@@ -727,7 +727,7 @@ class ScannerManager:
                             "source": "name",
                             "card": card,
                             "set_info": None,
-                            "score": 60
+                            "score": 70
                         })
 
         # 3. By Art Match
@@ -740,7 +740,7 @@ class ScannerManager:
                             "source": "art",
                             "card": card,
                             "set_info": None,
-                            "score": 50
+                            "score": 60
                         })
              except: pass
 
@@ -839,15 +839,24 @@ class ScannerManager:
                      grouped[key]["score"] += p["score"]
                      grouped[key]["sources"].add(p["source"])
 
-        # Validate with ATK/DEF
+        # Validate with ATK/DEF and Boost Sources
         for key, data in grouped.items():
             c = data['card']
-            if detected_atk and str(c.atk) == detected_atk:
-                data["score"] += 10
-            # Try different attribute names for DEF
+
+            # Check ATK
+            if detected_atk:
+                if str(c.atk) == detected_atk:
+                    data["score"] += 10
+                else:
+                    data["score"] -= 50 # Mismatch penalty (High confidence in stats OCR)
+
+            # Check DEF
             def_val = getattr(c, 'def_val', getattr(c, 'def', None))
-            if detected_def and str(def_val) == detected_def:
-                data["score"] += 10
+            if detected_def:
+                if str(def_val) == detected_def:
+                    data["score"] += 10
+                else:
+                    data["score"] -= 50
 
             if "art" in data["sources"]: data["score"] += 20
             if "set_code" in data["sources"]: data["score"] += 30
