@@ -93,7 +93,37 @@ class CardScanner:
 
         self.valid_set_codes = set()
         self.valid_card_names_norm = {} # normalized_str -> original_name
+
+        # Translation Table for Normalization
+        # Maps accented characters to their base ASCII equivalents
+        self.TRANS_TABLE = str.maketrans({
+            'ä': 'a', 'ö': 'o', 'ü': 'u',
+            'Ä': 'A', 'Ö': 'O', 'Ü': 'U',
+            'â': 'a', 'ê': 'e', 'î': 'i', 'ô': 'o', 'û': 'u',
+            'Â': 'A', 'Ê': 'E', 'Î': 'I', 'Ô': 'O', 'Û': 'U',
+            'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
+            'À': 'A', 'È': 'E', 'Ì': 'I', 'Ò': 'O', 'Ù': 'U',
+            'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+            'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
+            'ñ': 'n', 'Ñ': 'N', 'ß': 's'
+        })
+
         self._load_validation_data()
+
+    def _normalize_card_name(self, text: str) -> str:
+        """
+        Normalizes card name text:
+        1. Translates accented characters to ASCII base.
+        2. Converts to lowercase.
+        3. Strips non-alphanumeric characters.
+        """
+        if not text:
+            return ""
+        # Translate first, then lower, then strip
+        text_trans = text.translate(self.TRANS_TABLE)
+        text_lower = text_trans.lower()
+        text_clean = re.sub(r'[^a-z0-9]', '', text_lower)
+        return text_clean
 
     def _load_validation_data(self):
         try:
@@ -110,12 +140,6 @@ class CardScanner:
             # Temporary set to avoid duplicates during processing
             loaded_names = set()
 
-            # Translation map for German Umlauts
-            trans_table = str.maketrans({
-                'ä': 'a', 'ö': 'o', 'ü': 'u',
-                'Ä': 'A', 'Ö': 'O', 'Ü': 'U'
-            })
-
             for fname in files:
                 path = os.path.join(db_dir, fname)
                 is_main_db = (fname == "card_db.json")
@@ -131,9 +155,8 @@ class CardScanner:
                                 if name not in loaded_names:
                                     loaded_names.add(name)
 
-                                    # Normalized Map: Lowercase, No Spaces, Umlauts replaced, Alphanumeric only
-                                    # Strip all non-alphanumeric chars to handle OCR noise (pipes, hyphens)
-                                    norm = re.sub(r'[^a-z0-9]', '', name.translate(trans_table).lower())
+                                    # Use centralized normalization
+                                    norm = self._normalize_card_name(name)
                                     self.valid_card_names_norm[norm] = name
 
                             # Load Set Codes
@@ -680,9 +703,9 @@ class CardScanner:
             def check_candidate(candidate_str):
                 if not candidate_str or len(candidate_str) < 3: return None
 
-                # Exact/Normalized Match (Handles missing spaces & noise)
-                # Use regex to strip non-alphanumeric (handling 'KASHTIRA | OGER' -> 'kashtiraoger')
-                norm = re.sub(r'[^a-z0-9]', '', candidate_str.lower())
+                # Normalize OCR output using the same logic as DB loading
+                # This ensures characters like 'Â' are mapped to 'A' instead of stripped
+                norm = self._normalize_card_name(candidate_str)
 
                 if norm in self.valid_card_names_norm:
                     return self.valid_card_names_norm[norm]

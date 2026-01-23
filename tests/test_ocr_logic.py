@@ -66,7 +66,8 @@ class TestOCRLogic(unittest.TestCase):
             'schwarzermagier': 'Schwarzer Magier',
             'ruckkehr': 'Rückkehr', # Umlaut normalized
             'kashtiraoger': 'Kashtira Oger',
-            'kangaruchampion': 'Kangaru Champion'
+            'kanguruchampion': 'Känguru-Champion', # DB entry (ä -> a)
+            'giftzahne': 'Giftzähne' # DB entry (ä -> a)
         }
 
     def test_all_number_prefix_penalty(self):
@@ -133,11 +134,34 @@ class TestOCRLogic(unittest.TestCase):
         self.assertEqual(name, "Kashtira Oger")
 
     def test_name_match_hyphen_handling(self):
-        # "KANGARU-CHAMPION" should match "Kangaru Champion"
-        block = MockBlock("KANGARU-CHAMPION")
+        # "KANGARU-CHAMPION" should match "Kangaru Champion" if DB has it
+        # Actually in our mock we updated it to Känguru-Champion (kanguruchampion)
+        # IF OCR is "KANGURU-CHAMPION" (correct OCR of Känguru) -> kanguruchampion -> Match
+
+        # Test 1: Correct OCR of Umlaut
+        block = MockBlock("Känguru-Champion")
         res = MockDocTRResult([block])
         name = self.scanner._parse_card_name(res, 'doctr')
-        self.assertEqual(name, "Kangaru Champion")
+        self.assertEqual(name, "Känguru-Champion")
+
+    def test_name_match_accent_handling(self):
+        # Test fix for "GIFTZÂHNE" -> "Giftzähne"
+        # OCR reads "GIFTZÂHNE" (Â instead of ä/A).
+        # Normalization should map Â -> A.
+        # DB 'Giftzähne' -> 'giftzahne'.
+        # OCR 'GIFTZÂHNE' -> 'giftzahne'. Match!
+
+        block = MockBlock("GIFTZÂHNE")
+        res = MockDocTRResult([block])
+        name = self.scanner._parse_card_name(res, 'doctr')
+        self.assertEqual(name, "Giftzähne")
+
+    def test_name_match_mixed_accents(self):
+        # Test "KÀNGURU" -> "Känguru"
+        block = MockBlock("KÀNGURU-CHAMPION")
+        res = MockDocTRResult([block])
+        name = self.scanner._parse_card_name(res, 'doctr')
+        self.assertEqual(name, "Känguru-Champion")
 
 if __name__ == '__main__':
     unittest.main()
