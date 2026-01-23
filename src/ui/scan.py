@@ -659,8 +659,8 @@ class ScanPage:
                     ui.label(card.get('name', 'Unknown')).classes('font-bold')
                     ui.label(f"{card.get('set_code')}").classes('text-xs text-gray-500')
 
-                ui.button(icon='delete', color='negative', flat=True,
-                          on_click=lambda idx=i: self.remove_card(idx))
+                ui.button(icon='delete', color='negative',
+                          on_click=lambda idx=i: self.remove_card(idx)).props('flat')
 
     @ui.refreshable
     def render_debug_results(self):
