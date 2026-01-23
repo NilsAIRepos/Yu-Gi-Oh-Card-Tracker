@@ -901,6 +901,31 @@ class ScannerManager:
         res.ambiguous = is_ambiguous
         res.candidates = final_candidates[:5]
 
+        # Logic: Set Code region dictates the language
+        # If set_code is 'LOB-DE001', lang is 'DE'.
+        # We override whatever the OCR language detection said.
+        if res.set_code:
+            # We can use the utils logic via simple regex here to be safe and fast
+            # Import regex if not at top? 'import re' is in pipeline, not necessarily manager.
+            # Let's import at top of file or use basic string parsing.
+            try:
+                # Basic parsing: split by '-'
+                parts = res.set_code.split('-')
+                if len(parts) > 1:
+                    # check suffix part (e.g. DE001, EN001, G001)
+                    suffix = parts[1]
+                    # We need to extract letters.
+                    region_letters = "".join([c for c in suffix if c.isalpha()])
+
+                    if region_letters:
+                        # Map region to language (e.g. E->EN, G->DE, DE->DE)
+                        from src.core.utils import REGION_TO_LANGUAGE_MAP
+                        detected_lang = REGION_TO_LANGUAGE_MAP.get(region_letters.upper())
+                        if detected_lang:
+                            res.language = detected_lang
+            except Exception as e:
+                logger.error(f"Error determining language from set code: {e}")
+
         return res
 
     async def _resolve_card_details(self, set_id: str) -> Optional[Dict[str, Any]]:
