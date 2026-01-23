@@ -8,7 +8,8 @@ try:
     import cv2
     import numpy as np
 except ImportError:
-    pass
+    cv2 = None
+    np = None
 
 try:
     import torch
@@ -230,43 +231,13 @@ class CardScanner:
                 raise
         return self.yolo_cls_model
 
-    def extract_yolo_features(self, image: 'np.ndarray', model_name: str = 'yolo26l-cls.pt') -> Optional['np.ndarray']:
+    def extract_yolo_features(self, image: Any, model_name: str = 'yolo26l-cls.pt') -> Optional[Any]:
         """
         Extracts feature embedding from the image using the classification model.
         Returns a numpy array (1D vector).
         """
         try:
             model = self.get_yolo_cls(model_name)
-
-            # Use 'embed' if available in this version of Ultralytics
-            # results = model.embed(image) # Not always standard
-
-            # Standard approach: Forward pass with hook or stripping head
-            # For YOLOv8/26 CLS, the model ends with a 'Classify' head.
-            # We want the output of the pooling layer (before the linear layer).
-
-            # Let's inspect the model structure dynamically if possible, or use a hook.
-            # A robust way is to use `embed=[layer_index]` in predict if supported,
-            # but usually it's `model.predict(..., embed=True)` in very new versions.
-
-            # Let's try the hook approach on the penultimate layer of the head or the backbone output.
-            # The 'Classify' head in YOLOv8 is usually:
-            #   self.conv
-            #   self.pool
-            #   self.drop
-            #   self.linear
-
-            # We want the output of `self.pool` (and flatten).
-
-            # However, `ultralytics` models wrap this.
-            # Let's try to run `model(image)` and see if we can get features.
-            # If not, we register a hook.
-
-            # Simplest for now: The output of the backbone (before head) or global pool.
-
-            # We will use a forward hook on the 'model.model[-1].linear' to capture its INPUT.
-            # The input to the linear layer is the feature vector.
-
             features = []
             def hook(module, input, output):
                 # input is a tuple, taking the first element
@@ -275,13 +246,6 @@ class CardScanner:
                 features.append(feat)
 
             # Find the linear layer
-            # model.model is the DetectionModel or ClassificationModel
-            # model.model.model is the Sequential
-            # model.model.model[-1] is usually the Head (Classify)
-
-            # We need to be careful about traversing.
-
-            # Let's assume standard structure:
             head = model.model.model[-1]
             if hasattr(head, 'linear'):
                 handle = head.linear.register_forward_hook(hook)
@@ -307,7 +271,7 @@ class CardScanner:
             logger.error(f"Error extracting YOLO features: {e}")
             return None
 
-    def calculate_similarity(self, embedding1: 'np.ndarray', embedding2: 'np.ndarray') -> float:
+    def calculate_similarity(self, embedding1: Any, embedding2: Any) -> float:
         """Calculates Cosine Similarity between two embeddings."""
         if embedding1 is None or embedding2 is None:
             return 0.0
@@ -339,7 +303,7 @@ class CardScanner:
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
         return thresh
 
-    def get_fallback_crop(self, frame) -> np.ndarray:
+    def get_fallback_crop(self, frame) -> Any:
         """Creates a 'center crop' of the frame."""
         try:
             h_frame, w_frame = frame.shape[:2]
@@ -366,13 +330,13 @@ class CardScanner:
             logger.error(f"Fallback crop error: {e}")
             return cv2.resize(frame, (self.width, self.height))
 
-    def get_roi_crop(self, warped, roi_name: str) -> Optional[np.ndarray]:
+    def get_roi_crop(self, warped, roi_name: str) -> Optional[Any]:
         if roi_name not in self.rois:
             return None
         x, y, w, h = self.rois[roi_name]
         return warped[y:y+h, x:x+w]
 
-    def find_card_contour(self, frame) -> Optional[np.ndarray]:
+    def find_card_contour(self, frame) -> Optional[Any]:
         """Classic contour detection with relaxed edge penalty."""
         thresh = self.preprocess_image(frame)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -427,7 +391,7 @@ class CardScanner:
 
         return None
 
-    def find_card_contour_white_bg(self, frame) -> Optional[np.ndarray]:
+    def find_card_contour_white_bg(self, frame) -> Optional[Any]:
         """
         Optimized contour detection for white backgrounds.
         Uses inverted thresholding to isolate darker cards from light background.
@@ -500,7 +464,7 @@ class CardScanner:
 
         return None
 
-    def find_card_yolo(self, frame, model_name='yolov8l.pt') -> Optional[np.ndarray]:
+    def find_card_yolo(self, frame, model_name='yolov8l.pt') -> Optional[Any]:
         """Finds card using YOLO object detection (Supports AABB and OBB)."""
         model = self.get_yolo(model_name)
         # Run inference
@@ -554,7 +518,7 @@ class CardScanner:
 
         return best_box
 
-    def warp_card(self, frame, contour) -> np.ndarray:
+    def warp_card(self, frame, contour) -> Any:
         pts = contour.reshape(4, 2)
         rect = np.zeros((4, 2), dtype="float32")
 
@@ -577,7 +541,7 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr', scope: str = 'full') -> 'OCRResult':
+    def ocr_scan(self, image: Any, engine: str = 'easyocr', scope: str = 'full') -> 'OCRResult':
         """
         Runs OCR on the provided image using the specified engine.
         Returns an OCRResult Pydantic model.
@@ -832,8 +796,8 @@ class CardScanner:
 
         return best_id, best_score, lang
 
-    def detect_first_edition(self, warped, engine='easyocr') -> bool:
-        """Checks for '1st Edition' text using generic OCR on ROI."""
+    def detect_first_edition(self, warped, full_text: Optional[str] = None, engine='easyocr') -> bool:
+        """Checks for '1st Edition' text using generic OCR on ROI, with full text fallback."""
         x, y, w, h = self.roi_1st_ed
         roi = warped[y:y+h, x:x+w]
 
@@ -841,18 +805,30 @@ class CardScanner:
         text = res.raw_text.upper()
 
         # Context-aware 1st Edition Check
-        # Strict markers: "1ST", "1.", "LIMITED"
-        has_marker = any(m in text for m in ["1ST", "1.", "LIMITED"])
+        # Markers including typos
+        markers = ["1ST", "1.", "LIMITED", "IST", "LST", "I.", "L."]
+        has_marker = any(m in text for m in markers)
 
         # Must also have "EDITION" or "AUFLAGE"
         has_edition = "EDITION" in text or "AUFLAGE" in text
 
-        # The user requested exception: "EXEPTION If there ist the word edition... in the card effect or card name."
-        # Since we scan a dedicated ROI (bottom-left usually), we avoid Name/Effect unless crop is bad.
-        # But we enforce the combination of Marker + Edition to be safe against isolated "Edition" words.
-
         if has_marker and has_edition:
             return True
+
+        # Fallback to full text if available and ROI check failed
+        if full_text:
+            ft = full_text.upper()
+            # Strict phrases to avoid false positives in effect text
+            # Matches: 1ST EDITION, 1. AUFLAGE, LIMITED EDITION
+            # Also common typos: IST EDITION, LST EDITION
+            patterns = [
+                r"1ST\s+EDITION", r"1\.\s+AUFLAGE", r"LIMITED\s+EDITION",
+                r"IST\s+EDITION", r"LST\s+EDITION"
+            ]
+            for p in patterns:
+                if re.search(p, ft):
+                    return True
+
         return False
 
     def detect_language(self, warped, set_id: Optional[str]) -> str:
@@ -989,6 +965,6 @@ class CardScanner:
         draw_roi(self.roi_set_id_search, (0, 0, 255))
         draw_roi(self.roi_1st_ed, (255, 0, 0))
         draw_roi(self.roi_name, (0, 255, 255))
-        draw_roi(self.roi_art, (255, 0, 255))
+        draw_roi(self.roi_art, (255, 255, 255)) # Changed color for visibility
 
         return canvas

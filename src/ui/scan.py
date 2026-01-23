@@ -6,6 +6,7 @@ import time
 import uuid
 import base64
 import queue
+import json
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 
@@ -16,6 +17,7 @@ from src.core.persistence import persistence
 from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
 from src.services.ygo_api import ygo_service
 from src.ui.components.ambiguity_dialog import AmbiguityDialog
+from src.core import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -211,10 +213,22 @@ class ScanPage:
         self.is_active = False
         self.default_condition = "Near Mint"
 
-        # Config
-        self.ocr_tracks = ['doctr'] # Default to DocTR
-        self.preprocessing_mode = 'classic' # 'classic', 'yolo', or 'yolo26'
-        self.art_match_yolo = False
+        # Load Configuration
+        self.config = config_manager.load_config()
+
+        # Initialize UI state from config
+        self.ocr_tracks = self.config.get('ocr_tracks', ['doctr'])
+        # Ensure ocr_tracks is valid (only one active track supported for now, but keeping list structure for compat)
+        if not self.ocr_tracks:
+            self.ocr_tracks = ['doctr']
+        self.selected_track = self.ocr_tracks[0] # For UI Radio Button
+
+        self.preprocessing_mode = self.config.get('preprocessing_mode', 'classic')
+        self.art_match_yolo = self.config.get('art_match_yolo', True) # Default to True per request
+        self.ambiguity_threshold = self.config.get('ambiguity_threshold', 10.0)
+
+        # Load Recent Scans
+        self.load_recent_scans()
 
         # Debug Lab State (local cache of Pydantic model dump)
         self.debug_report = {}
@@ -225,6 +239,40 @@ class ScanPage:
 
         # UI State Persistence
         self.expansion_states = {}
+
+    def save_settings(self):
+        """Saves current settings to config."""
+        self.config['ocr_tracks'] = [self.selected_track]
+        self.config['preprocessing_mode'] = self.preprocessing_mode
+        self.config['art_match_yolo'] = self.art_match_yolo
+        self.config['ambiguity_threshold'] = self.ambiguity_threshold
+
+        # Sync list used by logic
+        self.ocr_tracks = [self.selected_track]
+
+        config_manager.save_config(self.config)
+
+    def load_recent_scans(self):
+        """Loads scans from temp file."""
+        temp_path = "data/scans/scans_temp.json"
+        if os.path.exists(temp_path):
+            try:
+                with open(temp_path, 'r') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        self.scanned_cards = data
+            except Exception as e:
+                logger.error(f"Failed to load recent scans: {e}")
+
+    def save_recent_scans(self):
+        """Saves current scanned cards to temp file."""
+        temp_path = "data/scans/scans_temp.json"
+        try:
+            os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+            with open(temp_path, 'w') as f:
+                json.dump(self.scanned_cards, f, indent=4)
+        except Exception as e:
+            logger.error(f"Failed to save recent scans: {e}")
 
     async def init_cameras(self):
         try:
@@ -249,6 +297,7 @@ class ScanPage:
     def on_card_confirmed(self, result_dict: Dict[str, Any]):
         """Callback from Ambiguity Dialog or direct addition."""
         self.scanned_cards.insert(0, result_dict)
+        self.save_recent_scans()
         self.render_live_list.refresh()
         ui.notify(f"Added: {result_dict.get('name')}", type='positive')
 
@@ -271,6 +320,11 @@ class ScanPage:
                     if event.type in ['status_update', 'scan_queued', 'scan_started', 'step_complete', 'scan_finished']:
                         self.refresh_debug_ui()
 
+                        # Handle specific finished notifications
+                        if event.type == 'scan_finished':
+                            if not event.data.get('success'):
+                                ui.notify(f"Scan Failed: {event.data.get('error', 'Unknown')}", type='negative')
+
                     if event.type == 'error':
                         ui.notify(event.data.get('message', 'Error'), type='negative')
 
@@ -291,9 +345,11 @@ class ScanPage:
             res = scanner_service.scanner_manager.get_latest_result()
             if res:
                 if res.get('ambiguity_flag'):
+                    ui.notify("Scan Ambiguous: Please resolve.", type='warning')
                     dialog = AmbiguityDialog(res, self.on_card_confirmed)
                     dialog.open()
                 else:
+                    ui.notify("Scan Successful!", type='positive')
                     self.on_card_confirmed(res)
 
                 self.refresh_debug_ui() # Ensure final result is shown
@@ -326,6 +382,7 @@ class ScanPage:
     def remove_card(self, index):
         if 0 <= index < len(self.scanned_cards):
             self.scanned_cards.pop(index)
+            self.save_recent_scans()
             self.render_live_list.refresh()
 
     async def commit_cards(self):
@@ -392,6 +449,14 @@ class ScanPage:
 
             ui.notify(f"Added {count} cards to {collection.name}", type='positive')
             self.scanned_cards.clear()
+            self.save_recent_scans() # Will save empty list
+
+            # Clear temp file as requested
+            try:
+                os.remove("data/scans/scans_temp.json")
+            except:
+                pass
+
             self.render_live_list.refresh()
 
         except Exception as e:
@@ -401,6 +466,10 @@ class ScanPage:
     async def trigger_live_scan(self):
         """Triggers a scan from the Live Tab using current settings."""
         try:
+            # Ensure scanner is running (unpause if needed)
+            if scanner_service.scanner_manager.is_paused():
+                scanner_service.scanner_manager.resume()
+
             data_url = await ui.run_javascript('captureSingleFrame()')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
@@ -410,9 +479,10 @@ class ScanPage:
             content = base64.b64decode(encoded)
 
             options = {
-                "tracks": self.ocr_tracks,
+                "tracks": [self.selected_track], # Use the single selected track
                 "preprocessing": self.preprocessing_mode,
-                "art_match_yolo": self.art_match_yolo
+                "art_match_yolo": self.art_match_yolo,
+                "ambiguity_threshold": self.ambiguity_threshold
             }
             fname = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -446,9 +516,10 @@ class ScanPage:
                 filename = "upload.jpg"
 
             options = {
-                "tracks": self.ocr_tracks,
+                "tracks": [self.selected_track],
                 "preprocessing": self.preprocessing_mode,
-                "art_match_yolo": self.art_match_yolo
+                "art_match_yolo": self.art_match_yolo,
+                "ambiguity_threshold": self.ambiguity_threshold
             }
             # Use dynamic import access
             scanner_service.scanner_manager.submit_scan(content, options, label="Image Upload", filename=filename)
@@ -460,6 +531,10 @@ class ScanPage:
     async def handle_debug_capture(self):
         # refresh triggered by event
         try:
+            # Ensure scanner is running (unpause if needed)
+            if scanner_service.scanner_manager.is_paused():
+                scanner_service.scanner_manager.resume()
+
             data_url = await ui.run_javascript('captureSingleFrame()')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
@@ -474,9 +549,10 @@ class ScanPage:
             content = base64.b64decode(encoded)
 
             options = {
-                "tracks": self.ocr_tracks,
+                "tracks": [self.selected_track],
                 "preprocessing": self.preprocessing_mode,
-                "art_match_yolo": self.art_match_yolo
+                "art_match_yolo": self.art_match_yolo,
+                "ambiguity_threshold": self.ambiguity_threshold
             }
             fname = f"capture_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -566,6 +642,24 @@ class ScanPage:
         render_zone("Track 2: DocTR (Full Frame)", "t2_full")
         render_zone("Track 2: DocTR (Cropped)", "t2_crop")
 
+        # Show Match Candidates
+        candidates = self.debug_report.get('match_candidates', [])
+        if candidates:
+            ui.separator().classes('my-4')
+            ui.label("Match Candidates:").classes('font-bold text-lg')
+
+            with ui.grid(columns=4).classes('w-full gap-2 border border-gray-600 p-2 bg-gray-800 rounded mb-4'):
+                ui.label("Name").classes('font-bold text-xs text-gray-400')
+                ui.label("Set").classes('font-bold text-xs text-gray-400')
+                ui.label("Rarity").classes('font-bold text-xs text-gray-400')
+                ui.label("Score").classes('font-bold text-xs text-gray-400')
+
+                for c in candidates:
+                    ui.label(c.get('name', '')[:20]).classes('text-xs truncate')
+                    ui.label(c.get('set_code', '')).classes('text-xs')
+                    ui.label(c.get('rarity', '')[:10]).classes('text-xs truncate')
+                    ui.label(f"{c.get('score', 0):.1f}").classes('text-xs font-mono text-yellow-400')
+
         ui.separator().classes('my-4')
 
         ui.label("Execution Log:").classes('font-bold text-lg')
@@ -654,26 +748,36 @@ class ScanPage:
                 ui.label("1. Configuration & Input").classes('text-2xl font-bold text-primary')
                 self.render_status_controls()
 
+                # Configuration Section
+                ui.label("Scanner Configuration").classes('font-bold text-lg mt-2')
+
                 # Preprocessing Toggle
-                ui.label("Preprocessing Strategy:").classes('font-bold text-gray-300')
+                ui.label("Preprocessing Strategy:").classes('font-bold text-gray-300 text-sm')
                 with ui.row():
-                    ui.radio(['classic', 'classic_white_bg', 'yolo', 'yolo26'], value=self.preprocessing_mode, on_change=lambda e: setattr(self, 'preprocessing_mode', e.value)).props('inline')
+                    ui.radio(['classic', 'classic_white_bg', 'yolo', 'yolo26'], value=self.preprocessing_mode,
+                            on_change=lambda e: (setattr(self, 'preprocessing_mode', e.value), self.save_settings())).props('inline')
 
                 # Art Match
                 with ui.row().classes('items-center justify-between w-full'):
-                    ui.label("Art Style Match (YOLO):").classes('font-bold text-gray-300')
+                    ui.label("Art Style Match (YOLO):").classes('font-bold text-gray-300 text-sm')
                     with ui.row().classes('items-center gap-2'):
                          ui.button('Index Images', icon='refresh', on_click=lambda: scanner_service.scanner_manager.rebuild_art_index(force=True)).props('dense color=purple').tooltip("Rebuild Art Index from data/images")
-                         ui.switch(value=self.art_match_yolo, on_change=lambda e: setattr(self, 'art_match_yolo', e.value)).props('color=purple')
+                         ui.switch(value=self.art_match_yolo,
+                                  on_change=lambda e: (setattr(self, 'art_match_yolo', e.value), self.save_settings())).props('color=purple')
 
-                # Tracks Selector
-                ui.label("Active Tracks:").classes('font-bold text-gray-300')
-                # Checkboxes
-                with ui.row().classes('flex-wrap'):
-                    ui.checkbox('EasyOCR', value='easyocr' in self.ocr_tracks, on_change=lambda e: self.toggle_track('easyocr', e.value))
-                    ui.checkbox('DocTR', value='doctr' in self.ocr_tracks, on_change=lambda e: self.toggle_track('doctr', e.value))
+                # Tracks Selector (Radio)
+                ui.label("Active Track:").classes('font-bold text-gray-300 text-sm')
+                ui.radio(['easyocr', 'doctr'], value=self.selected_track,
+                        on_change=lambda e: (setattr(self, 'selected_track', e.value), self.save_settings())).props('inline')
+
+                # Ambiguity Threshold
+                ui.label("Ambiguity Threshold:").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.ambiguity_threshold, min=0, max=100, step=1.0,
+                         on_change=lambda e: (setattr(self, 'ambiguity_threshold', e.value), self.save_settings())).classes('w-full')
+
 
                 # Camera Preview
+                ui.label("Camera Preview").classes('font-bold text-lg mt-4')
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
                     ui.html('<video id="debug-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
 
@@ -700,10 +804,8 @@ class ScanPage:
         ui.run_javascript('initDebugStream()')
 
     def toggle_track(self, track, enabled):
-        if enabled:
-            if track not in self.ocr_tracks: self.ocr_tracks.append(track)
-        else:
-            if track in self.ocr_tracks: self.ocr_tracks.remove(track)
+        # Deprecated logic in favor of single selection radio
+        pass
 
 def scan_page():
     page = ScanPage()

@@ -389,6 +389,7 @@ class ScannerManager:
 
                         self.debug_state.warped_image_url = None
                         self.debug_state.roi_viz_url = None
+                        self.debug_state.match_candidates = [] # Reset candidates
 
                         self.debug_state.captured_image_url = cap_url
                         self.debug_state.preprocessing = task.options.get("preprocessing", "classic")
@@ -419,13 +420,16 @@ class ScannerManager:
                             # Enhance with visual traits if warped image exists
                             warped = report.get('warped_image_data') # Not in model, but returned by _process_scan
 
+                            ambiguity_threshold = task.options.get("ambiguity_threshold", 10.0)
+
                             # Construct lookup data (Internal structure for LookupQueue)
                             lookup_data = {
                                 "ocr_result": best_res.model_dump(),
                                 "art_match": report.get('art_match_yolo'),
                                 "visual_rarity": report.get('visual_rarity', 'Common'),
                                 "first_edition": report.get('first_edition', False),
-                                "warped_image": warped
+                                "warped_image": warped,
+                                "threshold": ambiguity_threshold
                             }
                             self.lookup_queue.put(lookup_data)
 
@@ -578,8 +582,16 @@ class ScannerManager:
         if warped is not None:
              check_pause()
              set_step("Analysis: Visual Features")
+
+             # Get full text from the best OCR result (or first available)
+             full_text_fallback = None
+             if report.get("t1_full") and report["t1_full"].raw_text:
+                 full_text_fallback = report["t1_full"].raw_text
+             elif report.get("t2_full") and report["t2_full"].raw_text:
+                 full_text_fallback = report["t2_full"].raw_text
+
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
-             report['first_edition'] = self.scanner.detect_first_edition(warped)
+             report['first_edition'] = self.scanner.detect_first_edition(warped, full_text=full_text_fallback)
              report['warped_image_data'] = warped # Pass along for Art Match
 
              if self.debug_state:
@@ -651,6 +663,7 @@ class ScannerManager:
             ocr_res = OCRResult(**data.get('ocr_result'))
             art_match = data.get('art_match')
             warped = data.pop('warped_image', None)
+            threshold = data.get('threshold', 10.0)
 
             # Base Result
             result = ScanResult()
@@ -661,7 +674,7 @@ class ScannerManager:
             result.raw_ocr = [ocr_res]
 
             # Find Best Match
-            match_res = await self.find_best_match(ocr_res, art_match)
+            match_res = await self.find_best_match(ocr_res, art_match, threshold)
 
             if match_res:
                 # If ambiguity or match found
@@ -690,6 +703,11 @@ class ScannerManager:
                                 path = await image_manager.ensure_image(result.card_id, img.image_url, high_res=True)
                                 result.image_path = path
 
+            # Update Debug State with candidates for UI
+            if self.debug_state:
+                self.debug_state.match_candidates = result.candidates
+                self._emit("step_complete", {"step": "matched"})
+
             # Fallback if no match but Set ID exists in OCR?
             if not result.set_code and ocr_res.set_id:
                 result.set_code = ocr_res.set_id
@@ -702,7 +720,7 @@ class ScannerManager:
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)
 
-    async def find_best_match(self, ocr_res: 'OCRResult', art_match: Dict) -> Dict[str, Any]:
+    async def find_best_match(self, ocr_res: 'OCRResult', art_match: Dict, threshold: float = 10.0) -> Dict[str, Any]:
         """
         Weighted matching algorithm.
         Returns dict with 'ambiguity' (bool) and 'candidates' (List).
@@ -825,7 +843,7 @@ class ScannerManager:
         # B. Matching Ambiguity: Top 2 scores are close
         if len(scored_variants) > 1:
             second = scored_variants[1]
-            if top['score'] - second['score'] < 10.0:
+            if top['score'] - second['score'] < threshold: # Use Configured Threshold
                  # Check if they are actually different cards/variants (not just same card diff rarity which is covered above)
                  if top['set_code'] != second['set_code']:
                      ambiguous = True
