@@ -328,6 +328,11 @@ class ScanPage:
                     if event.type == 'error':
                         ui.notify(event.data.get('message', 'Error'), type='negative')
 
+                    if event.type == 'scan_retake_needed':
+                        ui.notify("Photo is blurry... retaking", type='warning', timeout=2000)
+                        # Wait 1s then retake
+                        ui.timer(1.0, self.trigger_retake, once=True)
+
                 except queue.Empty:
                     break
 
@@ -491,6 +496,32 @@ class ScanPage:
             ui.notify("Captured to Queue", type='positive')
         except Exception as e:
             ui.notify(f"Capture failed: {e}", type='negative')
+
+    async def trigger_retake(self):
+        """Triggers a retake scan with is_retake flag."""
+        try:
+            if scanner_service.scanner_manager.is_paused():
+                scanner_service.scanner_manager.resume()
+
+            data_url = await ui.run_javascript('captureSingleFrame()')
+            if not data_url:
+                return # Silent fail if camera not ready on retake
+
+            header, encoded = data_url.split(",", 1)
+            content = base64.b64decode(encoded)
+
+            options = {
+                "tracks": [self.selected_track],
+                "preprocessing": self.preprocessing_mode,
+                "art_match_yolo": self.art_match_yolo,
+                "ambiguity_threshold": self.ambiguity_threshold,
+                "is_retake": True # Mark as retake to prevent loops
+            }
+            fname = f"retake_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+            scanner_service.scanner_manager.submit_scan(content, options, label="Auto Retake", filename=fname)
+            ui.notify("Retaking photo...", type='info')
+        except Exception as e:
+            logger.error(f"Retake failed: {e}")
 
     def refresh_debug_ui(self):
         self.render_debug_results.refresh()

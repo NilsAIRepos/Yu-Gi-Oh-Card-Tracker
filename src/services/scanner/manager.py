@@ -37,6 +37,7 @@ else:
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
+from src.core.utils import normalize_set_code
 from nicegui import run
 
 logger = logging.getLogger(__name__)
@@ -506,6 +507,15 @@ class ScannerManager:
             report[f"t{i}_full"] = None
             report[f"t{i}_crop"] = None
 
+        # 0. Blur Detection
+        set_step("Analysis: Blur Detection")
+        is_blurred, blur_score = self.scanner.detect_blur(frame)
+        report["is_blurred"] = is_blurred
+        report["blur_score"] = blur_score
+        if self.debug_state:
+            # Add to logs for visibility
+            self._log_debug(f"Blur Check: Score={blur_score:.1f}, Blurry={is_blurred}")
+
         # 1. Preprocessing (Crop)
         set_step("Preprocessing: Contour/Crop")
         prep_method = options.get("preprocessing", "classic")
@@ -664,6 +674,8 @@ class ScannerManager:
             art_match = data.get('art_match')
             warped = data.pop('warped_image', None)
             threshold = data.get('threshold', 10.0)
+            is_blurred = data.get('is_blurred', False)
+            is_retake = data.get('is_retake', False)
 
             # Base Result
             result = ScanResult()
@@ -675,6 +687,17 @@ class ScannerManager:
 
             # Find Best Match
             match_res = await self.find_best_match(ocr_res, art_match, threshold)
+
+            # Check for Blur Retake Condition
+            # If blurry AND low confidence (no candidates or top score < 50) AND not already a retake
+            top_score = 0
+            if match_res and match_res.get('candidates'):
+                top_score = match_res['candidates'][0].get('score', 0)
+
+            if is_blurred and top_score < 50 and not is_retake:
+                logger.info("Blur detected with low confidence. Requesting retake.")
+                self._emit("scan_retake_needed", {})
+                return
 
             if match_res:
                 # If ambiguity or match found
@@ -780,9 +803,15 @@ class ScannerManager:
                 score = 0.0
 
                 # A. Set Code (80+)
-                if ocr_res.set_id and variant.set_code == ocr_res.set_id:
-                    score += 80.0
-                    score += (ocr_res.set_id_conf / 100.0) * 10.0
+                if ocr_res.set_id:
+                    # 1. Strict Match
+                    if variant.set_code == ocr_res.set_id:
+                        score += 80.0
+                        score += (ocr_res.set_id_conf / 100.0) * 10.0
+                    # 2. Normalized Match (Region Agnostic)
+                    elif normalize_set_code(variant.set_code) == normalize_set_code(ocr_res.set_id):
+                        score += 75.0 # Strong match, just wrong region
+                        score += (ocr_res.set_id_conf / 100.0) * 10.0
 
                 # B. Name (50+)
                 if ocr_norm_name and norm(card.name) == ocr_norm_name:

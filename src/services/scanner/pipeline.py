@@ -968,3 +968,21 @@ class CardScanner:
         draw_roi(self.roi_art, (255, 255, 255)) # Changed color for visibility
 
         return canvas
+
+    def detect_blur(self, image: Any, threshold: float = 100.0) -> Tuple[bool, float]:
+        """
+        Detects if an image is blurry using the Variance of Laplacian method.
+        Returns (is_blurred, blur_score).
+        Lower score means more blurry.
+        """
+        try:
+            if image is None:
+                return True, 0.0
+
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            score = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+            return score < threshold, score
+        except Exception as e:
+            logger.error(f"Error detecting blur: {e}")
+            return False, 1000.0 # Fail safe (assume not blurry)
