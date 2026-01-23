@@ -6,6 +6,7 @@ class OCRResult(BaseModel):
     scope: str = "full" # full or crop
     raw_text: str
     set_id: Optional[str] = None
+    card_name: Optional[str] = None
     set_id_conf: float = 0.0
     language: str = "EN"
 

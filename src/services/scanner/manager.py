@@ -561,8 +561,7 @@ class ScannerManager:
                  try:
                      check_pause()
                      set_step(f"{label_base} (Full)")
-                     res_full = self.scanner.ocr_scan(frame, engine=engine_key)
-                     res_full.scope = 'full'
+                     res_full = self.scanner.ocr_scan(frame, engine=engine_key, scope='full')
                      report[f"{field_prefix}_full"] = res_full
                      if self.debug_state: setattr(self.debug_state, f"{field_prefix}_full", res_full)
 
@@ -570,8 +569,7 @@ class ScannerManager:
 
                      set_step(f"{label_base} (Crop)")
                      if warped is not None:
-                         res_crop = self.scanner.ocr_scan(warped, engine=engine_key)
-                         res_crop.scope = 'crop'
+                         res_crop = self.scanner.ocr_scan(warped, engine=engine_key, scope='crop')
                          report[f"{field_prefix}_crop"] = res_crop
                          if self.debug_state: setattr(self.debug_state, f"{field_prefix}_crop", res_crop)
                  except ScanAborted:

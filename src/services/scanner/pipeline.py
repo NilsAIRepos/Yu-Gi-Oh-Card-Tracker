@@ -1,6 +1,7 @@
 import logging
 import re
 import os
+import json
 from typing import Optional, Tuple, List, Dict, Any
 
 # Force legacy keras for keras-ocr compatibility with TF 2.x
@@ -45,6 +46,19 @@ else:
     except ImportError:
         pass
 
+# Import mappings from utils
+try:
+    from src.core.utils import REGION_TO_LANGUAGE_MAP, LANGUAGE_TO_LEGACY_REGION_MAP
+except ImportError:
+    # Fallback if utils not available in test context
+    REGION_TO_LANGUAGE_MAP = {
+        'E': 'EN', 'G': 'DE', 'F': 'FR', 'I': 'IT', 'S': 'ES', 'P': 'PT', 'J': 'JP', 'K': 'KR',
+        'AE': 'EN', 'EN': 'EN', 'DE': 'DE', 'FR': 'FR', 'IT': 'IT', 'ES': 'ES', 'PT': 'PT', 'JP': 'JP', 'KR': 'KR'
+    }
+    LANGUAGE_TO_LEGACY_REGION_MAP = {
+        'EN': 'E', 'DE': 'G', 'FR': 'F', 'IT': 'I', 'ES': 'S', 'PT': 'P', 'JP': 'J', 'KR': 'K'
+    }
+
 logger = logging.getLogger(__name__)
 
 class CardScanner:
@@ -76,6 +90,91 @@ class CardScanner:
         self.keras_pipeline = None
         self.mmocr_inferencer = None
         self.doctr_model = None
+
+        self.valid_set_codes = set()
+        self.valid_card_names_norm = {} # normalized_str -> original_name
+        self._load_validation_data()
+
+    def _load_validation_data(self):
+        try:
+            db_dir = os.path.join(os.getcwd(), "data", "db")
+            if not os.path.exists(db_dir):
+                return
+
+            # Helper to generate localized codes
+            # Standard 2-letter regions
+            supported_2_letter = ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP', 'KR', 'AE']
+
+            files = [f for f in os.listdir(db_dir) if f.startswith("card_db") and f.endswith(".json")]
+
+            # Temporary set to avoid duplicates during processing
+            loaded_names = set()
+
+            # Translation map for German Umlauts
+            trans_table = str.maketrans({
+                'ä': 'a', 'ö': 'o', 'ü': 'u',
+                'Ä': 'A', 'Ö': 'O', 'Ü': 'U'
+            })
+
+            for fname in files:
+                path = os.path.join(db_dir, fname)
+                is_main_db = (fname == "card_db.json")
+
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+
+                        for card in data:
+                            # Load Card Names
+                            if 'name' in card:
+                                name = card['name']
+                                if name not in loaded_names:
+                                    loaded_names.add(name)
+
+                                    # Normalized Map: Lowercase, No Spaces, Umlauts replaced, Alphanumeric only
+                                    # Strip all non-alphanumeric chars to handle OCR noise (pipes, hyphens)
+                                    norm = re.sub(r'[^a-z0-9]', '', name.translate(trans_table).lower())
+                                    self.valid_card_names_norm[norm] = name
+
+                            # Load Set Codes
+                            if 'card_sets' in card and card['card_sets']:
+                                for s in card['card_sets']:
+                                    code = s['set_code']
+                                    self.valid_set_codes.add(code)
+
+                                    # If Main DB, generate localized variants
+                                    if is_main_db:
+                                        self._generate_localized_codes(code, supported_2_letter)
+                except Exception as e:
+                    logger.error(f"Error loading {fname}: {e}")
+
+            logger.info(f"Loaded {len(self.valid_set_codes)} set codes and {len(loaded_names)} card names.")
+        except Exception as e:
+            logger.error(f"Failed to load validation data: {e}")
+
+    def _generate_localized_codes(self, en_code: str, supported_2_letter: List[str]):
+        """Generates localized set codes based on English code format."""
+        # Regex to parse: Prefix-RegionNumber
+        m = re.match(r'^([A-Z0-9]+)-([A-Z]+)(\d+)$', en_code)
+        if not m: return
+
+        prefix, region, number = m.groups()
+
+        # Logic:
+        # If region is 2 letters (e.g. EN) -> Generate all supported 2-letter codes
+        # If region is 1 letter (e.g. E) -> Generate all supported 1-letter codes via mapping
+
+        if len(region) == 2:
+            for lang in supported_2_letter:
+                if lang != region:
+                    self.valid_set_codes.add(f"{prefix}-{lang}{number}")
+
+        elif len(region) == 1:
+            # Find which language this legacy code belongs to (usually E=EN)
+            # Use LANGUAGE_TO_LEGACY_REGION_MAP values to find other legacy codes
+            for lang_code, legacy_char in LANGUAGE_TO_LEGACY_REGION_MAP.items():
+                if legacy_char != region:
+                    self.valid_set_codes.add(f"{prefix}-{legacy_char}{number}")
 
     def get_easyocr(self):
         if self.easyocr_reader is None:
@@ -481,7 +580,7 @@ class CardScanner:
         warped = cv2.warpPerspective(frame, M, (self.width, self.height))
         return warped
 
-    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr') -> 'OCRResult':
+    def ocr_scan(self, image: np.ndarray, engine: str = 'easyocr', scope: str = 'full') -> 'OCRResult':
         """
         Runs OCR on the provided image using the specified engine.
         Returns an OCRResult Pydantic model.
@@ -492,6 +591,7 @@ class CardScanner:
         set_id = None
         set_id_conf = 0.0
         lang = "EN"
+        card_name = None
 
         try:
             # Resize for better small text detection (standard strategy)
@@ -538,6 +638,9 @@ class CardScanner:
                                 raw_text_list.append(word.value)
                                 confidences.append(word.confidence)
 
+                # Card Name Extraction (DocTR + Crop or Full)
+                card_name = self._parse_card_name(result, engine, scope=scope)
+
             elif engine == 'easyocr':
                 reader = self.get_easyocr()
                 results = reader.readtext(image, detail=1, paragraph=False, mag_ratio=1.5)
@@ -550,8 +653,8 @@ class CardScanner:
 
             full_text = " | ".join(raw_text_list)
 
-            # Parse Set ID
-            set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences)
+            # Parse Set ID (pass full_text for global regex fallback)
+            set_id, set_id_conf, lang = self._parse_set_id(raw_text_list, confidences, full_text)
 
         except Exception as e:
             logger.error(f"OCR Scan Error ({engine}): {e}")
@@ -559,43 +662,167 @@ class CardScanner:
 
         return OCRResult(
             engine=engine,
+            scope=scope,
             raw_text=full_text,
             set_id=set_id,
+            card_name=card_name,
             set_id_conf=set_id_conf * 100, # Normalize to 0-100
             language=lang
         )
 
-    def _parse_set_id(self, texts: List[str], confs: List[float]) -> Tuple[Optional[str], float, str]:
-        """Extracts Set ID and Language from text lines."""
-        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z]{0,2})?([0-9]{3})')
-        matches = []
+    def _parse_card_name(self, raw_result: Any, engine: str, scope: str = 'full') -> Optional[str]:
+        """Extracts card name from OCR result using Robust Database Matching."""
+        if engine != 'doctr':
+             return None
 
+        try:
+            # Helper to check a string candidate
+            def check_candidate(candidate_str):
+                if not candidate_str or len(candidate_str) < 3: return None
+
+                # Exact/Normalized Match (Handles missing spaces & noise)
+                # Use regex to strip non-alphanumeric (handling 'KASHTIRA | OGER' -> 'kashtiraoger')
+                norm = re.sub(r'[^a-z0-9]', '', candidate_str.lower())
+
+                if norm in self.valid_card_names_norm:
+                    return self.valid_card_names_norm[norm]
+
+                return None
+
+            # Iterate blocks/lines
+            for page in raw_result.pages:
+                for block in page.blocks:
+                    # 1. Check Full Block
+                    block_text_lines = []
+                    for line in block.lines:
+                        line_text = " ".join([w.value for w in line.words])
+                        block_text_lines.append(line_text)
+
+                    full_block = " ".join(block_text_lines).strip()
+                    match = check_candidate(full_block)
+                    if match: return match
+
+                    # 2. Check Individual Lines (Fallback)
+                    for line_txt in block_text_lines:
+                        match = check_candidate(line_txt.strip())
+                        if match: return match
+
+        except Exception as e:
+            logger.error(f"Error parsing card name (DocTR): {e}")
+
+        return None
+
+    def _parse_set_id(self, texts: List[str], confs: List[float], full_text: str = "") -> Tuple[Optional[str], float, str]:
+        """Extracts Set ID and Language from text lines."""
+        # Groups: 1=Prefix, 2=Region(Optional), 3=Number
+        # Allow letters in Number group for typo detection (S, O, Z, etc.)
+        pattern = re.compile(r'([A-Z0-9]{3,4})[- ]?([A-Z0-9]{0,2})?[-]?([A-Z0-9]{3})')
+
+        candidates = []
+
+        typo_map = {
+            'S': '5', 'I': '1', 'O': '0', 'Z': '7',
+            'B': '8', 'G': '6', 'Q': '0', 'D': '0'
+        }
+
+        def normalize_number_part(txt):
+            res = ""
+            for char in txt:
+                res += typo_map.get(char, char)
+            return res
+
+        def validate_and_score(raw_code, region_part, base_conf, list_index):
+            is_valid = raw_code in self.valid_set_codes
+
+            score = base_conf
+
+            # 1. DB Validity Boost (Highest Importance)
+            if is_valid:
+                score += 0.5
+
+            # 2. Region Format Validation & Boost
+            # Standard 2-letter or Legacy 1-letter
+            if region_part in REGION_TO_LANGUAGE_MAP or region_part in LANGUAGE_TO_LEGACY_REGION_MAP.values():
+                score += 0.2
+            elif len(region_part) > 0:
+                 # Penalty for unknown region codes (e.g. random letters)
+                 score -= 0.1
+
+            # 3. Penalize All-Number Prefixes (e.g. 8552-0851)
+            parts = raw_code.split('-')
+            if parts and parts[0].isdigit():
+                score -= 0.5
+
+            # 4. Position Weighting (Prefer earlier candidates)
+            # Assumption: Set ID is usually in the first few lines or bottom (if not cropped properly).
+            # But prompt says "more in the beginning of the output text".
+            # Penalty increases with index.
+            if list_index < 5:
+                score += 0.1
+            else:
+                score -= (list_index * 0.01)
+
+            return raw_code, score
+
+        # A. Line-by-line Search
         for i, text in enumerate(texts):
-            text = text.strip().upper()
-            clean_text = text.replace(" ", "")
-            m = pattern.search(clean_text)
-            if m:
+            # Try both raw (stripped) and space-merged versions
+            text_stripped = text.strip().upper()
+            text_merged = text_stripped.replace(" ", "")
+
+            # Use a set to avoid duplicates per line
+            line_candidates = set()
+
+            for t_in in [text_stripped, text_merged]:
+                matches = pattern.finditer(t_in)
+                for m in matches:
+                    prefix = m.group(1)
+                    region = m.group(2) if m.group(2) else ""
+                    number_raw = m.group(3)
+
+                    # 1. Direct Match
+                    code_direct = f"{prefix}-{region}{number_raw}" if region else f"{prefix}-{number_raw}"
+                    line_candidates.add((code_direct, region, number_raw))
+
+                    # 2. Typo Fixes
+                    number_fixed = normalize_number_part(number_raw)
+                    region_fixed = region.replace('0', 'O')
+
+                    code_fixed = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
+                    line_candidates.add((code_fixed, region_fixed, number_fixed))
+
+            # Process candidates for this line
+            base_conf = confs[i] if i < len(confs) else 0.5
+
+            for code, region, num_part in line_candidates:
+                # Basic sanity check: Number part must be digits after fix
+                if num_part.isdigit():
+                    v_code, v_score = validate_and_score(code, region, base_conf, i)
+                    candidates.append((v_code, v_score, region))
+
+        # B. Fallback: Full Text Regex
+        if not candidates and full_text:
+             clean_full = full_text.upper().replace(" ", "")
+             matches = pattern.finditer(clean_full)
+             for m in matches:
                 prefix = m.group(1)
                 region = m.group(2) if m.group(2) else ""
-                number = m.group(3)
+                number_raw = m.group(3)
 
-                found_id = f"{prefix}-{region}{number}" if region else f"{prefix}-{number}"
+                number_fixed = normalize_number_part(number_raw)
+                region_fixed = region.replace('0', 'O')
 
-                # Handle mismatch in list lengths (defensive)
-                score = 0.0
-                if i < len(confs):
-                    score = confs[i]
+                if number_fixed.isdigit():
+                    code_cand = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
+                    # Use a moderate index for fallback (e.g., 5) to avoid huge penalties but not boost as "early"
+                    v_code, v_score = validate_and_score(code_cand, region_fixed, 0.4, 5)
+                    candidates.append((v_code, v_score, region_fixed))
 
-                if region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
-                    score += 0.2
-
-                matches.append((found_id, score, region))
-
-        if not matches:
+        if not candidates:
             return None, 0.0, "EN"
 
-        matches.sort(key=lambda x: x[1], reverse=True)
-        best_id, best_score, best_region = matches[0]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_id, best_score, best_region = candidates[0]
 
         lang = "EN"
         if best_region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
