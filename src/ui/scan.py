@@ -255,6 +255,9 @@ class ScanPage:
     async def event_consumer(self):
         """Consumes events from the local queue and updates UI."""
         try:
+            # Drive the matching process
+            await scanner_service.scanner_manager.process_pending_lookups()
+
             # 1. Process Queued Events (Fast path)
             while not self.event_queue.empty():
                 try:

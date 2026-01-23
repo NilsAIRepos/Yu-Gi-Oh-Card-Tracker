@@ -682,7 +682,7 @@ class ScannerManager:
                         # Resolve image path using image_manager
                         # We need to construct url or just use ID?
                         # ygo_api helper?
-                        api_card = await ygo_service.get_card(result.card_id)
+                        api_card = ygo_service.get_card(result.card_id)
                         if api_card:
                             # find image url
                             img = next((i for i in api_card.card_images if i.id == best['image_id']), None)
