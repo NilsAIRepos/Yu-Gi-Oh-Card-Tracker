@@ -293,6 +293,37 @@ class CardScanner:
                 self.doctr_model = self.doctr_model.cuda()
         return self.doctr_model
 
+    def is_image_blurred(self, image: Any, threshold: float = 100.0) -> bool:
+        """
+        Checks if the image is blurred using the Laplacian variance method.
+        Resizes to a fixed width to ensure consistency across resolutions.
+        """
+        try:
+            if image is None:
+                return True
+
+            h, w = image.shape[:2]
+            target_w = 800
+
+            # Resize if needed to normalize score
+            if w > target_w:
+                scale = target_w / w
+                # Use INTER_AREA for shrinking to preserve details/noise correctly for this metric
+                img_resized = cv2.resize(image, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            else:
+                img_resized = image
+
+            gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+            score = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+            logger.debug(f"Blur Detection Score: {score:.2f} (Threshold: {threshold})")
+            return score < threshold
+
+        except Exception as e:
+            logger.error(f"Error in blur detection: {e}")
+            # Fail safe: assume not blurred to prevent blocking
+            return False
+
     def preprocess_image(self, frame):
         """Basic preprocessing for contour detection."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

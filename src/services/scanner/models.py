@@ -39,6 +39,7 @@ class ScanResult(BaseModel):
     image_path: Optional[str] = None
     match_score: int = 0
     ambiguity_flag: bool = False
+    is_blurred: bool = False
     candidates: List[Dict[str, Any]] = [] # List of potential matches
     # For UI display
     raw_ocr: Optional[List[OCRResult]] = None
@@ -69,6 +70,7 @@ class ScanDebugReport(BaseModel):
 
     visual_rarity: str = "Unknown"
     first_edition: bool = False
+    is_blurred: bool = False
     steps: List[ScanStep] = []
 
     # Final Match Candidates

@@ -428,6 +428,7 @@ class ScannerManager:
                                 "art_match": report.get('art_match_yolo'),
                                 "visual_rarity": report.get('visual_rarity', 'Common'),
                                 "first_edition": report.get('first_edition', False),
+                                "is_blurred": report.get('is_blurred', False),
                                 "warped_image": warped,
                                 "threshold": ambiguity_threshold
                             }
@@ -498,9 +499,18 @@ class ScannerManager:
 
         check_pause()
 
+        # Blur Check
+        is_blurred = False
+        if self.scanner:
+             is_blurred = self.scanner.is_image_blurred(frame)
+
+        if self.debug_state:
+            self.debug_state.is_blurred = is_blurred
+
         # Temporary dict to hold results (kept for return value)
         report = {
             "steps": [],
+            "is_blurred": is_blurred,
         }
         for i in range(1, 3): # 1 to 2
             report[f"t{i}_full"] = None
@@ -671,6 +681,7 @@ class ScannerManager:
             result.ocr_conf = ocr_res.set_id_conf
             result.visual_rarity = data.get('visual_rarity', 'Common')
             result.first_edition = data.get('first_edition', False)
+            result.is_blurred = data.get('is_blurred', False)
             result.raw_ocr = [ocr_res]
 
             # Find Best Match

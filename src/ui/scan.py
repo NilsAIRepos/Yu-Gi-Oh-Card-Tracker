@@ -239,6 +239,7 @@ class ScanPage:
 
         # UI State Persistence
         self.expansion_states = {}
+        self.retry_active = False
 
     def save_settings(self):
         """Saves current settings to config."""
@@ -344,6 +345,24 @@ class ScanPage:
             # 3. Check result queue
             res = scanner_service.scanner_manager.get_latest_result()
             if res:
+                # Blur/Retry Logic
+                is_blurred = res.get('is_blurred', False)
+                # match_score > 30 to be a candidate, so < 40 is weak/none
+                match_quality_low = not res.get('candidates') or res.get('match_score', 0) < 40
+
+                if is_blurred and match_quality_low:
+                    if not self.retry_active:
+                         self.retry_active = True
+                         ui.notify("Photo is blurry... retaking", type='warning', timeout=2000)
+                         ui.timer(1.0, self.trigger_live_scan, once=True)
+                         # Skip showing result
+                         return
+                    else:
+                         # Already retried once, stop retrying and show result
+                         self.retry_active = False
+                else:
+                    self.retry_active = False
+
                 logger.info(f"UI Received Result: {res.get('set_code')}, Ambiguous: {res.get('ambiguity_flag')}")
                 if res.get('ambiguity_flag'):
                     ui.notify("Scan Ambiguous: Please resolve.", type='warning', timeout=5000)
