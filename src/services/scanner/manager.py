@@ -384,7 +384,11 @@ class ScannerManager:
 
                     if frame is not None:
                         # Apply Rotation
-                        rotation = task.options.get("rotation", 0)
+                        try:
+                            rotation = int(task.options.get("rotation", 0))
+                        except:
+                            rotation = 0
+
                         if rotation == 90:
                             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                         elif rotation == 180:
