@@ -283,8 +283,8 @@ def dashboard_page():
                          'Quickly add large numbers of cards via lists or drag-and-drop.',
                          'playlist_add', '/bulk_add', 'text-green-400', is_large=True)
 
-            # Admin Functions (1 Row, 3 Cols)
-            with ui.grid(columns=3).classes('w-full gap-6'):
+            # Admin Functions (1 Row, 4 Cols)
+            with ui.grid(columns=4).classes('w-full gap-6'):
                 nav_card('Scan Cards',
                          'Use your webcam to scan physical cards and add them.',
                          'camera', '/scan', 'text-pink-400')
@@ -296,6 +296,10 @@ def dashboard_page():
                 nav_card('Edit Card DB',
                          'Manually edit card database entries or fix issues.',
                          'edit', '/db_editor', 'text-red-400')
+
+                nav_card('Documentation',
+                         'View the Wiki for detailed guides and help.',
+                         'menu_book', 'https://github.com/NilsAIRepos/Yu-Gi-Oh-Card-Tracker/tree/main/docs', 'text-cyan-400')
 
             # --- Charts (Bottom) ---
             ui.separator().classes('bg-gray-800 q-my-sm')
