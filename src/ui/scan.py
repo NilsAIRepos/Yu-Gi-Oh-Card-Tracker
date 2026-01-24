@@ -1,6 +1,7 @@
 from nicegui import ui, app, run, events
 import logging
 import os
+import shutil
 import asyncio
 import time
 import uuid
@@ -226,6 +227,8 @@ class ScanPage:
         self.preprocessing_mode = self.config.get('preprocessing_mode', 'classic')
         self.art_match_yolo = self.config.get('art_match_yolo', True) # Default to True per request
         self.ambiguity_threshold = self.config.get('ambiguity_threshold', 10.0)
+        self.save_warped_scan = self.config.get('save_warped_scan', True)
+        self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
 
         # Load Recent Scans
         self.load_recent_scans()
@@ -246,6 +249,8 @@ class ScanPage:
         self.config['preprocessing_mode'] = self.preprocessing_mode
         self.config['art_match_yolo'] = self.art_match_yolo
         self.config['ambiguity_threshold'] = self.ambiguity_threshold
+        self.config['save_warped_scan'] = self.save_warped_scan
+        self.config['art_match_threshold'] = self.art_match_threshold
 
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
@@ -296,6 +301,31 @@ class ScanPage:
 
     def on_card_confirmed(self, result_dict: Dict[str, Any]):
         """Callback from Ambiguity Dialog or direct addition."""
+
+        # Save Warped Image logic
+        if self.save_warped_scan and result_dict.get('scan_image_path') and result_dict.get('card_id'):
+            try:
+                src_path = result_dict['scan_image_path']
+                if os.path.exists(src_path):
+                    target_dir = "data/scans/card_images"
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    card_id = result_dict['card_id']
+                    base_name = str(card_id)
+                    ext = ".jpg"
+                    target_path = os.path.join(target_dir, f"{base_name}{ext}")
+
+                    # Handle collisions
+                    counter = 1
+                    while os.path.exists(target_path):
+                        target_path = os.path.join(target_dir, f"{base_name}({counter}){ext}")
+                        counter += 1
+
+                    shutil.copy2(src_path, target_path)
+                    logger.info(f"Saved scan image to {target_path}")
+            except Exception as e:
+                logger.error(f"Failed to save warped scan image: {e}")
+
         self.scanned_cards.insert(0, result_dict)
         self.save_recent_scans()
         self.render_live_list.refresh()
@@ -483,7 +513,9 @@ class ScanPage:
                 "tracks": [self.selected_track], # Use the single selected track
                 "preprocessing": self.preprocessing_mode,
                 "art_match_yolo": self.art_match_yolo,
-                "ambiguity_threshold": self.ambiguity_threshold
+                "ambiguity_threshold": self.ambiguity_threshold,
+                "save_warped_scan": self.save_warped_scan,
+                "art_match_threshold": self.art_match_threshold
             }
             fname = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -520,7 +552,9 @@ class ScanPage:
                 "tracks": [self.selected_track],
                 "preprocessing": self.preprocessing_mode,
                 "art_match_yolo": self.art_match_yolo,
-                "ambiguity_threshold": self.ambiguity_threshold
+                "ambiguity_threshold": self.ambiguity_threshold,
+                "save_warped_scan": self.save_warped_scan,
+                "art_match_threshold": self.art_match_threshold
             }
             # Use dynamic import access
             scanner_service.scanner_manager.submit_scan(content, options, label="Image Upload", filename=filename)
@@ -553,7 +587,9 @@ class ScanPage:
                 "tracks": [self.selected_track],
                 "preprocessing": self.preprocessing_mode,
                 "art_match_yolo": self.art_match_yolo,
-                "ambiguity_threshold": self.ambiguity_threshold
+                "ambiguity_threshold": self.ambiguity_threshold,
+                "save_warped_scan": self.save_warped_scan,
+                "art_match_threshold": self.art_match_threshold
             }
             fname = f"capture_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -796,6 +832,14 @@ class ScanPage:
                 ui.number(value=self.ambiguity_threshold, min=0, max=100, step=1.0,
                          on_change=lambda e: (setattr(self, 'ambiguity_threshold', e.value), self.save_settings())).classes('w-full')
 
+                # Art Match Threshold
+                ui.label("Art Match Threshold:").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.art_match_threshold, min=0, max=1.0, step=0.01,
+                         on_change=lambda e: (setattr(self, 'art_match_threshold', e.value), self.save_settings())).classes('w-full')
+
+                # Save Warped Scan
+                ui.switch("Save Warped Scans", value=self.save_warped_scan,
+                          on_change=lambda e: (setattr(self, 'save_warped_scan', e.value), self.save_settings())).props('color=secondary').classes('w-full')
 
                 # Camera Preview
                 ui.label("Camera Preview").classes('font-bold text-lg mt-4')

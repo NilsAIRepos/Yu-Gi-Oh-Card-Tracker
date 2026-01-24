@@ -422,6 +422,7 @@ class ScannerManager:
                             warped = report.get('warped_image_data') # Not in model, but returned by _process_scan
 
                             ambiguity_threshold = task.options.get("ambiguity_threshold", 10.0)
+                            art_threshold = task.options.get("art_match_threshold", 0.42)
 
                             # Construct lookup data (Internal structure for LookupQueue)
                             lookup_data = {
@@ -430,7 +431,9 @@ class ScannerManager:
                                 "visual_rarity": report.get('visual_rarity', 'Common'),
                                 "first_edition": report.get('first_edition', False),
                                 "warped_image": warped,
-                                "threshold": ambiguity_threshold
+                                "warped_image_url": report.get("warped_image_url"),
+                                "threshold": ambiguity_threshold,
+                                "art_threshold": art_threshold
                             }
                             self.lookup_queue.put(lookup_data)
 
@@ -666,6 +669,8 @@ class ScannerManager:
             art_match = data.get('art_match')
             warped = data.pop('warped_image', None)
             threshold = data.get('threshold', 10.0)
+            art_threshold = data.get('art_threshold', 0.42)
+            warped_url = data.get('warped_image_url')
 
             # Base Result
             result = ScanResult()
@@ -675,8 +680,15 @@ class ScannerManager:
             result.first_edition = data.get('first_edition', False)
             result.raw_ocr = [ocr_res]
 
+            # Resolve warped image path for result
+            if warped_url:
+                # URL is like /debug/scans/warped_....jpg
+                # We need filesystem path.
+                filename = os.path.basename(warped_url)
+                result.scan_image_path = os.path.join(self.debug_dir, filename)
+
             # Find Best Match
-            match_res = await self.find_best_match(ocr_res, art_match, threshold)
+            match_res = await self.find_best_match(ocr_res, art_match, threshold, art_threshold)
 
             if match_res:
                 # If ambiguity or match found
@@ -741,7 +753,7 @@ class ScannerManager:
 
         return 0.0
 
-    async def find_best_match(self, ocr_res: 'OCRResult', art_match: Dict, threshold: float = 10.0) -> Dict[str, Any]:
+    async def find_best_match(self, ocr_res: 'OCRResult', art_match: Dict, threshold: float = 10.0, art_threshold: float = 0.42) -> Dict[str, Any]:
         """
         Weighted matching algorithm.
         Returns dict with 'ambiguity' (bool) and 'candidates' (List).
@@ -759,12 +771,16 @@ class ScannerManager:
         # Scanning 12k cards * variants is expensive if we do full scoring.
         # Filter first by: Set Code OR Name Match OR Art Match ID
 
-        # Art Match ID
+        # Art Match ID & Score Check
         art_id = None
         if art_match and art_match.get('filename'):
-            try:
-                art_id = int(os.path.splitext(art_match['filename'])[0])
-            except: pass
+            score = art_match.get('score', 0)
+            if score >= art_threshold:
+                try:
+                    art_id = int(os.path.splitext(art_match['filename'])[0])
+                except: pass
+            else:
+                logger.info(f"Art Match Discarded: Score {score:.3f} < Threshold {art_threshold}")
 
         potential_cards = []
 
@@ -818,6 +834,16 @@ class ScannerManager:
                         score += 40.0
                     elif any(img.id == art_id for img in card.card_images):
                         score += 35.0 # Wrong variant but correct card
+
+                # C2. Card Type Bonus (+10)
+                # If OCR detected "Spell" or "Trap" and the card type matches
+                if ocr_res.card_type and card.type:
+                     # Simple check: string contains 'Spell' or 'Trap'
+                     ocr_type = ocr_res.card_type.upper()
+                     db_type = card.type.upper()
+                     if ("SPELL" in ocr_type and "SPELL" in db_type) or \
+                        ("TRAP" in ocr_type and "TRAP" in db_type):
+                         score += 10.0
 
                 # D. Stats (+/- 15)
                 # Need to check OCR extraction of ATK/DEF vs Card
