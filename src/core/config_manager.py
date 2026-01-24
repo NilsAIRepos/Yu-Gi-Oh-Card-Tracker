@@ -11,7 +11,8 @@ DEFAULT_CONFIG = {
     "ocr_tracks": ["doctr"],
     "preprocessing_mode": "classic",
     "art_match_yolo": True,
-    "ambiguity_threshold": 10.0
+    "ambiguity_threshold": 10.0,
+    "rotation": 0
 }
 
 def load_config() -> Dict[str, Any]:
