@@ -775,7 +775,8 @@ class ScannerManager:
 
             # Check Set Code
             if ocr_res.set_id and card.card_sets:
-                 if any(s.set_code == ocr_res.set_id for s in card.card_sets):
+                 # Check strict match OR normalized match (to find EN card when DE scanned)
+                 if any(normalize_set_code(s.set_code) == normalize_set_code(ocr_res.set_id) for s in card.card_sets):
                      is_candidate = True
 
             # Check Name (if Set Code didn't match or missing)
@@ -803,15 +804,18 @@ class ScannerManager:
                 score = 0.0
 
                 # A. Set Code (80+)
+                set_match_type = "none" # strict, normalized, none
                 if ocr_res.set_id:
                     # 1. Strict Match
                     if variant.set_code == ocr_res.set_id:
                         score += 80.0
                         score += (ocr_res.set_id_conf / 100.0) * 10.0
+                        set_match_type = "strict"
                     # 2. Normalized Match (Region Agnostic)
                     elif normalize_set_code(variant.set_code) == normalize_set_code(ocr_res.set_id):
                         score += 75.0 # Strong match, just wrong region
                         score += (ocr_res.set_id_conf / 100.0) * 10.0
+                        set_match_type = "normalized"
 
                 # B. Name (50+)
                 if ocr_norm_name and norm(card.name) == ocr_norm_name:
@@ -843,6 +847,7 @@ class ScannerManager:
                      except: pass
 
                 if score > 30.0: # Minimum threshold
+                    # Add standard candidate (Database Variant)
                     scored_variants.append({
                         "score": score,
                         "card_id": card.id,
@@ -852,6 +857,21 @@ class ScannerManager:
                         "image_id": variant.image_id,
                         "variant_id": variant.variant_id
                     })
+
+                    # If we found a Normalized Match but NOT a Strict Match,
+                    # it means the region differs (e.g. OCR=DE, DB=EN).
+                    # We should propose the OCR code as a synthetic candidate with a higher score.
+                    if set_match_type == "normalized":
+                        synthetic_score = score + 20.0 # Boost above the EN variant
+                        scored_variants.append({
+                            "score": synthetic_score,
+                            "card_id": card.id,
+                            "name": card.name,
+                            "set_code": ocr_res.set_id, # Use the OCR code (e.g. DPKB-DE007)
+                            "rarity": variant.set_rarity, # Inherit rarity from EN variant
+                            "image_id": variant.image_id, # Inherit image
+                            "variant_id": None # No DB ID, will generate one on commit
+                        })
 
         scored_variants.sort(key=lambda x: x['score'], reverse=True)
 
