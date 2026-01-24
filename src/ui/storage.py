@@ -47,8 +47,14 @@ class StorageDialog:
         self.uploaded_image_path = None
 
     async def load_sets(self):
-        self.sets_info = await ygo_service.get_all_sets_info()
-        self.set_options = {s['code']: f"{s['code']} - {s['name']}" for s in self.sets_info}
+        try:
+            self.sets_info = await ygo_service.get_all_sets_info()
+            self.set_options = {s['code']: f"{s['code']} - {s['name']}" for s in self.sets_info}
+            # Update select if it exists
+            if self.set_select:
+                self.set_select.set_options(self.set_options)
+        except Exception as e:
+            logger.error(f"Error loading sets for storage dialog: {e}")
 
     def open(self, existing_data: Optional[Dict] = None):
         self.current_data = existing_data or {}
@@ -83,22 +89,29 @@ class StorageDialog:
                      async def on_set_change(e):
                          if not e.value: return
                          set_code = e.value
-                         # Auto-fill name if empty or default
-                         current_name = self.name_input.value
-                         if not current_name or current_name.endswith('Box'):
-                             set_name = self.set_options.get(set_code, '').split(' - ')[-1]
-                             self.name_input.value = f"{set_name} Box"
 
-                         # Preview Image
-                         # Find image url
-                         s_info = next((s for s in self.sets_info if s['code'] == set_code), None)
-                         if s_info and s_info.get('image'):
-                              # Download/Ensure
-                              url = s_info.get('image')
-                              path = await ygo_service.download_set_image(set_code, url)
-                              if path:
-                                   safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
-                                   self.image_preview.set_source(f"/sets/{safe_code}.jpg")
+                         try:
+                             # Auto-fill name if empty or default
+                             current_name = self.name_input.value
+                             if not current_name or current_name.endswith('Box'):
+                                 set_name_full = self.set_options.get(set_code, '')
+                                 if ' - ' in set_name_full:
+                                    set_name = set_name_full.split(' - ')[-1]
+                                    self.name_input.value = f"{set_name} Box"
+
+                             # Preview Image
+                             if self.sets_info and self.image_preview:
+                                 s_info = next((s for s in self.sets_info if s['code'] == set_code), None)
+                                 if s_info and s_info.get('image'):
+                                      # Download/Ensure
+                                      url = s_info.get('image')
+                                      path = await ygo_service.download_set_image(set_code, url)
+                                      if path:
+                                           safe_code = "".join(c for c in set_code if c.isalnum() or c in ('-', '_')).strip()
+                                           self.image_preview.set_source(f"/sets/{safe_code}.jpg")
+                         except Exception as ex:
+                             logger.error(f"Error handling set change: {ex}")
+                             ui.notify(f"Error loading set info: {ex}", type='warning')
 
                      self.set_select = ui.select(self.set_options, label='Select Product', value=self.current_data.get('set_code'), with_input=True, on_change=on_set_change) \
                         .classes('w-full').props('clearable input-debounce=0 use-input behavior="menu" fill-input hide-selected')
