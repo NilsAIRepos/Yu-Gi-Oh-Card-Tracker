@@ -936,8 +936,8 @@ def scan_page():
             with ui.row().classes('w-full h-[calc(100vh-250px)] gap-4'):
                 # Camera View
                 with ui.card().classes('flex-1 h-full p-0 overflow-hidden relative bg-black'):
-                     self.live_view_container = ui.element('div').classes('w-full h-full relative').style(f'transform: rotate({self.rotation}deg)')
-                     with self.live_view_container:
+                     page.live_view_container = ui.element('div').classes('w-full h-full relative').style(f'transform: rotate({page.rotation}deg)')
+                     with page.live_view_container:
                         ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
                         ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
 
