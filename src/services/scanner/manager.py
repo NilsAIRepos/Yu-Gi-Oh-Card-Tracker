@@ -868,13 +868,21 @@ class ScannerManager:
         # 2. Determine Ambiguity
         ambiguous = False
 
-        # A. Database Ambiguity: Top winner has multiple rarities for SAME Set Code
+        # A. Database Ambiguity: Top winner has multiple rarities OR multiple images for SAME Set Code
         top = scored_variants[0]
         same_code_variants = [v for v in scored_variants if v['set_code'] == top['set_code'] and v['score'] >= top['score'] - 5.0]
+
         # Check if they have different rarities
         rarities = set(v['rarity'] for v in same_code_variants)
         if len(rarities) > 1:
             ambiguous = True
+        else:
+            # If rarities are same, check if they have different art (image_id)
+            # Filter variants by the dominant rarity (since we know there's only 1 rarity type in this branch, or we check for it)
+            # Actually, just check all same-code variants. If they have mixed art, it's ambiguous.
+            image_ids = set(v['image_id'] for v in same_code_variants if v.get('image_id'))
+            if len(image_ids) > 1:
+                ambiguous = True
 
         # B. Matching Ambiguity: Top 2 scores are close
         if len(scored_variants) > 1:

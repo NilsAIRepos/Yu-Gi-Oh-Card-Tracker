@@ -91,8 +91,7 @@ class AmbiguityDialog(ui.dialog):
                      options=initial_set_codes,
                      value=self.selected_set_code,
                      label="Set Code",
-                     on_change=self.on_set_code_change,
-                     with_input=True
+                     on_change=self.on_set_code_change
                  ).classes('w-full')
 
                  # 4. Other Set Code Input (Conditional)
@@ -349,6 +348,30 @@ class AmbiguityDialog(ui.dialog):
             # Add to DB
             if final_set_code and self.card_id:
                 try:
+                    # DUPLICATE CHECK:
+                    # Check if this set code is already assigned to a DIFFERENT card in the database.
+                    # We iterate over all cards (expensive? we can use a helper or cache).
+                    # Actually, ygo_service keeps a cache.
+                    # We need a method `find_card_by_set_code(set_code)`.
+
+                    # Let's perform a check.
+                    cards = await ygo_service.load_card_database(self.selected_language.lower())
+                    duplicate_found = False
+                    for c in cards:
+                        if c.id == self.card_id: continue
+                        if c.card_sets:
+                            for s in c.card_sets:
+                                if s.set_code == final_set_code:
+                                    # Found a duplicate on another card!
+                                    duplicate_found = True
+                                    break
+                        if duplicate_found: break
+
+                    if duplicate_found:
+                        ui.notify(f"Duplicate set code! '{final_set_code}' belongs to another card.", type='negative')
+                        return
+
+                    # Proceed to Add
                     # We need to add this variant
                     # add_card_variant(card_id, set_name, set_code, set_rarity, ...)
                     # We don't know set_name. Try to infer or use "Custom".
