@@ -121,7 +121,10 @@ class StorageDialog:
                 ui.label('Image').classes('text-sm text-gray-500')
 
                 async def handle_upload(e):
-                    path = await storage_service.save_uploaded_image(e, e.name)
+                    # e is UploadEventArguments
+                    # e.file is FileUpload (Small or Large)
+                    # e.file.name is filename
+                    path = await storage_service.save_uploaded_image(e.file, e.file.name)
                     if path:
                         self.uploaded_image_path = path
                         self.image_preview.set_source(f"/storage/{path}")

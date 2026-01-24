@@ -103,7 +103,7 @@ class StorageService:
 
         return True
 
-    async def save_uploaded_image(self, file, filename: str) -> str:
+    async def save_uploaded_image(self, file_obj, filename: str) -> str:
         """
         Saves an uploaded file to data/storage/ and returns the filename.
         """
@@ -112,9 +112,13 @@ class StorageService:
         file_path = os.path.join(STORAGE_IMG_DIR, safe_name)
 
         try:
-            # If it's a NiceGUI UploadFile (SpooledTemporaryFile)
-            with open(file_path, 'wb') as f:
-                shutil.copyfileobj(file.file, f)
+            # Check if it has a save method (NiceGUI FileUpload)
+            if hasattr(file_obj, 'save'):
+                await file_obj.save(file_path)
+            else:
+                # Fallback for generic file-like objects
+                with open(file_path, 'wb') as f:
+                    shutil.copyfileobj(file_obj.file, f)
             return safe_name
         except Exception as e:
             logger.error(f"Error saving storage image: {e}")
