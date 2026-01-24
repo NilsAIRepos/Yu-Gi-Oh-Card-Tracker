@@ -89,9 +89,15 @@ class StorageDialog:
                 self.set_select_container = ui.column().classes('w-full')
 
                 def on_type_change(e):
-                    self.set_select_container.set_visibility(e.value == 'Sealed Product')
+                    # Handle both generic event and direct value
+                    val = e.value if hasattr(e, 'value') else e
+                    # Sometimes NiceGUI generic events store value in args
+                    if isinstance(val, dict) and 'value' in val:
+                        val = val['value']
+                    self.set_select_container.set_visibility(val == 'Sealed Product')
 
-                self.type_select.on('update:model-value', on_type_change)
+                # Use on_change for direct value, usually safer for selects
+                self.type_select.on_value_change(on_type_change)
 
                 with self.set_select_container:
                      async def on_set_change(e):
@@ -205,7 +211,7 @@ class StoragePage:
             'rows': [],
             'filtered_rows': [],
             'in_storage_only': True,
-            'add_mode': True,
+            # 'add_mode': True, # Deprecated
 
             'current_collection': None,
             'selected_collection_file': None,
@@ -373,7 +379,11 @@ class StoragePage:
                     if qty <= 0: continue
 
                     if self.state['in_storage_only']:
+                        # Showing items IN the current box
                         if e.storage_location != target_loc: continue
+                    else:
+                        # Showing items NOT in ANY box (Unassigned) to add to current box
+                        if e.storage_location is not None: continue
 
                     img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
                     if v.image_id:
@@ -557,15 +567,10 @@ class StoragePage:
 
             ui.separator().props('vertical')
 
-            with ui.button_group():
-                def set_mode(m):
-                    self.state['add_mode'] = m
-                    self.render_detail_grid.refresh()
-
-                with ui.button('Add Mode', on_click=lambda: set_mode(True)).props(f'flat={not self.state["add_mode"]} color=positive'):
-                    ui.tooltip('Right-click adds card to storage')
-                with ui.button('Subtract Mode', on_click=lambda: set_mode(False)).props(f'flat={self.state["add_mode"]} color=negative'):
-                    ui.tooltip('Right-click removes card from storage')
+            # Action Label
+            action_text = "Right-Click: Remove from Storage" if self.state['in_storage_only'] else "Right-Click: Add to Storage"
+            action_color = "text-negative" if self.state['in_storage_only'] else "text-positive"
+            ui.label(action_text).classes(f'text-sm font-bold {action_color} ml-4')
 
             ui.space()
 
@@ -617,12 +622,16 @@ class StoragePage:
     async def handle_right_click(self, e, row: StorageRow):
         col = self.state['current_collection']
         storage_name = self.state['current_storage']['name']
-        mode = self.state['add_mode']
         qty = 1
         success = False
         msg = ""
 
-        if mode:
+        # Logic derived from View State
+        # In Storage View -> Remove (Move to None)
+        # Unassigned View -> Add (Move from None)
+
+        if not self.state['in_storage_only']:
+            # ADD Logic (None -> Storage)
             avail = CollectionEditor.get_quantity(
                 col, row.api_card.id, row.variant_id, row.set_code, row.rarity, row.image_id,
                 row.language, row.condition, row.first_edition, storage_location=None
@@ -638,6 +647,7 @@ class StoragePage:
             else:
                 msg = "No unassigned copies available!"
         else:
+            # SUBTRACT Logic (Storage -> None)
             avail = CollectionEditor.get_quantity(
                 col, row.api_card.id, row.variant_id, row.set_code, row.rarity, row.image_id,
                 row.language, row.condition, row.first_edition, storage_location=storage_name
