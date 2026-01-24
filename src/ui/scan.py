@@ -197,6 +197,14 @@ function reattachScannerVideo() {
         window.scannerVideo.play().catch(console.error);
     }
 }
+
+function setRotation(deg) {
+    const v1 = document.getElementById('scanner-video');
+    const v2 = document.getElementById('debug-video');
+    const transform = 'rotate(' + deg + 'deg)';
+    if (v1) v1.style.transform = transform;
+    if (v2) v2.style.transform = transform;
+}
 </script>
 """
 
@@ -230,6 +238,7 @@ class ScanPage:
         self.save_warped_scan = self.config.get('save_warped_scan', True)
         self.save_raw_scan = self.config.get('save_raw_scan', True)
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
+        self.rotation = self.config.get('rotation', 0)
 
         # Load Recent Scans
         self.load_recent_scans()
@@ -253,6 +262,7 @@ class ScanPage:
         self.config['save_warped_scan'] = self.save_warped_scan
         self.config['save_raw_scan'] = self.save_raw_scan
         self.config['art_match_threshold'] = self.art_match_threshold
+        self.config['rotation'] = self.rotation
 
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
@@ -553,9 +563,8 @@ class ScanPage:
                 "ambiguity_threshold": self.ambiguity_threshold,
                 "save_warped_scan": self.save_warped_scan,
                 "save_raw_scan": self.save_raw_scan,
-                "save_raw_scan": self.save_raw_scan,
-                "save_raw_scan": self.save_raw_scan,
-                "art_match_threshold": self.art_match_threshold
+                "art_match_threshold": self.art_match_threshold,
+                "rotation": self.rotation
             }
             fname = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -594,7 +603,8 @@ class ScanPage:
                 "art_match_yolo": self.art_match_yolo,
                 "ambiguity_threshold": self.ambiguity_threshold,
                 "save_warped_scan": self.save_warped_scan,
-                "art_match_threshold": self.art_match_threshold
+                "art_match_threshold": self.art_match_threshold,
+                "rotation": 0 # Explicitly 0 for uploads
             }
             # Use dynamic import access
             scanner_service.scanner_manager.submit_scan(content, options, label="Image Upload", filename=filename)
@@ -629,7 +639,8 @@ class ScanPage:
                 "art_match_yolo": self.art_match_yolo,
                 "ambiguity_threshold": self.ambiguity_threshold,
                 "save_warped_scan": self.save_warped_scan,
-                "art_match_threshold": self.art_match_threshold
+                "art_match_threshold": self.art_match_threshold,
+                "rotation": self.rotation
             }
             fname = f"capture_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
             # Use dynamic import access
@@ -860,6 +871,12 @@ class ScanPage:
                     ui.radio(['classic', 'classic_white_bg', 'yolo', 'yolo26'], value=self.preprocessing_mode,
                             on_change=lambda e: (setattr(self, 'preprocessing_mode', e.value), self.save_settings())).props('inline')
 
+                # Rotation
+                ui.label("Camera Rotation:").classes('font-bold text-gray-300 text-sm')
+                with ui.row():
+                    ui.toggle({0: '0°', 90: '90°', 180: '180°', 270: '270°'}, value=self.rotation,
+                            on_change=lambda e: (setattr(self, 'rotation', e.value), self.save_settings(), ui.run_javascript(f'setRotation({e.value})'))).props('toggle-color=accent')
+
                 # Art Match
                 with ui.row().classes('items-center justify-between w-full'):
                     ui.label("Art Style Match (YOLO):").classes('font-bold text-gray-300 text-sm')
@@ -916,6 +933,7 @@ class ScanPage:
                 self.render_debug_pipeline_results()
 
         ui.run_javascript('initDebugStream()')
+        ui.run_javascript(f'setRotation({self.rotation})')
 
     def toggle_track(self, track, enabled):
         # Deprecated logic in favor of single selection radio
@@ -953,6 +971,9 @@ def scan_page():
             ui.run_javascript('reattachScannerVideo()')
         elif e.value == 'Debug Lab':
             ui.run_javascript('initDebugStream()')
+
+        # Re-apply rotation on tab change to ensure video element has correct style
+        ui.run_javascript(f'setRotation({page.rotation})')
 
     with ui.tabs(on_change=handle_tab_change).classes('w-full') as tabs:
         live_tab = ui.tab('Live Scan')

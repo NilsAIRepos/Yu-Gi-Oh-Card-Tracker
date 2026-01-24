@@ -381,6 +381,20 @@ class ScannerManager:
                     # Load Image
                     frame = cv2.imread(filepath)
 
+                    # Apply Rotation (if requested) - BEFORE any processing
+                    rotation = task.options.get("rotation", 0)
+                    if frame is not None and rotation in [90, 180, 270]:
+                        try:
+                            if rotation == 90:
+                                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                            elif rotation == 180:
+                                frame = cv2.rotate(frame, cv2.ROTATE_180)
+                            elif rotation == 270:
+                                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                            logger.info(f"Applied {rotation}° rotation to scan image.")
+                        except Exception as rot_err:
+                            logger.error(f"Failed to rotate image: {rot_err}")
+
                     if frame is not None:
                         # Update debug state basics
                         cap_url = self._save_debug_image(frame, "manual_cap")
