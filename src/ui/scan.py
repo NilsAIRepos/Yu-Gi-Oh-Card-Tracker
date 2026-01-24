@@ -228,6 +228,7 @@ class ScanPage:
         self.art_match_yolo = self.config.get('art_match_yolo', True) # Default to True per request
         self.ambiguity_threshold = self.config.get('ambiguity_threshold', 10.0)
         self.save_warped_scan = self.config.get('save_warped_scan', True)
+        self.save_raw_scan = self.config.get('save_raw_scan', True)
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
 
         # Load Recent Scans
@@ -250,6 +251,7 @@ class ScanPage:
         self.config['art_match_yolo'] = self.art_match_yolo
         self.config['ambiguity_threshold'] = self.ambiguity_threshold
         self.config['save_warped_scan'] = self.save_warped_scan
+        self.config['save_raw_scan'] = self.save_raw_scan
         self.config['art_match_threshold'] = self.art_match_threshold
 
         # Sync list used by logic
@@ -325,6 +327,36 @@ class ScanPage:
                     logger.info(f"Saved scan image to {target_path}")
             except Exception as e:
                 logger.error(f"Failed to save warped scan image: {e}")
+
+        # Save Raw Image logic
+        if self.save_raw_scan and result_dict.get('raw_image_path') and result_dict.get('card_id'):
+             try:
+                src_path = result_dict['raw_image_path']
+                if os.path.exists(src_path):
+                    target_dir = "data/scans/raw_images"
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    card_id = result_dict['card_id']
+                    base_name = str(card_id)
+                    ext = ".jpg"
+                    target_path = os.path.join(target_dir, f"{base_name}{ext}")
+
+                    # Handle collisions
+                    counter = 1
+                    while os.path.exists(target_path):
+                        target_path = os.path.join(target_dir, f"{base_name}({counter}){ext}")
+                        counter += 1
+
+                    shutil.copy2(src_path, target_path)
+                    logger.info(f"Saved raw scan image to {target_path}")
+             except Exception as e:
+                logger.error(f"Failed to save raw scan image: {e}")
+
+        # Cleanup temp raw file
+        if result_dict.get('raw_image_path') and os.path.exists(result_dict['raw_image_path']):
+             try:
+                 os.remove(result_dict['raw_image_path'])
+             except: pass
 
         self.scanned_cards.insert(0, result_dict)
         self.save_recent_scans()
@@ -515,6 +547,9 @@ class ScanPage:
                 "art_match_yolo": self.art_match_yolo,
                 "ambiguity_threshold": self.ambiguity_threshold,
                 "save_warped_scan": self.save_warped_scan,
+                "save_raw_scan": self.save_raw_scan,
+                "save_raw_scan": self.save_raw_scan,
+                "save_raw_scan": self.save_raw_scan,
                 "art_match_threshold": self.art_match_threshold
             }
             fname = f"scan_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
@@ -846,6 +881,10 @@ class ScanPage:
                 # Save Warped Scan
                 ui.switch("Save Warped Scans", value=self.save_warped_scan,
                           on_change=lambda e: (setattr(self, 'save_warped_scan', e.value), self.save_settings())).props('color=secondary').classes('w-full')
+
+                # Save Raw Scan
+                ui.switch("Save Raw Scans", value=self.save_raw_scan,
+                          on_change=lambda e: (setattr(self, 'save_raw_scan', e.value), self.save_settings())).props('color=secondary').classes('w-full')
 
                 # Camera Preview
                 ui.label("Camera Preview").classes('font-bold text-lg mt-4')

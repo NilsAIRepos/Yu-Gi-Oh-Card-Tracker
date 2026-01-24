@@ -78,8 +78,10 @@ class ScannerManager:
 
         self.debug_dir = "debug/scans"
         self.queue_dir = "scans/queue"
+        self.temp_dir = "data/scans/temp"
         os.makedirs(self.debug_dir, exist_ok=True)
         os.makedirs(self.queue_dir, exist_ok=True)
+        os.makedirs(self.temp_dir, exist_ok=True)
 
     def register_listener(self, callback: Callable[["ScanEvent"], None]):
         """Registers a callback for scanner events."""
@@ -424,6 +426,16 @@ class ScannerManager:
                             ambiguity_threshold = task.options.get("ambiguity_threshold", 10.0)
                             art_threshold = task.options.get("art_match_threshold", 0.42)
 
+                            # Handle Raw Image Saving (Copy to temp)
+                            temp_raw_path = None
+                            if task.options.get("save_raw_scan", True):
+                                try:
+                                    temp_raw_filename = f"raw_{os.path.basename(filename)}"
+                                    temp_raw_path = os.path.join(self.temp_dir, temp_raw_filename)
+                                    shutil.copy2(filepath, temp_raw_path)
+                                except Exception as e:
+                                    logger.error(f"Failed to copy raw image to temp: {e}")
+
                             # Construct lookup data (Internal structure for LookupQueue)
                             lookup_data = {
                                 "ocr_result": best_res.model_dump(),
@@ -432,6 +444,7 @@ class ScannerManager:
                                 "first_edition": report.get('first_edition', False),
                                 "warped_image": warped,
                                 "warped_image_url": report.get("warped_image_url"),
+                                "raw_image_path": temp_raw_path,
                                 "threshold": ambiguity_threshold,
                                 "art_threshold": art_threshold
                             }
@@ -682,6 +695,7 @@ class ScannerManager:
             threshold = data.get('threshold', 10.0)
             art_threshold = data.get('art_threshold', 0.42)
             warped_url = data.get('warped_image_url')
+            raw_path = data.get('raw_image_path')
 
             # Base Result
             result = ScanResult()
@@ -690,6 +704,7 @@ class ScannerManager:
             result.visual_rarity = data.get('visual_rarity', 'Common')
             result.first_edition = data.get('first_edition', False)
             result.raw_ocr = [ocr_res]
+            result.raw_image_path = raw_path
 
             # Resolve warped image path for result
             if warped_url:

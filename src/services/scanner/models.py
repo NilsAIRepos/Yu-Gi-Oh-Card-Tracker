@@ -41,6 +41,7 @@ class ScanResult(BaseModel):
     ambiguity_flag: bool = False
     candidates: List[Dict[str, Any]] = [] # List of potential matches
     scan_image_path: Optional[str] = None # Path to the temporary warped image
+    raw_image_path: Optional[str] = None # Path to the temporary raw image
     # For UI display
     raw_ocr: Optional[List[OCRResult]] = None
 
