@@ -37,14 +37,10 @@ class StorageDialog:
         self.sets_info = []
         self.set_options = {} # code -> name
 
-        self.name_input = None
-        self.type_select = None
-        self.desc_input = None
-        self.set_select = None
-        self.image_preview = None
-
         self.current_data = {} # For edit mode
         self.uploaded_image_path = None
+
+        self._build_ui()
 
     async def load_sets(self):
         try:
@@ -56,47 +52,27 @@ class StorageDialog:
         except Exception as e:
             logger.error(f"Error loading sets for storage dialog: {e}")
 
-    def open(self, existing_data: Optional[Dict] = None):
-        self.current_data = existing_data or {}
-        self.uploaded_image_path = self.current_data.get('image_path')
-
-        if not self.sets_info:
-            asyncio.create_task(self.load_sets())
-
+    def _build_ui(self):
         with self.dialog, ui.card().classes('w-[500px]'):
-            # Clear previous state if creating new
-            if not existing_data:
-                if self.name_input: self.name_input.value = ''
-                if self.type_select: self.type_select.value = 'Box'
-                if self.desc_input: self.desc_input.value = ''
-                if self.set_select: self.set_select.value = None
-                if self.image_preview: self.image_preview.set_source(None)
-                self.uploaded_image_path = None
-            title = "Edit Storage" if existing_data else "New Storage"
-            ui.label(title).classes('text-h6')
+            self.title_label = ui.label('New Storage').classes('text-h6')
 
             with ui.column().classes('w-full gap-2'):
                 # Name
-                self.name_input = ui.input('Name', value=self.current_data.get('name', '')) \
-                    .classes('w-full').props('autofocus')
+                self.name_input = ui.input('Name').classes('w-full').props('autofocus')
 
                 # Type
                 type_opts = ['Box', 'Binder', 'Sealed Product']
-                self.type_select = ui.select(type_opts, label='Type', value=self.current_data.get('type', 'Box')) \
-                    .classes('w-full')
+                self.type_select = ui.select(type_opts, label='Type', value='Box').classes('w-full')
 
-                # Set Selection (only visible if Sealed Product)
+                # Set Selection Container
                 self.set_select_container = ui.column().classes('w-full')
 
                 def on_type_change(e):
-                    # Handle both generic event and direct value
                     val = e.value if hasattr(e, 'value') else e
-                    # Sometimes NiceGUI generic events store value in args
                     if isinstance(val, dict) and 'value' in val:
                         val = val['value']
                     self.set_select_container.set_visibility(val == 'Sealed Product')
 
-                # Use on_change for direct value, usually safer for selects
                 self.type_select.on_value_change(on_type_change)
 
                 with self.set_select_container:
@@ -117,7 +93,6 @@ class StorageDialog:
                              if self.sets_info and self.image_preview:
                                  s_info = next((s for s in self.sets_info if s['code'] == set_code), None)
                                  if s_info and s_info.get('image'):
-                                      # Download/Ensure
                                       url = s_info.get('image')
                                       path = await ygo_service.download_set_image(set_code, url)
                                       if path:
@@ -127,10 +102,9 @@ class StorageDialog:
                              logger.error(f"Error handling set change: {ex}")
                              ui.notify(f"Error loading set info: {ex}", type='warning')
 
-                     self.set_select = ui.select(self.set_options, label='Select Product', value=self.current_data.get('set_code'), with_input=True, on_change=on_set_change) \
+                     self.set_select = ui.select(self.set_options, label='Select Product', with_input=True, on_change=on_set_change) \
                         .classes('w-full').props('clearable input-debounce=0 use-input behavior="menu" fill-input hide-selected')
 
-                     # Filter logic for select
                      def filter_fn(val, update, abort):
                          update(lambda: self.set_select.set_options(
                              {k: v for k, v in self.set_options.items() if val.lower() in v.lower()} if val else self.set_options
@@ -138,11 +112,10 @@ class StorageDialog:
                      self.set_select.props(add='filter')
                      self.set_select.on('filter', filter_fn)
 
-                self.set_select_container.set_visibility(self.current_data.get('type') == 'Sealed Product')
+                self.set_select_container.set_visibility(False)
 
                 # Description
-                self.desc_input = ui.textarea('Description', value=self.current_data.get('description', '')) \
-                    .classes('w-full').props('rows=2')
+                self.desc_input = ui.textarea('Description').classes('w-full').props('rows=2')
 
                 # Image Upload
                 ui.label('Image').classes('text-sm text-gray-500')
@@ -154,23 +127,42 @@ class StorageDialog:
                         self.image_preview.set_source(f"/storage/{path}")
                         ui.notify('Image uploaded', type='positive')
 
-                ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=".jpg, .jpeg, .png" flat dense').classes('w-full')
+                self.upload_element = ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=".jpg, .jpeg, .png" flat dense').classes('w-full')
 
                 # Preview
                 self.image_preview = ui.image().classes('w-full h-40 object-contain bg-black rounded')
 
-                # Init Preview
-                if self.uploaded_image_path:
-                    self.image_preview.set_source(f"/storage/{self.uploaded_image_path}")
-                elif self.current_data.get('set_code'):
-                     safe_code = "".join(c for c in self.current_data.get('set_code') if c.isalnum() or c in ('-', '_')).strip()
-                     self.image_preview.set_source(f"/sets/{safe_code}.jpg")
-                else:
-                    self.image_preview.set_source(None)
-
             with ui.row().classes('w-full justify-end q-mt-md gap-4'):
                 ui.button('Cancel', on_click=self.dialog.close).props('flat')
                 ui.button('Save', on_click=self.save).props('color=primary')
+
+    def open(self, existing_data: Optional[Dict] = None):
+        self.current_data = existing_data or {}
+        self.uploaded_image_path = self.current_data.get('image_path')
+
+        if not self.sets_info:
+            asyncio.create_task(self.load_sets())
+
+        # Update UI Elements
+        is_edit = bool(existing_data)
+        self.title_label.text = "Edit Storage" if is_edit else "New Storage"
+
+        self.name_input.value = self.current_data.get('name', '')
+        self.type_select.value = self.current_data.get('type', 'Box')
+        self.desc_input.value = self.current_data.get('description', '')
+        self.set_select.value = self.current_data.get('set_code')
+
+        # Visibility
+        self.set_select_container.set_visibility(self.type_select.value == 'Sealed Product')
+
+        # Image
+        if self.uploaded_image_path:
+            self.image_preview.set_source(f"/storage/{self.uploaded_image_path}")
+        elif self.current_data.get('set_code'):
+             safe_code = "".join(c for c in self.current_data.get('set_code') if c.isalnum() or c in ('-', '_')).strip()
+             self.image_preview.set_source(f"/sets/{safe_code}.jpg")
+        else:
+            self.image_preview.set_source(None)
 
         self.dialog.open()
 
@@ -557,8 +549,20 @@ class StoragePage:
 
             ui.separator().props('vertical')
 
+            # Action Label Reference
+            action_label = ui.label().classes('text-sm font-bold ml-4')
+
+            def update_action_label():
+                txt = "Right-Click: Remove from Storage" if self.state['in_storage_only'] else "Right-Click: Add to Storage"
+                color = "text-negative" if self.state['in_storage_only'] else "text-positive"
+                # Clear existing color classes
+                action_label.classes(remove="text-negative text-positive")
+                action_label.classes(add=color)
+                action_label.text = txt
+
             async def toggle_storage(e):
                 self.state['in_storage_only'] = e.value
+                update_action_label()
                 await self.load_detail_rows()
                 self.render_detail_grid.refresh()
                 self.render_pagination_controls.refresh()
@@ -567,10 +571,8 @@ class StoragePage:
 
             ui.separator().props('vertical')
 
-            # Action Label
-            action_text = "Right-Click: Remove from Storage" if self.state['in_storage_only'] else "Right-Click: Add to Storage"
-            action_color = "text-negative" if self.state['in_storage_only'] else "text-positive"
-            ui.label(action_text).classes(f'text-sm font-bold {action_color} ml-4')
+            # Init label
+            update_action_label()
 
             ui.space()
 
