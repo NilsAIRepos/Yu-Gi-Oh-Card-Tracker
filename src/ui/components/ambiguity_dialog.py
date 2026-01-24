@@ -137,6 +137,9 @@ class AmbiguityDialog(ui.dialog):
 
     def update_options(self):
         """Updates all dropdown options based on current selections."""
+        # Safeguard against UI not being ready
+        if not self.set_code_select: return
+
         if not self.full_card_data:
             # Fallback to candidates list
             variants = self.candidates
@@ -180,6 +183,13 @@ class AmbiguityDialog(ui.dialog):
              if is_valid:
                  codes.add(self.ocr_set_id)
 
+        # Also ensure current selected Set Code is preserved if valid (e.g. if it came from a candidate)
+        if self.selected_set_code and self.selected_set_code != "Other":
+             # Check if it matches any variant via normalization
+             norm_sel = normalize_set_code(self.selected_set_code)
+             if any(normalize_set_code(v['set_code']) == norm_sel for v in variants):
+                 codes.add(self.selected_set_code)
+
         sorted_codes = sorted(list(codes))
         sorted_codes.append("Other")
 
@@ -187,7 +197,12 @@ class AmbiguityDialog(ui.dialog):
 
         # Ensure value matches
         if self.selected_set_code not in sorted_codes:
-            if self.ocr_set_id and self.ocr_set_id in sorted_codes:
+            # Try to find best match in sorted_codes (ignoring "Other")
+            match = next((c for c in sorted_codes if c != "Other" and normalize_set_code(c) == normalize_set_code(self.selected_set_code)), None)
+
+            if match:
+                 self.selected_set_code = match
+            elif self.ocr_set_id and self.ocr_set_id in sorted_codes:
                 self.selected_set_code = self.ocr_set_id
             elif len(sorted_codes) > 1:
                 self.selected_set_code = sorted_codes[0] # Default to first

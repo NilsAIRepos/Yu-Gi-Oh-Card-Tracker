@@ -835,7 +835,7 @@ class ScannerManager:
                      except: pass
 
                 if score > 30.0: # Minimum threshold
-                    scored_variants.append({
+                    candidate_entry = {
                         "score": score,
                         "card_id": card.id,
                         "name": card.name,
@@ -843,7 +843,22 @@ class ScannerManager:
                         "rarity": variant.set_rarity,
                         "image_id": variant.image_id,
                         "variant_id": variant.variant_id
-                    })
+                    }
+                    scored_variants.append(candidate_entry)
+
+                    # --- VIRTUAL CANDIDATE INJECTION ---
+                    # If we have a Cross-Region match (score ~75 but not 80 exact),
+                    # and the OCR code is DIFFERENT from the DB code,
+                    # inject a virtual candidate with the OCR Set Code.
+                    # This ensures "DPKB-DE007" appears in the list even if DB only has "DPKB-EN007".
+                    if 70.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code:
+                         virtual_entry = candidate_entry.copy()
+                         virtual_entry["set_code"] = ocr_res.set_id
+                         # Boost score slightly above the EN variant to prioritize the user's actual scan
+                         virtual_entry["score"] = score + 6.0 # Enough to beat the base match (EN)
+                         # We set variant_id to None so confirmation triggers "Add Custom" logic (via "Other" flow logic or new flow)
+                         virtual_entry["variant_id"] = None
+                         scored_variants.append(virtual_entry)
 
         scored_variants.sort(key=lambda x: x['score'], reverse=True)
 
