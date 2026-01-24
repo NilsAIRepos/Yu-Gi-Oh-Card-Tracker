@@ -37,6 +37,7 @@ else:
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
+from src.core.utils import normalize_set_code
 from nicegui import run
 
 logger = logging.getLogger(__name__)
@@ -720,6 +721,25 @@ class ScannerManager:
         except Exception as e:
             logger.error(f"Error in process_pending_lookups: {e}", exc_info=True)
 
+    def _score_set_code_match(self, ocr_code: str, db_code: str) -> float:
+        if not ocr_code or not db_code: return 0.0
+
+        # 1. Exact Match
+        if ocr_code == db_code:
+            return 80.0
+
+        # 2. Normalized Match (Cross-Region)
+        # Matches EEN-DE041 to EEN-EN041, SRL-G021 to SRL-E021
+        try:
+             norm_ocr = normalize_set_code(ocr_code)
+             norm_db = normalize_set_code(db_code)
+             if norm_ocr == norm_db:
+                 return 75.0
+        except:
+             pass
+
+        return 0.0
+
     async def find_best_match(self, ocr_res: 'OCRResult', art_match: Dict, threshold: float = 10.0) -> Dict[str, Any]:
         """
         Weighted matching algorithm.
@@ -752,7 +772,7 @@ class ScannerManager:
 
             # Check Set Code
             if ocr_res.set_id and card.card_sets:
-                 if any(s.set_code == ocr_res.set_id for s in card.card_sets):
+                 if any(self._score_set_code_match(ocr_res.set_id, s.set_code) > 0 for s in card.card_sets):
                      is_candidate = True
 
             # Check Name (if Set Code didn't match or missing)
@@ -780,8 +800,9 @@ class ScannerManager:
                 score = 0.0
 
                 # A. Set Code (80+)
-                if ocr_res.set_id and variant.set_code == ocr_res.set_id:
-                    score += 80.0
+                set_score = self._score_set_code_match(ocr_res.set_id, variant.set_code)
+                if set_score > 0:
+                    score += set_score
                     score += (ocr_res.set_id_conf / 100.0) * 10.0
 
                 # B. Name (50+)
@@ -814,7 +835,7 @@ class ScannerManager:
                      except: pass
 
                 if score > 30.0: # Minimum threshold
-                    scored_variants.append({
+                    candidate_entry = {
                         "score": score,
                         "card_id": card.id,
                         "name": card.name,
@@ -822,7 +843,22 @@ class ScannerManager:
                         "rarity": variant.set_rarity,
                         "image_id": variant.image_id,
                         "variant_id": variant.variant_id
-                    })
+                    }
+                    scored_variants.append(candidate_entry)
+
+                    # --- VIRTUAL CANDIDATE INJECTION ---
+                    # If we have a Cross-Region match (score ~75 but not 80 exact),
+                    # and the OCR code is DIFFERENT from the DB code,
+                    # inject a virtual candidate with the OCR Set Code.
+                    # This ensures "DPKB-DE007" appears in the list even if DB only has "DPKB-EN007".
+                    if 70.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code:
+                         virtual_entry = candidate_entry.copy()
+                         virtual_entry["set_code"] = ocr_res.set_id
+                         # Boost score slightly above the EN variant to prioritize the user's actual scan
+                         virtual_entry["score"] = score + 12.0 # Enough to beat the base match (EN)
+                         # We set variant_id to None so confirmation triggers "Add Custom" logic (via "Other" flow logic or new flow)
+                         virtual_entry["variant_id"] = None
+                         scored_variants.append(virtual_entry)
 
         scored_variants.sort(key=lambda x: x['score'], reverse=True)
 
@@ -832,13 +868,21 @@ class ScannerManager:
         # 2. Determine Ambiguity
         ambiguous = False
 
-        # A. Database Ambiguity: Top winner has multiple rarities for SAME Set Code
+        # A. Database Ambiguity: Top winner has multiple rarities OR multiple images for SAME Set Code
         top = scored_variants[0]
         same_code_variants = [v for v in scored_variants if v['set_code'] == top['set_code'] and v['score'] >= top['score'] - 5.0]
+
         # Check if they have different rarities
         rarities = set(v['rarity'] for v in same_code_variants)
         if len(rarities) > 1:
             ambiguous = True
+        else:
+            # If rarities are same, check if they have different art (image_id)
+            # Filter variants by the dominant rarity (since we know there's only 1 rarity type in this branch, or we check for it)
+            # Actually, just check all same-code variants. If they have mixed art, it's ambiguous.
+            image_ids = set(v['image_id'] for v in same_code_variants if v.get('image_id'))
+            if len(image_ids) > 1:
+                ambiguous = True
 
         # B. Matching Ambiguity: Top 2 scores are close
         if len(scored_variants) > 1:
