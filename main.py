@@ -59,11 +59,11 @@ def db_editor():
 # Serve images
 os.makedirs('data/images', exist_ok=True)
 os.makedirs('data/img', exist_ok=True)
-os.makedirs('data/storage', exist_ok=True)
+os.makedirs('data/collections/storage', exist_ok=True)
 app.add_static_files('/images', 'data/images')
 app.add_static_files('/data/img', 'data/img') # Serve data/img for Art Match if used
 app.add_static_files('/sets', 'data/sets')
-app.add_static_files('/storage', 'data/storage')
+app.add_static_files('/storage', 'data/collections/storage')
 app.add_static_files('/debug', 'debug')
 
 # Handle Chrome DevTools probe to prevent 404 warnings

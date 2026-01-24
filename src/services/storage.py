@@ -7,7 +7,7 @@ from nicegui import run
 from src.core.models import Collection, StorageDefinition
 
 DATA_DIR = os.path.join(os.getcwd(), "data")
-STORAGE_IMG_DIR = os.path.join(DATA_DIR, "storage")
+STORAGE_IMG_DIR = os.path.join(DATA_DIR, "collections", "storage")
 
 logger = logging.getLogger(__name__)
 
