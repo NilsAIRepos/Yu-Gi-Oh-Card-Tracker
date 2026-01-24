@@ -796,37 +796,20 @@ class CardScanner:
 
         return best_id, best_score, lang
 
-    def detect_first_edition(self, warped, full_text: Optional[str] = None, engine='easyocr') -> bool:
-        """Checks for '1st Edition' text using generic OCR on ROI, with full text fallback."""
-        x, y, w, h = self.roi_1st_ed
-        roi = warped[y:y+h, x:x+w]
+    def detect_first_edition(self, text_sources: List[str]) -> bool:
+        """
+        Simplified 1st Edition check based on keywords in provided text sources.
+        Checks for: Edition, Auflage, Edizione, Edición, Edição
+        """
+        keywords = ["EDITION", "AUFLAGE", "EDIZIONE", "EDICIÓN", "EDIÇÃO", "EDICAO"]
 
-        res = self.ocr_scan(roi, engine=engine)
-        text = res.raw_text.upper()
+        for text in text_sources:
+            if not text:
+                continue
 
-        # Context-aware 1st Edition Check
-        # Markers including typos
-        markers = ["1ST", "1.", "LIMITED", "IST", "LST", "I.", "L."]
-        has_marker = any(m in text for m in markers)
-
-        # Must also have "EDITION" or "AUFLAGE"
-        has_edition = "EDITION" in text or "AUFLAGE" in text
-
-        if has_marker and has_edition:
-            return True
-
-        # Fallback to full text if available and ROI check failed
-        if full_text:
-            ft = full_text.upper()
-            # Strict phrases to avoid false positives in effect text
-            # Matches: 1ST EDITION, 1. AUFLAGE, LIMITED EDITION
-            # Also common typos: IST EDITION, LST EDITION
-            patterns = [
-                r"1ST\s+EDITION", r"1\.\s+AUFLAGE", r"LIMITED\s+EDITION",
-                r"IST\s+EDITION", r"LST\s+EDITION"
-            ]
-            for p in patterns:
-                if re.search(p, ft):
+            upper_text = text.upper()
+            for kw in keywords:
+                if kw in upper_text:
                     return True
 
         return False

@@ -584,15 +584,16 @@ class ScannerManager:
              check_pause()
              set_step("Analysis: Visual Features")
 
-             # Get full text from the best OCR result (or first available)
-             full_text_fallback = None
-             if report.get("t1_full") and report["t1_full"].raw_text:
-                 full_text_fallback = report["t1_full"].raw_text
-             elif report.get("t2_full") and report["t2_full"].raw_text:
-                 full_text_fallback = report["t2_full"].raw_text
+             # Gather all available text from enabled OCR tracks
+             available_texts = []
+             for key in ["t1_full", "t1_crop", "t2_full", "t2_crop"]:
+                 res = report.get(key)
+                 if res and res.raw_text:
+                     available_texts.append(res.raw_text)
 
              report['visual_rarity'] = self.scanner.detect_rarity_visual(warped)
-             report['first_edition'] = self.scanner.detect_first_edition(warped, full_text=full_text_fallback)
+             # Use the collected texts instead of warped image scan
+             report['first_edition'] = self.scanner.detect_first_edition(available_texts)
              report['warped_image_data'] = warped # Pass along for Art Match
 
              if self.debug_state:
