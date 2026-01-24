@@ -61,7 +61,8 @@ class SingleCardView:
         rarity_map: Dict[str, Set[str]] = None,
         view_mode: str = 'consolidated',
         current_collection: Any = None,
-        original_quantity: int = 0
+        original_quantity: int = 0,
+        on_update_scan_callback: Callable[[Dict[str, Any]], Any] = None
     ):
         """
         Renders the inventory management section (Language, Set, Rarity, etc.).
@@ -242,6 +243,23 @@ class SingleCardView:
                         await handle_update('ADD', quantity_override=-qty)
                     else:
                         ui.notify("Quantity must be > 0", type='warning')
+
+                if on_update_scan_callback:
+                    async def do_update_scan():
+                         final_code = transform_set_code(input_state['set_base_code'], input_state['language'])
+                         payload = {
+                             'set_code': final_code,
+                             'rarity': input_state['rarity'],
+                             'language': input_state['language'],
+                             'condition': input_state['condition'],
+                             'first_edition': input_state['first_edition'],
+                             'quantity': input_state['quantity'],
+                             'image_id': input_state['image_id']
+                         }
+                         await on_update_scan_callback(payload)
+
+                    with ui.button('UPDATE', on_click=do_update_scan).props('color=warning text-color=dark'):
+                        ui.tooltip('Update the selected scan entry').classes('bg-black text-white')
 
                 with ui.button('ADD', on_click=do_add).props('color=secondary'):
                     ui.tooltip('Add the specified quantity to your collection').classes('bg-black text-white')
@@ -503,7 +521,8 @@ class SingleCardView:
         current_collection: Any = None,
         save_callback: Callable = None,
         variant_id: str = None,
-        hide_header_stats: bool = False
+        hide_header_stats: bool = False,
+        on_update_scan_callback: Callable[[Dict[str, Any]], Any] = None
     ):
         try:
             set_options = {}
@@ -761,6 +780,11 @@ class SingleCardView:
                                 )
                                 d.close()
 
+                             async def on_update_wrapper(payload):
+                                 if on_update_scan_callback:
+                                     await on_update_scan_callback(payload)
+                                     d.close()
+
                              self._render_inventory_management(
                                 card=card,
                                 input_state=input_state,
@@ -773,7 +797,8 @@ class SingleCardView:
                                 rarity_map=rarity_map,
                                 view_mode='collectors',
                                 current_collection=current_collection,
-                                original_quantity=owned_count
+                                original_quantity=owned_count,
+                                on_update_scan_callback=on_update_wrapper if on_update_scan_callback else None
                             )
 
                         self._render_available_sets(card)

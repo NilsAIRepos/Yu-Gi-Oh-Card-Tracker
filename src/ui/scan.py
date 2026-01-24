@@ -19,8 +19,16 @@ from src.services.scanner import SCANNER_AVAILABLE
 from src.core.persistence import persistence
 from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
 from src.services.ygo_api import ygo_service
+from src.services.image_manager import image_manager
+from src.services.collection_editor import CollectionEditor
+from src.core.changelog_manager import changelog_manager
 from src.ui.components.ambiguity_dialog import AmbiguityDialog
-from src.core import config_manager
+from src.ui.components.filter_pane import FilterPane
+from src.ui.components.single_card_view import SingleCardView
+from src.core import config_manager as scanner_config_manager
+from src.core.config import config_manager as app_config_manager
+from src.core.utils import extract_language_code, LANGUAGE_COUNTRY_MAP, generate_variant_id
+from src.core.constants import CARD_CONDITIONS, CONDITION_ABBREVIATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +214,27 @@ function setRotation(deg) {
     const transform = 'rotate(' + deg + 'deg)';
     if (v1) v1.style.transform = transform;
     if (v2) v2.style.transform = transform;
+
+    const overlay = document.getElementById('capture-overlay');
+    if (overlay) overlay.style.transform = transform;
+}
+
+function showCaptureOverlay(imageData, rotation, duration) {
+    const overlay = document.getElementById('capture-overlay');
+    if (!overlay) return;
+
+    overlay.style.backgroundImage = 'url("' + imageData + '")';
+    overlay.style.transform = 'rotate(' + rotation + 'deg)';
+    overlay.style.opacity = '1';
+
+    setTimeout(() => {
+        overlay.style.opacity = '0';
+        setTimeout(() => {
+             if (overlay.style.opacity === '0') {
+                 overlay.style.backgroundImage = '';
+             }
+        }, 500);
+    }, duration);
 }
 </script>
 """
@@ -225,7 +254,7 @@ class ScanPage:
         self.default_condition = "Near Mint"
 
         # Load Configuration
-        self.config = config_manager.load_config()
+        self.config = scanner_config_manager.load_config()
 
         # Initialize UI state from config
         self.ocr_tracks = self.config.get('ocr_tracks', ['doctr'])
@@ -241,9 +270,57 @@ class ScanPage:
         self.save_raw_scan = self.config.get('save_raw_scan', True)
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
         self.rotation = self.config.get('rotation', 0)
+        self.overlay_duration = self.config.get('overlay_duration', 1000)
 
         # Load Recent Scans
         self.load_recent_scans()
+
+        # Data & Filters
+        self.api_card_map = {}
+        self.filtered_scanned_cards = []
+        self.single_card_view = SingleCardView()
+        self.filter_pane = None
+
+        self.filter_state = {
+            'available_sets': [],
+            'available_monster_races': [],
+            'available_st_races': [],
+            'available_archetypes': [],
+            'available_card_types': ['Monster', 'Spell', 'Trap', 'Skill'],
+
+            # Filter Values
+            'search_text': '',
+            'filter_set': '',
+            'filter_rarity': '',
+            'filter_attr': '',
+            'filter_card_type': ['Monster', 'Spell', 'Trap'],
+            'filter_monster_race': '',
+            'filter_st_race': '',
+            'filter_archetype': '',
+            'filter_monster_category': [],
+            'filter_level': None,
+            'filter_atk_min': 0, 'filter_atk_max': 5000,
+            'filter_def_min': 0, 'filter_def_max': 5000,
+            'filter_price_min': 0.0, 'filter_price_max': 1000.0,
+            'filter_ownership_min': 0, 'filter_ownership_max': 100,
+            'filter_condition': [], 'filter_owned_lang': '',
+
+            'sort_by': 'Newest',
+            'sort_desc': True,
+        }
+
+        # Undo/Redo Stacks
+        self.scan_undo_stack = [] # List of (action, data) tuples
+        self.scan_redo_stack = []
+
+        # Defaults
+        self.default_language = "EN"
+        self.default_first_ed = False
+
+        # Batch Update State
+        self.update_apply_lang = False
+        self.update_apply_cond = False
+        self.update_apply_first = False
 
         # Debug Lab State (local cache of Pydantic model dump)
         self.debug_report = {}
@@ -255,6 +332,51 @@ class ScanPage:
         # UI State Persistence
         self.expansion_states = {}
 
+    def push_scan_undo(self, action_type: str, data: Any):
+        self.scan_undo_stack.append({'type': action_type, 'data': data})
+        # Clear redo stack on new action
+        self.scan_redo_stack.clear()
+
+    async def undo_scan_action(self):
+        if not self.scan_undo_stack:
+            ui.notify("Nothing to undo.", type='warning')
+            return
+
+        action = self.scan_undo_stack.pop()
+        type_ = action['type']
+        data = action['data']
+
+        if type_ == 'ADD':
+            if self.scanned_cards:
+                 # ADD adds to 0
+                 self.scanned_cards.pop(0)
+
+        elif type_ == 'REMOVE':
+            idx = data['index']
+            item = data['item']
+            self.scanned_cards.insert(idx, item)
+
+        elif type_ == 'UPDATE':
+            idx = data['index']
+            old_item = data['old']
+            if 0 <= idx < len(self.scanned_cards):
+                self.scanned_cards[idx] = old_item
+
+        elif type_ == 'COMMIT':
+             self.scanned_cards = list(data) # Restore list
+             if self.target_collection_file:
+                 changelog_manager.undo_last_change(self.target_collection_file)
+
+        elif type_ == 'COMMIT_SINGLE':
+             idx = data.get('index', 0)
+             self.scanned_cards.insert(idx, data['scan_item'])
+             if data.get('col_file'):
+                 changelog_manager.undo_last_change(data['col_file'])
+
+        self.save_recent_scans()
+        await self.apply_filters()
+        ui.notify("Undid last action.", type='positive')
+
     def save_settings(self):
         """Saves current settings to config."""
         self.config['ocr_tracks'] = [self.selected_track]
@@ -265,11 +387,12 @@ class ScanPage:
         self.config['save_raw_scan'] = self.save_raw_scan
         self.config['art_match_threshold'] = self.art_match_threshold
         self.config['rotation'] = self.rotation
+        self.config['overlay_duration'] = self.overlay_duration
 
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
 
-        config_manager.save_config(self.config)
+        scanner_config_manager.save_config(self.config)
 
     def load_recent_scans(self):
         """Loads scans from temp file."""
@@ -371,8 +494,9 @@ class ScanPage:
              except: pass
 
         self.scanned_cards.insert(0, result_dict)
+        self.push_scan_undo('ADD', result_dict)
         self.save_recent_scans()
-        self.render_live_list.refresh()
+        asyncio.create_task(self.apply_filters())
         ui.notify(f"Added: {result_dict.get('name')}", type='positive')
 
     async def event_consumer(self):
@@ -466,9 +590,10 @@ class ScanPage:
 
     def remove_card(self, index):
         if 0 <= index < len(self.scanned_cards):
-            self.scanned_cards.pop(index)
+            item = self.scanned_cards.pop(index)
+            self.push_scan_undo('REMOVE', {'index': index, 'item': item})
             self.save_recent_scans()
-            self.render_live_list.refresh()
+            asyncio.create_task(self.apply_filters())
 
     async def commit_cards(self):
         if not self.target_collection_file:
@@ -482,37 +607,46 @@ class ScanPage:
         try:
             collection = persistence.load_collection(self.target_collection_file)
 
+            # Prepare changelog batch
+            changes = []
             count = 0
-            for item in self.scanned_cards:
-                # item is dict from ScanResult.model_dump()
-                if not item.get('card_id'):
-                    continue
 
+            for item in self.scanned_cards:
+                if not item.get('card_id'): continue
+
+                # Logic to add to collection (replicated from before but cleaner)
                 target_card = next((c for c in collection.cards if c.card_id == item['card_id']), None)
                 if not target_card:
                     target_card = CollectionCard(card_id=item['card_id'], name=item['name'])
                     collection.cards.append(target_card)
 
-                target_variant = next((v for v in target_card.variants
-                                       if v.set_code == item['set_code'] and v.rarity == item['rarity']), None)
+                # Determine Variant ID
+                variant_id = item.get('variant_id')
+                image_id = item.get('image_id')
 
-                if not target_variant:
+                if not variant_id:
+                    # Generate or Find
                     api_card = ygo_service.get_card(item['card_id'])
-                    variant_id = str(item['card_id'])
-                    image_id = None
-
-                    # If we have variant info from matching
-                    if item.get('variant_id'):
-                         variant_id = item['variant_id']
-                         image_id = item.get('image_id')
-                    elif api_card:
-                         # Fallback search
+                    if api_card:
+                        # Try to find in sets
+                        found = False
                         for s in api_card.card_sets:
                             if s.set_code == item['set_code'] and s.set_rarity == item['rarity']:
                                 variant_id = s.variant_id
                                 image_id = s.image_id
+                                found = True
                                 break
 
+                    if not variant_id:
+                         variant_id = generate_variant_id(item['card_id'], item['set_code'], item['rarity'], image_id)
+
+                target_variant = next((v for v in target_card.variants if v.variant_id == variant_id), None)
+                if not target_variant:
+                     # Fallback check by properties if ID didn't match (legacy)
+                     target_variant = next((v for v in target_card.variants
+                                          if v.set_code == item['set_code'] and v.rarity == item['rarity']), None)
+
+                if not target_variant:
                     target_variant = CollectionVariant(
                         variant_id=variant_id,
                         set_code=item['set_code'],
@@ -530,19 +664,47 @@ class ScanPage:
                 target_variant.entries.append(entry)
                 count += 1
 
+                # Log Change
+                changes.append({
+                    'action': 'ADD',
+                    'quantity': 1,
+                    'card_data': {
+                        'card_id': item['card_id'],
+                        'name': item['name'],
+                        'set_code': item['set_code'],
+                        'rarity': item['rarity'],
+                        'image_id': image_id,
+                        'language': item['language'],
+                        'condition': self.default_condition,
+                        'first_edition': item['first_edition'],
+                        'variant_id': variant_id
+                    }
+                })
+
             persistence.save_collection(collection, self.target_collection_file)
 
-            ui.notify(f"Added {count} cards to {collection.name}", type='positive')
-            self.scanned_cards.clear()
-            self.save_recent_scans() # Will save empty list
+            # Log Batch
+            if changes:
+                changelog_manager.log_batch_change(
+                    self.target_collection_file,
+                    f"Added {len(changes)} scanned cards",
+                    changes
+                )
 
-            # Clear temp file as requested
+            ui.notify(f"Added {count} cards to {collection.name}", type='positive')
+
+            # Undo Logic
+            self.push_scan_undo('COMMIT', list(self.scanned_cards))
+
+            self.scanned_cards.clear()
+            self.save_recent_scans()
+
             try:
                 os.remove("data/scans/scans_temp.json")
             except:
                 pass
 
-            self.render_live_list.refresh()
+            asyncio.create_task(self.apply_filters())
 
         except Exception as e:
             logger.error(f"Error saving collection: {e}")
@@ -559,6 +721,8 @@ class ScanPage:
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
                 return
+
+            ui.run_javascript(f'showCaptureOverlay("{data_url}", {self.rotation}, {self.overlay_duration})')
 
             header, encoded = data_url.split(",", 1)
             content = base64.b64decode(encoded)
@@ -679,22 +843,374 @@ class ScanPage:
         except Exception as err:
             ui.notify(f"Capture failed: {err}", type='negative')
 
+    async def load_library_data(self):
+        try:
+            lang_code = app_config_manager.get_language().lower()
+            api_cards = await ygo_service.load_card_database(lang_code)
+            self.api_card_map = {c.id: c for c in api_cards}
+
+            # Populate Filter Options
+            sets = set()
+            m_races = set()
+            st_races = set()
+            archetypes = set()
+
+            for c in api_cards:
+                if c.card_sets:
+                    for s in c.card_sets:
+                         sets.add(f"{s.set_name} | {s.set_code.split('-')[0] if '-' in s.set_code else s.set_code}")
+                if c.archetype: archetypes.add(c.archetype)
+                if "Monster" in c.type: m_races.add(c.race)
+                elif "Spell" in c.type or "Trap" in c.type:
+                    if c.race: st_races.add(c.race)
+
+            self.filter_state['available_sets'][:] = sorted(list(sets))
+            self.filter_state['available_monster_races'][:] = sorted(list(m_races))
+            self.filter_state['available_st_races'][:] = sorted(list(st_races))
+            self.filter_state['available_archetypes'][:] = sorted(list(archetypes))
+
+            if self.filter_pane:
+                self.filter_pane.update_options()
+
+            await self.apply_filters()
+
+        except Exception as e:
+            logger.error(f"Error loading library data: {e}")
+            ui.notify(f"Error loading card database: {e}", type='negative')
+
+    async def apply_filters(self):
+        source = self.scanned_cards
+        s = self.filter_state
+        res = []
+
+        # Helper to get ApiCard
+        def get_api(item):
+            return self.api_card_map.get(item.get('card_id'))
+
+        txt = s.get('search_text', '').lower()
+
+        for item in source:
+            api_card = get_api(item)
+
+            # Text Filter
+            if txt:
+                name = item.get('name', '').lower()
+                code = item.get('set_code', '').lower()
+                desc = api_card.desc.lower() if api_card else ""
+                if not (txt in name or txt in code or txt in desc):
+                    continue
+
+            if api_card:
+                if s['filter_card_type'] and not any(t in api_card.type for t in s['filter_card_type']): continue
+                if s['filter_attr'] and api_card.attribute != s['filter_attr']: continue
+                if s['filter_monster_race'] and "Monster" in api_card.type and api_card.race != s['filter_monster_race']: continue
+                if s['filter_st_race'] and ("Spell" in api_card.type or "Trap" in api_card.type) and api_card.race != s['filter_st_race']: continue
+                if s['filter_archetype'] and api_card.archetype != s['filter_archetype']: continue
+                if s['filter_monster_category'] and not any(api_card.matches_category(cat) for cat in s['filter_monster_category']): continue
+                if s['filter_level'] is not None and api_card.level != int(s['filter_level']): continue
+
+                # Ranges
+                if s['filter_atk_min'] > 0 or s['filter_atk_max'] < 5000:
+                     if api_card.atk is None or not (s['filter_atk_min'] <= int(api_card.atk) <= s['filter_atk_max']): continue
+                if s['filter_def_min'] > 0 or s['filter_def_max'] < 5000:
+                     if api_card.def_ is None or not (s['filter_def_min'] <= int(api_card.def_) <= s['filter_def_max']): continue
+
+                # Price
+                if s['filter_price_min'] > 0.0 or s['filter_price_max'] < 1000.0:
+                     price = 0.0
+                     if api_card.card_sets:
+                         for cs in api_card.card_sets:
+                             if cs.set_code == item.get('set_code') and cs.set_rarity == item.get('rarity'):
+                                 try: price = float(cs.set_price)
+                                 except: pass
+                                 break
+                     if not (s['filter_price_min'] <= price <= s['filter_price_max']): continue
+
+            # Ownership (Quantity)
+            qty = item.get('quantity', 1)
+            if s['filter_ownership_min'] > 0 or s['filter_ownership_max'] < 100:
+                if not (s['filter_ownership_min'] <= qty <= s['filter_ownership_max']): continue
+
+            # Owned Language
+            if s['filter_owned_lang']:
+                if item.get('language', 'EN') != s['filter_owned_lang']: continue
+
+            # Item Properties Filters
+            if s['filter_set']:
+                 target = s['filter_set'].split('|')[0].strip().lower()
+                 match_set = False
+                 if target in item.get('set_code', '').lower(): match_set = True
+                 if api_card and api_card.card_sets:
+                     for cs in api_card.card_sets:
+                         if cs.set_code == item.get('set_code'):
+                             if target in cs.set_name.lower(): match_set = True
+                             break
+                 if not match_set: continue
+
+            if s['filter_rarity'] and item.get('rarity', '').lower() != s['filter_rarity'].lower(): continue
+
+            if s['filter_condition']:
+                 cond = item.get('condition')
+                 if not cond or cond not in s['filter_condition']: continue
+
+            res.append(item)
+
+        # Sort
+        key = s['sort_by']
+        desc = s['sort_desc']
+
+        def sort_key(item):
+            api_card = get_api(item)
+            if key == 'Name': return item.get('name', '')
+            if key == 'Set Code': return item.get('set_code', '')
+            if key == 'Rarity': return item.get('rarity', '')
+            if key == 'Newest': return self.scanned_cards.index(item) # Original order (top is new)
+
+            if api_card:
+                if key == 'ATK': return api_card.atk or -1
+                if key == 'DEF': return api_card.def_ or -1
+                if key == 'Level': return api_card.level or -1
+            return 0
+
+        res.sort(key=sort_key, reverse=desc)
+
+        self.filtered_scanned_cards = res
+        self.render_live_list.refresh()
+
+    async def reset_filters(self):
+        s = self.filter_state
+        s['filter_set'] = ''
+        s['filter_rarity'] = ''
+        s['filter_attr'] = ''
+        s['filter_card_type'] = ['Monster', 'Spell', 'Trap']
+        s['filter_monster_race'] = ''
+        s['filter_st_race'] = ''
+        s['filter_archetype'] = ''
+        s['filter_monster_category'] = []
+        s['filter_level'] = None
+        s['filter_atk_min'] = 0
+        s['filter_atk_max'] = 5000
+        s['filter_def_min'] = 0
+        s['filter_def_max'] = 5000
+        s['filter_price_min'] = 0.0
+        s['filter_price_max'] = 1000.0
+        s['filter_ownership_min'] = 0
+        s['filter_ownership_max'] = 100
+        s['filter_condition'] = []
+        s['filter_owned_lang'] = ''
+        s['search_text'] = ''
+
+        if self.filter_pane:
+            self.filter_pane.reset_ui_elements()
+
+        await self.apply_filters()
+
+    async def open_single_view(self, item):
+        api_card = self.api_card_map.get(item.get('card_id'))
+        if not api_card:
+             ui.notify("Card data not found.", type='negative')
+             return
+
+        async def on_update(payload):
+            try:
+                idx = self.scanned_cards.index(item)
+                old_item = item.copy()
+                for k, v in payload.items():
+                    if k in ['set_code', 'rarity', 'language', 'first_edition']:
+                        item[k] = v
+                    if k == 'image_id': item['image_id'] = v
+                    if k == 'variant_id': item['variant_id'] = v
+                self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': item.copy()})
+                self.save_recent_scans()
+                await self.apply_filters()
+                ui.notify("Scan updated.", type='positive')
+            except ValueError:
+                ui.notify("Item not found.", type='warning')
+
+        async def on_save(card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, **kwargs):
+            try:
+                idx = self.scanned_cards.index(item)
+            except ValueError:
+                return
+
+            if mode == 'ADD':
+                if not self.target_collection_file:
+                    ui.notify("No collection selected.", type='warning')
+                    return
+
+                col = persistence.load_collection(self.target_collection_file)
+                if not variant_id:
+                     variant_id = generate_variant_id(card.id, set_code, rarity, image_id)
+
+                CollectionEditor.apply_change(col, card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode='ADD')
+                persistence.save_collection(col, self.target_collection_file)
+
+                card_data = {
+                    'card_id': card.id, 'name': card.name, 'set_code': set_code, 'rarity': rarity,
+                    'image_id': image_id, 'language': language, 'condition': condition,
+                    'first_edition': first_edition, 'variant_id': variant_id
+                }
+                changelog_manager.log_change(self.target_collection_file, 'ADD', card_data, quantity)
+
+                removed = self.scanned_cards.pop(idx)
+                self.push_scan_undo('COMMIT_SINGLE', {'index': idx, 'scan_item': removed, 'col_file': self.target_collection_file})
+                self.save_recent_scans()
+                await self.apply_filters()
+                ui.notify(f"Added {quantity}x to collection.", type='positive')
+
+            elif mode == 'SET' and quantity <= 0:
+                removed = self.scanned_cards.pop(idx)
+                self.push_scan_undo('REMOVE', {'index': idx, 'item': removed})
+                self.save_recent_scans()
+                await self.apply_filters()
+                ui.notify("Scan removed.", type='info')
+
+        await self.single_card_view.open_collectors(
+            card=api_card,
+            owned_count=0,
+            set_code=item.get('set_code'),
+            rarity=item.get('rarity'),
+            set_name="",
+            language=item.get('language', 'EN'),
+            condition=self.default_condition,
+            first_edition=item.get('first_edition', False),
+            image_id=item.get('image_id'),
+            on_update_scan_callback=on_update,
+            save_callback=on_save
+        )
+
+    async def on_remove_all_click(self):
+        if not self.scanned_cards: return
+        with ui.dialog() as d, ui.card():
+             ui.label("Clear all scanned cards?").classes('text-lg font-bold')
+             with ui.row().classes('justify-end'):
+                 ui.button("Cancel", on_click=d.close).props('flat')
+                 async def confirm():
+                     d.close()
+                     self.push_scan_undo('COMMIT', list(self.scanned_cards))
+                     self.scanned_cards.clear()
+                     self.save_recent_scans()
+                     await self.apply_filters()
+                     ui.notify("All scans removed.", type='positive')
+                 ui.button("Clear All", on_click=confirm).props('color=negative')
+        d.open()
+
+    async def on_update_all_click(self):
+        if not self.scanned_cards: return
+        if not (self.update_apply_lang or self.update_apply_cond or self.update_apply_first):
+            ui.notify("Select at least one property (Lang, Cond, 1st) to update.", type='warning')
+            return
+
+        with ui.dialog() as d, ui.card():
+             ui.label("Batch Update Scans").classes('text-lg font-bold')
+             ui.label(f"Update {len(self.scanned_cards)} cards?").classes('text-sm')
+
+             updates = []
+             if self.update_apply_lang: updates.append(f"Language -> {self.default_language}")
+             if self.update_apply_cond: updates.append(f"Condition -> {self.default_condition}")
+             if self.update_apply_first: updates.append(f"1st Ed -> {'Yes' if self.default_first_ed else 'No'}")
+
+             msg = "Applying: " + ", ".join(updates)
+             ui.label(msg).classes('text-xs text-accent')
+
+             with ui.row().classes('justify-end'):
+                 ui.button("Cancel", on_click=d.close).props('flat')
+                 async def confirm():
+                     d.close()
+                     snapshot = [c.copy() for c in self.scanned_cards]
+                     self.push_scan_undo('COMMIT', snapshot)
+
+                     count = 0
+                     for item in self.scanned_cards:
+                         if self.update_apply_cond: item['condition'] = self.default_condition
+                         if self.update_apply_lang: item['language'] = self.default_language
+                         if self.update_apply_first: item['first_edition'] = self.default_first_ed
+                         count += 1
+
+                     self.save_recent_scans()
+                     await self.apply_filters()
+                     ui.notify(f"Updated {count} cards.", type='positive')
+                 ui.button("Update", on_click=confirm).props('color=warning')
+        d.open()
+
+    @ui.refreshable
+    def render_scan_header(self):
+        with ui.row().classes('w-full p-2 bg-gray-900 border-b border-gray-800 items-center justify-between gap-2 flex-nowrap overflow-x-auto'):
+            ui.label('Recent Scans').classes('text-h6 font-bold')
+
+            with ui.row().classes('items-center gap-1 flex-nowrap'):
+                ui.button(icon='undo', on_click=self.undo_scan_action).props('flat dense color=white size=sm').tooltip('Undo last action')
+                ui.separator().props('vertical')
+
+                with ui.row().classes('gap-1 items-center bg-gray-800 rounded px-1 border border-gray-700'):
+                    ui.button("Update", on_click=self.on_update_all_click).props('flat dense color=warning size=sm')
+                    ui.checkbox('Lang', value=self.update_apply_lang, on_change=lambda e: setattr(self, 'update_apply_lang', e.value)).props('dense size=xs').classes('text-[10px]')
+                    ui.checkbox('Cond', value=self.update_apply_cond, on_change=lambda e: setattr(self, 'update_apply_cond', e.value)).props('dense size=xs').classes('text-[10px]')
+                    ui.checkbox('1st', value=self.update_apply_first, on_change=lambda e: setattr(self, 'update_apply_first', e.value)).props('dense size=xs').classes('text-[10px]')
+
+                ui.button("Remove All", on_click=self.on_remove_all_click).props('flat dense color=negative size=sm')
+                ui.separator().props('vertical')
+
+                ui.input(placeholder='Search...', on_change=lambda e: [self.filter_state.update({'search_text': e.value}), asyncio.create_task(self.apply_filters())]).props('dense borderless dark debounce=300').classes('w-32 text-sm')
+                ui.separator().props('vertical')
+
+                sort_opts = ['Newest', 'Name', 'Set Code', 'Rarity', 'ATK', 'DEF', 'Level']
+                async def on_sort(e):
+                    self.filter_state['sort_by'] = e.value
+                    await self.apply_filters()
+                ui.select(sort_opts, value=self.filter_state['sort_by'], on_change=on_sort).props('dense options-dense borderless').classes('w-20 text-xs')
+
+                async def toggle_sort():
+                    self.filter_state['sort_desc'] = not self.filter_state['sort_desc']
+                    await self.apply_filters()
+                ui.button(on_click=toggle_sort).props('flat dense color=white size=sm').bind_icon_from(self.filter_state, 'sort_desc', lambda d: 'arrow_downward' if d else 'arrow_upward')
+
+                ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('flat dense color=white size=sm')
+
     @ui.refreshable
     def render_live_list(self):
-        if not self.scanned_cards:
+        items = self.filtered_scanned_cards
+        if not items and self.scanned_cards:
+            ui.label("No matches for filter.").classes('text-gray-400 italic')
+        elif not items:
             ui.label("No cards scanned.").classes('text-gray-400 italic')
             return
 
-        for i, card in enumerate(self.scanned_cards):
-            with ui.card().classes('w-full mb-2 p-2 flex flex-row items-center gap-4'):
-                if card.get('image_path'):
-                    ui.image(f"/images/{os.path.basename(card['image_path'])}").classes('w-12 h-16 object-contain')
-                with ui.column().classes('flex-grow'):
-                    ui.label(card.get('name', 'Unknown')).classes('font-bold')
-                    ui.label(f"{card.get('set_code')}").classes('text-xs text-gray-500')
+        with ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))').classes('w-full gap-2 p-2'):
+            for i, item in enumerate(items):
+                img_src = None
+                if item.get('image_id'):
+                     img_src = f"/images/{item['image_id']}.jpg" if image_manager.image_exists(item['image_id']) else None
 
-                ui.button(icon='delete', color='negative',
-                          on_click=lambda idx=i: self.remove_card(idx)).props('flat')
+                if not img_src:
+                     api_card = self.api_card_map.get(item.get('card_id'))
+                     if api_card and api_card.card_images:
+                         img_src = api_card.card_images[0].image_url_small
+
+                if not img_src and item.get('image_path'):
+                     img_src = f"/images/{os.path.basename(item['image_path'])}"
+
+                with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-800 w-full aspect-[2/3] select-none') \
+                        .on('click', lambda x=item: self.open_single_view(x)) \
+                        .on('contextmenu.prevent', lambda x=item: self.remove_card(self.scanned_cards.index(x))):
+
+                    with ui.element('div').classes('relative w-full h-full'):
+                         if img_src:
+                             ui.image(img_src).classes('w-full h-full object-cover')
+                         else:
+                             ui.label("?").classes('w-full h-full flex items-center justify-center bg-gray-800 text-white')
+
+                         lang = item.get('language', 'EN')
+                         if lang:
+                             ui.label(lang).classes('absolute top-[1px] left-[1px] text-[10px] font-bold shadow-black drop-shadow-md bg-black/50 rounded px-1 text-white')
+
+                         if item.get('first_edition'):
+                             ui.label('1st').classes('absolute top-[1px] right-[1px] text-[10px] font-bold text-orange-400 bg-black/50 rounded px-1')
+
+                         with ui.column().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[9px] px-1 gap-0 w-full'):
+                             ui.label(item.get('name', 'Unknown')).classes('text-[9px] font-bold text-white leading-none truncate w-full')
+                             ui.label(item.get('set_code', '')).classes('font-mono text-yellow-500 leading-none truncate')
+                             ui.label(item.get('rarity', '')).classes('text-[8px] text-gray-300 leading-none truncate')
 
     @ui.refreshable
     def render_debug_results(self):
@@ -937,6 +1453,11 @@ class ScanPage:
                 ui.switch("Save Raw Scans", value=self.save_raw_scan,
                           on_change=lambda e: (setattr(self, 'save_raw_scan', e.value), self.save_settings())).props('color=secondary').classes('w-full')
 
+                # Overlay Duration
+                ui.label("Overlay Duration (ms):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.overlay_duration, min=0, max=5000, step=100,
+                          on_change=lambda e: (setattr(self, 'overlay_duration', e.value), self.save_settings())).classes('w-full')
+
                 # Camera Preview
                 ui.label("Camera Preview").classes('font-bold text-lg mt-4')
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
@@ -1008,53 +1529,67 @@ def scan_page():
         live_tab = ui.tab('Live Scan')
         debug_tab = ui.tab('Debug Lab')
 
+    # Initialize Filter Dialog
+    page.filter_dialog = ui.dialog().props('position=right')
+    with page.filter_dialog, ui.card().classes('h-full w-96 bg-gray-900 border-l border-gray-700 p-0 flex flex-col'):
+         with ui.scroll_area().classes('flex-grow w-full'):
+             page.filter_pane = FilterPane(page.filter_state, page.apply_filters, page.reset_filters, show_set_selector=True)
+             page.filter_pane.build()
+
     with ui.tab_panels(tabs, value=live_tab).classes('w-full h-full'):
 
         # --- TAB 1: LIVE SCAN ---
-        with ui.tab_panel(live_tab):
-            with ui.row().classes('w-full gap-4 items-center mb-4'):
-                if page.collections:
-                    ui.select(options=page.collections, value=page.target_collection_file, label='Collection',
-                              on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-48')
+        with ui.tab_panel(live_tab).classes('p-0 h-full flex flex-col'):
+            with ui.row().classes('w-full flex-grow flex-nowrap gap-0 h-full'):
 
-                page.camera_select = ui.select(options={}, label='Camera').classes('w-48')
-                page.start_btn = ui.button('Start', on_click=page.start_camera).props('icon=videocam')
-                page.stop_btn = ui.button('Stop', on_click=page.stop_camera).props('icon=videocam_off color=negative')
-                page.stop_btn.visible = False
+                 # --- LEFT PANEL (Camera & Controls) ---
+                 with ui.column().classes('w-1/2 h-full p-4 flex flex-col gap-4 border-r border-gray-800 bg-black'):
+                      # Top Bar: Camera & Collection
+                      with ui.row().classes('w-full gap-2 items-center'):
+                          if page.collections:
+                              ui.select(options=page.collections, value=page.target_collection_file, label='Target Collection',
+                                        on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('flex-grow')
+                          page.camera_select = ui.select(options={}, label='Camera').classes('flex-grow')
+                          page.start_btn = ui.button(icon='videocam', on_click=page.start_camera).props('flat dense color=positive').tooltip('Start Camera')
+                          page.stop_btn = ui.button(icon='videocam_off', on_click=page.stop_camera).props('flat dense color=negative').tooltip('Stop Camera')
+                          page.stop_btn.visible = False
 
-                ui.separator().props('vertical')
+                      # Camera View
+                      with ui.card().classes('w-full aspect-video p-0 overflow-hidden relative bg-black border border-gray-700 shadow-lg'):
+                           ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
+                           ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
+                           ui.html('<div id="capture-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity 0.5s; background-size: contain; background-repeat: no-repeat; background-position: center;"></div>', sanitize=False)
 
-                # --- NEW: Status Controls in Live Scan ---
-                page.render_status_controls()
+                      # Status & Capture
+                      page.render_status_controls()
+                      ui.button('Capture & Scan', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg').classes('w-full font-bold')
 
-                # Replaced Auto Scan with Manual Scan Button
-                ui.button('Capture & Scan', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black')
+                      # Defaults & Commit
+                      ui.label("Scan Defaults").classes('font-bold text-gray-400 text-sm mt-2')
+                      with ui.row().classes('w-full gap-2 items-center bg-gray-900 p-2 rounded border border-gray-800'):
+                           ui.select(['EN', 'DE', 'FR', 'IT', 'PT'], value=page.default_language, label="Lang",
+                                     on_change=lambda e: setattr(page, 'default_language', e.value)).classes('w-20')
+                           ui.select(CARD_CONDITIONS, value=page.default_condition, label="Cond",
+                                     on_change=lambda e: setattr(page, 'default_condition', e.value)).classes('flex-grow')
+                           ui.checkbox("1st Ed", value=page.default_first_ed,
+                                       on_change=lambda e: setattr(page, 'default_first_ed', e.value)).classes('text-sm')
 
-                ui.space()
+                      ui.button('Commit to Collection', on_click=page.commit_cards).props('color=positive icon=save').classes('w-full mt-auto')
 
-                ui.select(options=["Mint", "Near Mint", "Excellent", "Good", "Light Played", "Played", "Poor", "Damaged"],
-                          value=page.default_condition, label="Default Condition",
-                          on_change=lambda e: setattr(page, 'default_condition', e.value)).classes('w-32')
+                 # --- RIGHT PANEL (Gallery) ---
+                 with ui.column().classes('w-1/2 h-full flex flex-col bg-dark overflow-hidden'):
+                      page.render_scan_header()
 
-                ui.button('Add All', on_click=page.commit_cards).props('color=primary icon=save')
-
-            with ui.row().classes('w-full h-[calc(100vh-250px)] gap-4'):
-                # Camera View
-                with ui.card().classes('flex-1 h-full p-0 overflow-hidden relative bg-black'):
-                    ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
-                    ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
-
-                # List View
-                with ui.column().classes('w-96 h-full'):
-                    ui.label("Recent Scans").classes('text-xl font-bold')
-                    with ui.scroll_area().classes('w-full flex-grow border rounded p-2'):
-                        page.render_live_list()
+                      with ui.column().classes('w-full flex-grow relative bg-black/20 overflow-hidden'):
+                           with ui.scroll_area().classes('w-full h-full'):
+                                page.render_live_list()
 
         # --- TAB 2: DEBUG LAB ---
         with ui.tab_panel(debug_tab):
              page.render_debug_lab()
 
     ui.timer(1.0, page.init_cameras, once=True)
+    ui.timer(0.1, page.load_library_data, once=True)
 
     # Use fast consumer loop instead of slow polling
     ui.timer(0.1, page.event_consumer)
