@@ -831,7 +831,9 @@ class ScannerManager:
 
             # Check Art ID
             if not is_candidate and art_id:
-                 if any(img.id == art_id for img in card.card_images):
+                 if card.id == art_id:
+                     is_candidate = True
+                 elif any(img.id == art_id for img in card.card_images):
                      is_candidate = True
                  elif card.card_sets and any(s.image_id == art_id for s in card.card_sets):
                      is_candidate = True
@@ -864,7 +866,7 @@ class ScannerManager:
                 if art_id:
                     if variant.image_id == art_id:
                         score += 40.0
-                    elif any(img.id == art_id for img in card.card_images):
+                    elif any(img.id == art_id for img in card.card_images) or card.id == art_id:
                         score += 35.0 # Wrong variant but correct card
 
                 # C2. Card Type Bonus (+10)
