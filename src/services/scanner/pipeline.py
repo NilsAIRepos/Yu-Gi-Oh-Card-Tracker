@@ -634,9 +634,9 @@ class CardScanner:
         upper_text = text[:limit].upper()
 
         # Prioritize finding these keywords
-        if "SPELL CARD" in upper_text or "CARTE MAGIE" in upper_text or "ZAUBERKARTE" in upper_text:
+        if "SPELL CARD" in upper_text or "SPELL | CARD" in upper_text or "CARTE MAGIE" in upper_text or "ZAUBERKARTE" in upper_text:
             return "Spell"
-        if "TRAP CARD" in upper_text or "CARTE PIÈGE" in upper_text or "FALLENKARTE" in upper_text:
+        if "TRAP CARD" in upper_text or "TRAP | CARD" in upper_text or "CARTE PIÈGE" in upper_text or "FALLENKARTE" in upper_text:
             return "Trap"
         return None
 
