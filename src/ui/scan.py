@@ -318,8 +318,15 @@ class ScanPage:
         config_manager.save_config(self.config)
 
     def _scan_to_entry(self, scan_result: Dict) -> Optional[BulkCollectionEntry]:
-        card_id = scan_result.get('card_id')
-        if not card_id: return None
+        raw_id = scan_result.get('card_id')
+        if not raw_id:
+            return None
+
+        try:
+            card_id = int(raw_id)
+        except ValueError:
+            logger.error(f"Invalid card_id format: {raw_id}")
+            return None
 
         # Cache API Card
         if card_id not in self.api_card_map:
@@ -328,7 +335,9 @@ class ScanPage:
                  self.api_card_map[card_id] = card
 
         api_card = self.api_card_map.get(card_id)
-        if not api_card: return None
+        if not api_card:
+            logger.warning(f"Card ID {card_id} not found in database.")
+            return None
 
         # Determine Image
         img_id = scan_result.get('image_id')
@@ -1522,6 +1531,7 @@ def scan_page():
 
         # --- TAB 1: LIVE SCAN ---
         with ui.tab_panel(live_tab):
+            # Top Controls Row
             with ui.row().classes('w-full gap-4 items-center mb-4'):
                 if page.collections:
                     ui.select(options=page.collections, value=page.target_collection_file, label='Collection',
@@ -1532,14 +1542,6 @@ def scan_page():
                 page.stop_btn = ui.button('Stop', on_click=page.stop_camera).props('icon=videocam_off color=negative')
                 page.stop_btn.visible = False
 
-                ui.separator().props('vertical')
-
-                # --- NEW: Status Controls in Live Scan ---
-                page.render_status_controls()
-
-                # Replaced Auto Scan with Manual Scan Button
-                ui.button('Capture & Scan', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black')
-
                 ui.space()
 
                 ui.select(options=["Mint", "Near Mint", "Excellent", "Good", "Light Played", "Played", "Poor", "Damaged"],
@@ -1548,14 +1550,23 @@ def scan_page():
 
                 ui.button('Add All', on_click=page.commit_cards).props('color=primary icon=save')
 
+            # Main Content
             with ui.row().classes('w-full h-[calc(100vh-250px)] gap-4'):
-                # Camera View
-                with ui.card().classes('flex-1 h-full p-0 overflow-hidden relative bg-black'):
-                    ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
-                    ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
-                    page.capture_overlay = ui.image().classes('absolute top-0 left-0 w-full h-full object-contain pointer-events-none z-10').style('display: none;')
+                # Left Column: Status, Camera, Capture
+                with ui.column().classes('flex-1 h-full gap-2'):
+                    # Status Section (Above Camera)
+                    page.render_status_controls()
 
-                # List View
+                    # Camera View
+                    with ui.card().classes('w-full flex-grow p-0 overflow-hidden relative bg-black'):
+                        ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
+                        ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
+                        page.capture_overlay = ui.image().classes('absolute top-0 left-0 w-full h-full object-contain pointer-events-none z-10').style('display: none;')
+
+                    # Capture Button (Below Camera)
+                    ui.button('Capture & Scan', on_click=page.trigger_live_scan).classes('w-full font-bold text-lg').props('icon=camera color=accent text-color=black')
+
+                # Right Column: Gallery List
                 with ui.column().classes('flex-1 h-full bg-dark border border-gray-800 rounded flex flex-col overflow-hidden'):
                     page.render_scan_header()
                     with ui.column().classes('w-full flex-grow relative bg-black/20 overflow-hidden'):
