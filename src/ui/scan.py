@@ -1390,54 +1390,56 @@ class ScanPage:
 
     @ui.refreshable
     def render_control_bar(self):
-        # Use dynamic import access
-        mgr = scanner_service.scanner_manager
-        status = mgr.get_status()
-        is_paused = mgr.is_paused()
+        with ui.column().classes('w-full gap-2 mb-2'):
+            # Row 1: Camera Controls
+            with ui.row().classes('w-full items-center justify-between bg-gray-900 p-2 rounded border border-gray-800'):
+                 self.camera_select = ui.select(options={}, label='Camera').props('dense outlined options-dense').classes('flex-grow')
 
-        with ui.row().classes('w-full items-center justify-between bg-gray-900 p-2 rounded border border-gray-800 mb-2'):
-            # Camera Controls
-            with ui.row().classes('items-center gap-2'):
-                 self.camera_select = ui.select(options={}, label='Camera').props('dense outlined options-dense').classes('w-48')
+                 with ui.row().classes('gap-2'):
+                     self.start_btn = ui.button('Start Camera', icon='videocam', on_click=self.start_camera).props('flat dense color=positive')
+                     self.stop_btn = ui.button('Stop Camera', icon='videocam_off', on_click=self.stop_camera).props('flat dense color=negative')
+                     self.stop_btn.visible = False
 
-                 self.start_btn = ui.button('Start Camera', icon='videocam', on_click=self.start_camera).props('flat dense color=positive').tooltip('Start Camera')
-                 self.stop_btn = ui.button('Stop Camera', icon='videocam_off', on_click=self.stop_camera).props('flat dense color=negative').tooltip('Stop Camera')
-                 self.stop_btn.visible = False
+            # Row 2: Status & Process Controls (Reverted Design)
+            # Use dynamic import access
+            mgr = scanner_service.scanner_manager
+            status = mgr.get_status()
+            is_paused = mgr.is_paused()
 
-            ui.separator().props('vertical')
+            with ui.row().classes('w-full items-center justify-between bg-gray-800 p-2 rounded border border-gray-700'):
+                with ui.row().classes('items-center gap-2'):
+                    if status == "Processing...":
+                        ui.spinner(size='sm')
+                    elif is_paused:
+                        ui.icon('pause_circle', color='warning').classes('text-xl')
+                    else:
+                        ui.icon('play_circle', color='positive').classes('text-xl')
 
-            # Status & Process Controls
-            with ui.row().classes('items-center gap-2'):
-                if status == "Processing...":
-                    ui.spinner(size='sm')
-                elif is_paused:
-                    ui.icon('pause_circle', color='warning').classes('text-xl')
+                    label_text = status
+                    if is_paused and status == "Stopped":
+                         label_text = "Ready to Start"
+                    elif is_paused:
+                         label_text = "Paused"
+
+                    # Transient states
+                    if not is_paused and status == "Paused":
+                        label_text = "Resuming..."
+                    elif is_paused and status not in ["Paused", "Stopped"]:
+                        label_text = "Pausing..."
+
+                    with ui.column().classes('gap-0'):
+                        ui.label(f"Status: {label_text}").classes('font-bold')
+                        ui.label(f"Mgr: {getattr(mgr, 'instance_id', 'N/A')}").classes('text-[10px] text-gray-600')
+                        # Access current_step safely from debug_report (it's a dict now in UI context)
+                        current_step = self.debug_report.get('current_step', 'Idle')
+                        if mgr.is_processing:
+                            ui.label(f"{current_step}").classes('text-xs text-blue-400')
+
+                # Controls
+                if is_paused:
+                     ui.button('Start Processing', icon='play_arrow', color='positive', on_click=self.toggle_pause).props('size=sm')
                 else:
-                    ui.icon('play_circle', color='positive').classes('text-xl')
-
-                label_text = status
-                if is_paused and status == "Stopped":
-                     label_text = "Ready to Start"
-                elif is_paused:
-                     label_text = "Paused"
-
-                # Transient states
-                if not is_paused and status == "Paused":
-                    label_text = "Resuming..."
-                elif is_paused and status not in ["Paused", "Stopped"]:
-                    label_text = "Pausing..."
-
-                with ui.column().classes('gap-0'):
-                    ui.label(f"Status: {label_text}").classes('font-bold text-xs')
-                    current_step = self.debug_report.get('current_step', 'Idle')
-                    if mgr.is_processing:
-                        ui.label(f"{current_step}").classes('text-[10px] text-blue-400')
-
-            # Controls
-            if is_paused:
-                 ui.button(icon='play_arrow', color='positive', on_click=self.toggle_pause).props('flat dense size=sm round').tooltip('Resume Processing')
-            else:
-                 ui.button(icon='pause', color='warning', on_click=self.toggle_pause).props('flat dense size=sm round').tooltip('Pause Processing')
+                     ui.button('Pause', icon='pause', color='warning', on_click=self.toggle_pause).props('size=sm')
 
     @ui.refreshable
     def render_status_controls(self):
@@ -1628,7 +1630,7 @@ def scan_page():
                  # --- LEFT PANEL (Camera & Controls) ---
                  with ui.column().classes('w-1/2 h-full p-4 flex flex-col gap-2 border-r border-gray-800 bg-black'):
 
-                      # Controls Bar (Above Video)
+                      # Controls & Status
                       page.render_control_bar()
 
                       # Camera View
@@ -1644,9 +1646,10 @@ def scan_page():
                  with ui.column().classes('w-1/2 h-full flex flex-col bg-dark overflow-hidden gap-0'):
                       page.render_scan_header()
 
-                      # Removed 'relative' and ensured flex-grow is working properly for full height scrolling
-                      with ui.column().classes('w-full flex-grow bg-black/20 overflow-hidden'):
-                           with ui.scroll_area().classes('w-full h-full'):
+                      # Ensure flex-grow and h-full are applied to the column containing scroll area
+                      with ui.column().classes('w-full flex-grow h-full bg-black/20 overflow-hidden relative'):
+                           # Ensure scroll area takes full height of parent
+                           with ui.scroll_area().classes('w-full h-full absolute inset-0'):
                                 page.render_live_list()
 
         # --- TAB 2: DEBUG LAB ---
