@@ -407,7 +407,12 @@ class ScanPage:
             res = scanner_service.scanner_manager.get_latest_result()
             if res:
                 logger.info(f"UI Received Result: {res.get('set_code')}, Ambiguous: {res.get('ambiguity_flag')}")
-                if res.get('ambiguity_flag'):
+
+                # Check for empty candidates (No Match)
+                if not res.get('candidates'):
+                    ui.notify("No match found", type='negative')
+
+                elif res.get('ambiguity_flag'):
                     ui.notify("Scan Ambiguous: Please resolve.", type='warning', timeout=5000)
                     dialog = AmbiguityDialog(res, self.on_card_confirmed)
                     dialog.open()
