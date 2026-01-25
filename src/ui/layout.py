@@ -87,6 +87,31 @@ def create_layout(content_function):
             with ui.button('Update All Languages DB', on_click=update_all_dbs, icon='cloud_sync').classes('w-full q-mt-sm').props('color=accent'):
                 ui.tooltip('Fetch the latest card data for all supported languages')
 
+            async def download_set_info_imgs():
+                # Dialog for progress
+                prog_dialog = ui.dialog().props('persistent')
+                with prog_dialog, ui.card().classes('w-96'):
+                    ui.label('Downloading Set Info & Images').classes('text-h6')
+                    ui.label('Updating global set statistics and downloading pack art...').classes('text-sm text-grey')
+                    p_bar = ui.linear_progress(0).classes('w-full q-my-md')
+                    status_lbl = ui.label('Starting...')
+                prog_dialog.open()
+
+                def on_progress(val):
+                    p_bar.value = val
+                    status_lbl.set_text(f"{int(val * 100)}%")
+
+                try:
+                    await ygo_service.download_set_statistics_and_images(progress_callback=on_progress)
+                    prog_dialog.close()
+                    ui.notify(f'Set info and images downloaded.', type='positive')
+                except Exception as e:
+                    prog_dialog.close()
+                    ui.notify(f"Error: {e}", type='negative')
+
+            with ui.button('Download Set Info & Images', on_click=download_set_info_imgs, icon='photo_library').classes('w-full q-mt-sm').props('color=indigo'):
+                ui.tooltip('Download metadata and images for all card sets')
+
             async def download_all_imgs():
                 # Dialog for progress
                 prog_dialog = ui.dialog().props('persistent')

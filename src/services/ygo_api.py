@@ -639,6 +639,49 @@ class YugiohService:
         """Downloads/Caches set image."""
         return await image_manager.ensure_set_image(set_code, url)
 
+    async def download_set_statistics_and_images(self, progress_callback: Optional[Callable[[float], None]] = None):
+        """
+        Downloads set information (metadata) and all associated set images.
+        """
+        # 1. Update Set Information
+        logger.info("Updating set information...")
+        if progress_callback:
+            progress_callback(0.0)
+
+        await self.fetch_all_sets(force_refresh=True)
+
+        # 2. Download Images
+        if not self._sets_cache:
+            if progress_callback:
+                progress_callback(1.0)
+            return
+
+        sets = list(self._sets_cache.values())
+        total = len(sets)
+
+        logger.info(f"Downloading images for {total} sets...")
+
+        semaphore = asyncio.Semaphore(10) # Limit concurrency
+        completed = 0
+
+        async def _download_task(set_info):
+            nonlocal completed
+            async with semaphore:
+                code = set_info.get("code")
+                image_url = set_info.get("image")
+                if code and image_url:
+                    await self.download_set_image(code, image_url)
+
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed / total)
+
+        # Create tasks
+        tasks = [_download_task(s) for s in sets]
+        await asyncio.gather(*tasks)
+
+        logger.info("Set statistics and images download complete.")
+
     async def get_real_set_counts(self, language: str = "en") -> Dict[str, int]:
         """
         Calculates the real number of unique cards per set based on the local card database.
