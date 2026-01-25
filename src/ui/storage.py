@@ -48,7 +48,7 @@ class StorageDialog:
             # Filter out promo cards
             self.sets_info = [
                 s for s in all_sets
-                if "promo card" not in s['name'].lower() and "promocard" not in s['name'].lower() and "promotional card" not in s['name'].lower()
+                if "promo card" not in s['name'].lower() and "promocard" not in s['name'].lower() and "promotional card" not in s['name'].lower() and "prize card" not in s['name'].lower()
             ]
             self.set_options = {s['code']: f"{s['code']} - {s['name']}" for s in self.sets_info}
             # Update select if it exists
@@ -108,7 +108,7 @@ class StorageDialog:
                              ui.notify(f"Error loading set info: {ex}", type='warning')
 
                      self.set_select = ui.select(self.set_options, label='Select Product', with_input=True, on_change=on_set_change) \
-                        .classes('w-full').props('clearable input-debounce=300 use-input behavior="menu" fill-input hide-selected')
+                        .classes('w-full').props('clearable input-debounce=300 use-input behavior="menu" hide-selected')
 
                      def filter_fn(e):
                          val = e.args
