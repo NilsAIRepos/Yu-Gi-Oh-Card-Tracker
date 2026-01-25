@@ -401,8 +401,9 @@ class ScanPage:
                     data = json.load(f)
                     if isinstance(data, list):
                         self.scanned_cards = data
-                        # Populate filtered list immediately to avoid empty UI
-                        self.filtered_scanned_cards = list(data)
+                        # Do NOT populate filtered_scanned_cards with raw dicts here.
+                        # It must be populated by apply_filters with ScanCollectionEntry objects.
+                        # self.filtered_scanned_cards = list(data)
             except Exception as e:
                 logger.error(f"Failed to load recent scans: {e}")
 
