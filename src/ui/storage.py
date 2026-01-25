@@ -105,12 +105,12 @@ class StorageDialog:
                      self.set_select = ui.select(self.set_options, label='Select Product', with_input=True, on_change=on_set_change) \
                         .classes('w-full').props('clearable input-debounce=0 use-input behavior="menu" fill-input hide-selected')
 
-                     def filter_fn(val, update, abort):
-                         update(lambda: self.set_select.set_options(
-                             {k: v for k, v in self.set_options.items() if val.lower() in v.lower()} if val else self.set_options
-                         ))
-                     self.set_select.props(add='filter')
-                     self.set_select.on('filter', filter_fn)
+                     def filter_fn(e):
+                         val = e.args
+                         self.set_select.options = {k: v for k, v in self.set_options.items() if val.lower() in v.lower()} if val else self.set_options
+                         self.set_select.update()
+
+                     self.set_select.on('input-value', filter_fn)
 
                 self.set_select_container.set_visibility(False)
 
@@ -239,6 +239,10 @@ class StoragePage:
             'sort_by': 'Name',
             'sort_desc': False,
 
+            'storage_sort_by': saved_state.get('storage_sort_by', 'Name'),
+            'storage_sort_desc': saved_state.get('storage_sort_desc', False),
+            'storage_counts': {},
+
             'available_sets': [],
             'available_monster_races': [],
             'available_st_races': [],
@@ -273,6 +277,18 @@ class StoragePage:
                 self.state['storages'] = []
         else:
             self.state['storages'] = []
+
+        # Calculate storage counts
+        counts = {}
+        if self.state['current_collection']:
+            for card in self.state['current_collection'].cards:
+                for variant in card.variants:
+                    for entry in variant.entries:
+                        if entry.storage_location:
+                            counts[entry.storage_location] = counts.get(entry.storage_location, 0) + entry.quantity
+        self.state['storage_counts'] = counts
+
+        self.sort_storages()
 
         if self.state['view'] == 'gallery':
             self.render_content.refresh()
@@ -451,6 +467,19 @@ class StoragePage:
         count = len(self.state['filtered_rows'])
         self.state['total_pages'] = (count + self.state['page_size'] - 1) // self.state['page_size']
 
+    def sort_storages(self):
+        key = self.state['storage_sort_by']
+        desc = self.state['storage_sort_desc']
+
+        def get_sort_key(s):
+            if key == 'Name':
+                return s['name'].lower()
+            elif key == 'Count':
+                return self.state['storage_counts'].get(s['name'], 0)
+            return s['name']
+
+        self.state['storages'].sort(key=get_sort_key, reverse=desc)
+
     async def open_storage(self, storage):
         self.state['current_storage'] = storage
         self.state['view'] = 'detail'
@@ -493,6 +522,25 @@ class StoragePage:
                 ui.select(file_options, value=self.state['selected_collection_file'], label='Collection',
                           on_change=handle_collection_change).classes('w-40')
 
+                # Sorting Controls
+                async def handle_sort_change(e):
+                    self.state['storage_sort_by'] = e.value
+                    persistence.save_ui_state({'storage_sort_by': e.value})
+                    self.sort_storages()
+                    self.render_content.refresh()
+
+                ui.select(['Name', 'Count'], value=self.state['storage_sort_by'], label='Sort By',
+                          on_change=handle_sort_change).classes('w-32')
+
+                async def toggle_sort_order():
+                    self.state['storage_sort_desc'] = not self.state['storage_sort_desc']
+                    persistence.save_ui_state({'storage_sort_desc': self.state['storage_sort_desc']})
+                    self.sort_storages()
+                    self.render_content.refresh()
+
+                ui.button(icon='arrow_downward' if self.state['storage_sort_desc'] else 'arrow_upward',
+                          on_click=toggle_sort_order).props('flat round color=white')
+
                 ui.button('New Storage', icon='add', on_click=self.open_new_storage_dialog).props('color=primary')
 
         # Grid
@@ -500,7 +548,19 @@ class StoragePage:
             for s in self.state['storages']:
                 self.render_storage_card(s)
 
+            self.render_add_storage_card()
+
+    def render_add_storage_card(self):
+        with ui.card().classes('w-full h-full min-h-[14rem] p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-800 flex items-center justify-center group') \
+                .on('click', self.open_new_storage_dialog):
+
+            with ui.column().classes('items-center gap-2 group-hover:text-primary transition-colors'):
+                ui.icon('add_circle_outline', size='4xl', color='grey').classes('group-hover:text-primary transition-colors')
+                ui.label('Add Storage').classes('text-lg font-bold text-gray-400 group-hover:text-primary transition-colors')
+
     def render_storage_card(self, storage):
+        count = self.state['storage_counts'].get(storage['name'], 0)
+
         with ui.card().classes('w-full p-0 cursor-pointer hover:scale-105 transition-transform border border-gray-700 bg-gray-800') \
                 .on('click', lambda s=storage: self.open_storage(s)):
 
@@ -517,7 +577,11 @@ class StoragePage:
 
             with ui.column().classes('p-3 w-full gap-1'):
                 ui.label(storage['name']).classes('text-lg font-bold truncate w-full text-white')
-                ui.label(storage.get('type', 'Unknown')).classes('text-sm text-yellow-500 font-bold')
+
+                with ui.row().classes('w-full justify-between items-center'):
+                    ui.label(storage.get('type', 'Unknown')).classes('text-sm text-yellow-500 font-bold')
+                    ui.label(f"{count} Cards").classes('text-xs text-gray-400')
+
                 if storage.get('description'):
                     ui.label(storage['description']).classes('text-xs text-gray-400 truncate w-full')
 
