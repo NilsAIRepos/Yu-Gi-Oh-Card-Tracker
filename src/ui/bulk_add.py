@@ -1641,9 +1641,10 @@ class BulkAddPage:
 
              ui.separator().props('vertical')
 
-             storage_opts = [None]
+             storage_opts = {None: 'None'}
              if self.current_collection_obj:
-                 storage_opts.extend([s.name for s in self.current_collection_obj.storage_definitions])
+                 for s in self.current_collection_obj.storage_definitions:
+                     storage_opts[s.name] = s.name
 
              # Validate default_storage against current options to prevent ValueError
              if self.state['default_storage'] not in storage_opts:
