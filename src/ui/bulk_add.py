@@ -76,6 +76,7 @@ class BulkCollectionEntry:
     image_url: str
     image_id: int
     variant_id: str
+    storage_location: Optional[str] = None
     price: float = 0.0
 
 def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard]) -> List[BulkCollectionEntry]:
@@ -101,7 +102,9 @@ def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard])
                          break
 
             for entry in variant.entries:
-                unique_id = f"{variant.variant_id}_{entry.language}_{entry.condition}_{entry.first_edition}"
+                # Include storage_location in ID to distinguish stacks
+                loc_str = str(entry.storage_location) if entry.storage_location else "None"
+                unique_id = f"{variant.variant_id}_{entry.language}_{entry.condition}_{entry.first_edition}_{loc_str}"
                 entries.append(BulkCollectionEntry(
                     id=unique_id,
                     api_card=api_card,
@@ -115,6 +118,7 @@ def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard])
                     image_url=img_url,
                     image_id=img_id,
                     variant_id=variant.variant_id,
+                    storage_location=entry.storage_location,
                     price=0.0
                 ))
     return entries
@@ -335,7 +339,7 @@ class BulkAddPage:
         # Apply
         await self.apply_collection_filters()
 
-    async def _update_collection(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, mode='ADD', variant_id=None, save=True):
+    async def _update_collection(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, mode='ADD', variant_id=None, save=True, storage_location=None):
         if not self.current_collection_obj or not self.state['selected_collection']:
             return False
 
@@ -351,12 +355,13 @@ class BulkAddPage:
                 first_edition=first,
                 image_id=img_id,
                 variant_id=variant_id,
-                mode=mode
+                mode=mode,
+                storage_location=storage_location
             )
 
             if modified:
                 # Update View Model directly
-                await self._update_view_model(api_card, set_code, rarity, lang, qty, cond, first, img_id, variant_id, mode)
+                await self._update_view_model(api_card, set_code, rarity, lang, qty, cond, first, img_id, variant_id, mode, storage_location)
 
                 if save:
                     self._schedule_save()
@@ -367,12 +372,13 @@ class BulkAddPage:
             ui.notify(f"Error: {e}", type='negative')
             return False
 
-    async def _update_view_model(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, variant_id, mode):
+    async def _update_view_model(self, api_card, set_code, rarity, lang, qty, cond, first, img_id, variant_id, mode, storage_location=None):
         # We need to replicate the ID logic
         if not variant_id:
             variant_id = generate_variant_id(api_card.id, set_code, rarity, img_id)
 
-        unique_id = f"{variant_id}_{lang}_{cond}_{first}"
+        loc_str = str(storage_location) if storage_location else "None"
+        unique_id = f"{variant_id}_{lang}_{cond}_{first}_{loc_str}"
 
         cards = self.col_state['collection_cards']
 
@@ -429,6 +435,7 @@ class BulkAddPage:
                     image_url=img_url,
                     image_id=img_id,
                     variant_id=variant_id,
+                    storage_location=storage_location,
                     price=0.0
                 )
                 cards.insert(0, new_entry) # Add to top
@@ -655,22 +662,8 @@ class BulkAddPage:
         return success
 
     async def remove_card_from_collection(self, entry: BulkCollectionEntry):
-        # Remove 1 copy or all? Usually Drag out implies removing that specific stack?
-        # "Moving a card out of the right box removes it from the collection"
-        # It implies removing the entry.
-        # "Moving a card from the left to the right adds 1 copy"
-        # "Dragging the same card multiple times increments the quantity by 1"
-        # "Moving a card out of the right box removes it" -> Removing the entire entry or just 1?
-        # Usually dragging an item out implies deletion of that item. In this grid view, an item represents a stack.
-        # Removing the stack (all quantity) seems most intuitive for "removing the entry".
-        # But if I dragged it there by mistake (added 1), I might want to remove 1.
-        # However, typically drag-out delete on a stack deletes the stack.
-        # I'll delete the entire stack/entry for now.
-
         qty_to_remove = entry.quantity # Remove All
 
-        # To remove all, we can set qty to 0 using SET, or -qty using ADD.
-        # Using ADD with negative for consistency with Undo logic structure.
         success = await self._update_collection(
             api_card=entry.api_card,
             set_code=entry.set_code,
@@ -681,7 +674,8 @@ class BulkAddPage:
             first=entry.first_edition,
             img_id=entry.image_id,
             variant_id=entry.variant_id,
-            mode='ADD'
+            mode='ADD',
+            storage_location=entry.storage_location
         )
 
         if success:
@@ -712,7 +706,8 @@ class BulkAddPage:
             first=entry.first_edition,
             img_id=entry.image_id,
             variant_id=entry.variant_id,
-            mode='ADD'
+            mode='ADD',
+            storage_location=entry.storage_location
         )
 
         if success:
