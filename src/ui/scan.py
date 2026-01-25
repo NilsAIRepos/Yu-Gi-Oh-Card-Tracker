@@ -595,6 +595,24 @@ class ScanPage:
             self.save_recent_scans()
             asyncio.create_task(self.apply_filters())
 
+    def reduce_card_qty(self, item):
+        try:
+            idx = self.scanned_cards.index(item)
+            old_item = item.copy()
+            qty = item.get('quantity', 1)
+
+            if qty > 1:
+                item['quantity'] = qty - 1
+                self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': item.copy()})
+                self.save_recent_scans()
+                asyncio.create_task(self.apply_filters())
+                ui.notify(f"Reduced quantity to {item['quantity']}", type='info')
+            else:
+                self.remove_card(idx)
+                ui.notify("Removed card", type='info')
+        except ValueError:
+            pass
+
     async def commit_cards(self):
         if not self.target_collection_file:
             ui.notify("Please select a target collection.", type='warning')
@@ -1016,10 +1034,11 @@ class ScanPage:
                 idx = self.scanned_cards.index(item)
                 old_item = item.copy()
                 for k, v in payload.items():
-                    if k in ['set_code', 'rarity', 'language', 'first_edition']:
+                    if k in ['set_code', 'rarity', 'language', 'first_edition', 'condition', 'quantity']:
                         item[k] = v
                     if k == 'image_id': item['image_id'] = v
                     if k == 'variant_id': item['variant_id'] = v
+
                 self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': item.copy()})
                 self.save_recent_scans()
                 await self.apply_filters()
@@ -1216,7 +1235,7 @@ class ScanPage:
 
                 with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-accent w-full aspect-[2/3] select-none') \
                         .on('click', lambda x=item: self.open_single_view(x)) \
-                        .on('contextmenu.prevent', lambda x=item: self.remove_card(self.scanned_cards.index(x))):
+                        .on('contextmenu.prevent', lambda x=item: self.reduce_card_qty(x)):
 
                     with ui.element('div').classes('relative w-full h-full'):
                          if img_src:
@@ -1625,7 +1644,7 @@ def scan_page():
             # Global Header
             page.render_top_header()
 
-            with ui.row().classes('w-full flex-grow flex-nowrap gap-0 h-full'):
+            with ui.row().classes('w-full flex-grow flex-nowrap gap-0'):
 
                  # --- LEFT PANEL (Camera & Controls) ---
                  with ui.column().classes('w-1/2 h-full p-4 flex flex-col gap-2 border-r border-gray-800 bg-black'):
@@ -1643,13 +1662,13 @@ def scan_page():
                       ui.button('Capture & Scan', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg').classes('w-full font-bold h-16 text-xl mt-4')
 
                  # --- RIGHT PANEL (Gallery) ---
-                 with ui.column().classes('w-1/2 h-full flex flex-col bg-dark overflow-hidden gap-0'):
+                 with ui.column().classes('w-1/2 h-full flex flex-col bg-gray-900 overflow-hidden gap-0'):
                       page.render_scan_header()
 
-                      # Ensure flex-grow and h-full are applied to the column containing scroll area
-                      with ui.column().classes('w-full flex-grow h-full bg-black/20 overflow-hidden relative'):
-                           # Ensure scroll area takes full height of parent
-                           with ui.scroll_area().classes('w-full h-full absolute inset-0'):
+                      # Ensure flex-grow is applied. min-h-0 is crucial for nested flex scrolling.
+                      with ui.column().classes('w-full flex-grow min-h-0 bg-black/20 overflow-hidden relative'):
+                           # Ensure scroll area takes full height of THIS flex-child
+                           with ui.scroll_area().classes('w-full h-full'):
                                 page.render_live_list()
 
         # --- TAB 2: DEBUG LAB ---
