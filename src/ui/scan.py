@@ -484,6 +484,10 @@ class ScanPage:
                  os.remove(result_dict['raw_image_path'])
              except: pass
 
+        # Ensure variant exists in Global DB
+        if result_dict.get('card_id'):
+             asyncio.create_task(self._ensure_global_variant_exists(result_dict))
+
         # Add to Collection
         card_id = result_dict.get('card_id')
         if card_id:
@@ -658,6 +662,51 @@ class ScanPage:
                                  e.language == match_criteria.get('language') and
                                  e.first_edition == match_criteria.get('first_edition')):
                                  e.purchase_date = timestamp
+
+    async def _ensure_global_variant_exists(self, result_dict: Dict[str, Any]):
+        """Checks if the scanned variant exists in the global DB, adds it if not."""
+        try:
+            card_id = result_dict.get('card_id')
+            set_code = result_dict.get('set_code')
+            rarity = result_dict.get('rarity')
+
+            if not card_id or not set_code or not rarity:
+                return
+
+            api_card = ygo_service.get_card(card_id)
+            if not api_card:
+                return # Should have been fetched/created?
+                # Actually if it's not in DB, we can't add variant to it easily without creating the card first.
+                # Assuming basic card data exists if we got a card_id.
+
+            # Check for existing variant
+            exists = False
+            if api_card.card_sets:
+                for s in api_card.card_sets:
+                    if s.set_code == set_code and s.set_rarity == rarity:
+                        exists = True
+                        break
+
+            if not exists:
+                logger.info(f"Scan found new variant: {set_code} ({rarity}). Adding to Global DB.")
+
+                # Resolve Set Name
+                set_name = result_dict.get('set_name')
+                if not set_name:
+                    set_name = await ygo_service.get_set_name_by_code(set_code)
+                if not set_name:
+                    set_name = "Unknown Set"
+
+                await ygo_service.add_card_variant(
+                    card_id=card_id,
+                    set_name=set_name,
+                    set_code=set_code,
+                    set_rarity=rarity
+                )
+                ui.notify(f"Added new variant to database: {set_code}", type='positive')
+
+        except Exception as e:
+            logger.error(f"Error ensuring global variant: {e}")
 
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
