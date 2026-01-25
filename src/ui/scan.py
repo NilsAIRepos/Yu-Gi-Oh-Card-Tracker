@@ -8,6 +8,7 @@ import uuid
 import base64
 import queue
 import json
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 from PIL import Image
@@ -18,7 +19,7 @@ from src.services.scanner import manager as scanner_service
 from src.services.scanner import SCANNER_AVAILABLE
 from src.core.persistence import persistence
 from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
-from src.services.ygo_api import ygo_service
+from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.services.collection_editor import CollectionEditor
 from src.core.changelog_manager import changelog_manager
@@ -239,6 +240,22 @@ function showCaptureOverlay(imageData, rotation, duration) {
 </script>
 """
 
+@dataclass
+class ScanCollectionEntry:
+    id: str
+    api_card: ApiCard
+    quantity: int
+    set_code: str
+    set_name: str
+    rarity: str
+    language: str
+    condition: str
+    first_edition: bool
+    image_url: str
+    image_id: int
+    variant_id: str
+    scan_item_ref: Dict[str, Any] # Reference to original scan dict for undo/updates
+
 class ScanPage:
     def __init__(self):
         self.scanned_cards: List[Dict[str, Any]] = []
@@ -258,7 +275,6 @@ class ScanPage:
 
         # Initialize UI state from config
         self.ocr_tracks = self.config.get('ocr_tracks', ['doctr'])
-        # Ensure ocr_tracks is valid (only one active track supported for now, but keeping list structure for compat)
         if not self.ocr_tracks:
             self.ocr_tracks = ['doctr']
         self.selected_track = self.ocr_tracks[0] # For UI Radio Button
@@ -274,7 +290,7 @@ class ScanPage:
 
         # Data & Filters
         self.api_card_map = {}
-        self.filtered_scanned_cards = []
+        self.filtered_scanned_cards: List[ScanCollectionEntry] = []
         self.single_card_view = SingleCardView()
 
         # Load Recent Scans
@@ -324,7 +340,6 @@ class ScanPage:
         self.debug_report = {}
         self.debug_loading = False
         self.latest_capture_src = None
-        # self.was_processing is removed as we use event based updates now
         self.watchdog_counter = 0
 
         # UI State Persistence
@@ -584,8 +599,6 @@ class ScanPage:
 
     async def stop_camera(self):
         await ui.run_javascript('stopCamera()')
-        # We no longer stop the manager when camera stops. It runs in background.
-        # scanner_service.scanner_manager.stop()
         self.start_btn.visible = True
         self.stop_btn.visible = False
 
@@ -598,19 +611,22 @@ class ScanPage:
 
     def reduce_card_qty(self, item):
         try:
-            idx = self.scanned_cards.index(item)
-            old_item = item.copy()
-            qty = item.get('quantity', 1)
+            # We must map from the enriched object 'item' back to the raw dict in scanned_cards
+            raw_item = item.scan_item_ref
+            if raw_item in self.scanned_cards:
+                idx = self.scanned_cards.index(raw_item)
+                old_item = raw_item.copy()
+                qty = raw_item.get('quantity', 1)
 
-            if qty > 1:
-                item['quantity'] = qty - 1
-                self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': item.copy()})
-                self.save_recent_scans()
-                asyncio.create_task(self.apply_filters())
-                ui.notify(f"Reduced quantity to {item['quantity']}", type='info')
-            else:
-                self.remove_card(idx)
-                ui.notify("Removed card", type='info')
+                if qty > 1:
+                    raw_item['quantity'] = qty - 1
+                    self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': raw_item.copy()})
+                    self.save_recent_scans()
+                    asyncio.create_task(self.apply_filters())
+                    ui.notify(f"Reduced quantity to {raw_item['quantity']}", type='info')
+                else:
+                    self.remove_card(idx)
+                    ui.notify("Removed card", type='info')
         except ValueError:
             pass
 
@@ -900,7 +916,7 @@ class ScanPage:
     async def apply_filters(self):
         source = self.scanned_cards
         s = self.filter_state
-        res = []
+        res: List[ScanCollectionEntry] = []
 
         # Helper to get ApiCard
         def get_api(item):
@@ -910,85 +926,144 @@ class ScanPage:
 
         for item in source:
             api_card = get_api(item)
+            if not api_card:
+                # Fallback for unknown cards or missing DB data
+                api_card = ApiCard(
+                    id=item.get('card_id') or 0,
+                    name=item.get('name') or "Unknown Card",
+                    type="Unknown",
+                    desc="Card not found in local database.",
+                    race="Unknown",
+                    attribute="Unknown",
+                    atk=None,
+                    def_=None,
+                    level=None,
+                    scale=None,
+                    link_val=None,
+                    image_url=None,
+                    image_url_small=None,
+                    card_sets=[],
+                    card_images=[]
+                )
+
+            # Determine reliable properties
+            set_code = item.get('set_code') or "N/A"
+            rarity = item.get('rarity') or "Common"
+            image_id = item.get('image_id')
+            if not image_id and api_card.card_images:
+                # Try to find match
+                image_id = api_card.card_images[0].id
+                # Or specific
+                if api_card.card_sets:
+                     for cs in api_card.card_sets:
+                         if cs.set_code == set_code:
+                             image_id = cs.image_id
+                             break
+
+            # Find Set Name
+            set_name = "Unknown Set"
+            if api_card.card_sets:
+                for cs in api_card.card_sets:
+                    if cs.set_code == set_code:
+                        set_name = cs.set_name
+                        break
+
+            # Image URL
+            img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
+            if image_id and api_card.card_images:
+                for img in api_card.card_images:
+                    if img.id == image_id:
+                        img_url = img.image_url_small
+                        break
+
+            entry = ScanCollectionEntry(
+                id=str(uuid.uuid4()), # Transient ID for UI
+                api_card=api_card,
+                quantity=item.get('quantity', 1),
+                set_code=set_code,
+                set_name=set_name,
+                rarity=rarity,
+                language=item.get('language', 'EN'),
+                condition=item.get('condition', self.default_condition),
+                first_edition=item.get('first_edition', False),
+                image_url=img_url,
+                image_id=image_id,
+                variant_id=item.get('variant_id'),
+                scan_item_ref=item # Link back
+            )
 
             # Text Filter
             if txt:
-                name = item.get('name', '').lower()
-                code = item.get('set_code', '').lower()
-                desc = api_card.desc.lower() if api_card else ""
+                name = api_card.name.lower()
+                code = set_code.lower()
+                desc = api_card.desc.lower()
                 if not (txt in name or txt in code or txt in desc):
                     continue
 
-            if api_card:
-                if s['filter_card_type'] and not any(t in api_card.type for t in s['filter_card_type']): continue
-                if s['filter_attr'] and api_card.attribute != s['filter_attr']: continue
-                if s['filter_monster_race'] and "Monster" in api_card.type and api_card.race != s['filter_monster_race']: continue
-                if s['filter_st_race'] and ("Spell" in api_card.type or "Trap" in api_card.type) and api_card.race != s['filter_st_race']: continue
-                if s['filter_archetype'] and api_card.archetype != s['filter_archetype']: continue
-                if s['filter_monster_category'] and not any(api_card.matches_category(cat) for cat in s['filter_monster_category']): continue
-                if s['filter_level'] is not None and api_card.level != int(s['filter_level']): continue
+            # Advanced Filters (using ApiCard data now)
+            if s['filter_card_type'] and not any(t in api_card.type for t in s['filter_card_type']): continue
+            if s['filter_attr'] and api_card.attribute != s['filter_attr']: continue
+            if s['filter_monster_race'] and "Monster" in api_card.type and api_card.race != s['filter_monster_race']: continue
+            if s['filter_st_race'] and ("Spell" in api_card.type or "Trap" in api_card.type) and api_card.race != s['filter_st_race']: continue
+            if s['filter_archetype'] and api_card.archetype != s['filter_archetype']: continue
+            if s['filter_monster_category'] and not any(api_card.matches_category(cat) for cat in s['filter_monster_category']): continue
+            if s['filter_level'] is not None and api_card.level != int(s['filter_level']): continue
 
-                # Ranges
-                if s['filter_atk_min'] > 0 or s['filter_atk_max'] < 5000:
-                     if api_card.atk is None or not (s['filter_atk_min'] <= int(api_card.atk) <= s['filter_atk_max']): continue
-                if s['filter_def_min'] > 0 or s['filter_def_max'] < 5000:
-                     if api_card.def_ is None or not (s['filter_def_min'] <= int(api_card.def_) <= s['filter_def_max']): continue
+            # Ranges
+            if s['filter_atk_min'] > 0 or s['filter_atk_max'] < 5000:
+                 if api_card.atk is None or not (s['filter_atk_min'] <= int(api_card.atk) <= s['filter_atk_max']): continue
+            if s['filter_def_min'] > 0 or s['filter_def_max'] < 5000:
+                 if api_card.def_ is None or not (s['filter_def_min'] <= int(api_card.def_) <= s['filter_def_max']): continue
 
-                # Price
-                if s['filter_price_min'] > 0.0 or s['filter_price_max'] < 1000.0:
-                     price = 0.0
-                     if api_card.card_sets:
-                         for cs in api_card.card_sets:
-                             if cs.set_code == item.get('set_code') and cs.set_rarity == item.get('rarity'):
-                                 try: price = float(cs.set_price)
-                                 except: pass
-                                 break
-                     if not (s['filter_price_min'] <= price <= s['filter_price_max']): continue
+            # Price
+            if s['filter_price_min'] > 0.0 or s['filter_price_max'] < 1000.0:
+                 price = 0.0
+                 if api_card.card_sets:
+                     for cs in api_card.card_sets:
+                         if cs.set_code == set_code and cs.set_rarity == rarity:
+                             try: price = float(cs.set_price)
+                             except: pass
+                             break
+                 if not (s['filter_price_min'] <= price <= s['filter_price_max']): continue
 
             # Ownership (Quantity)
-            qty = item.get('quantity', 1)
+            qty = entry.quantity
             if s['filter_ownership_min'] > 0 or s['filter_ownership_max'] < 100:
                 if not (s['filter_ownership_min'] <= qty <= s['filter_ownership_max']): continue
 
             # Owned Language
             if s['filter_owned_lang']:
-                if item.get('language', 'EN') != s['filter_owned_lang']: continue
+                if entry.language != s['filter_owned_lang']: continue
 
             # Item Properties Filters
             if s['filter_set']:
                  target = s['filter_set'].split('|')[0].strip().lower()
                  match_set = False
-                 if target in item.get('set_code', '').lower(): match_set = True
-                 if api_card and api_card.card_sets:
-                     for cs in api_card.card_sets:
-                         if cs.set_code == item.get('set_code'):
-                             if target in cs.set_name.lower(): match_set = True
-                             break
+                 if target in set_code.lower(): match_set = True
+                 if target in set_name.lower(): match_set = True
                  if not match_set: continue
 
-            if s['filter_rarity'] and item.get('rarity', '').lower() != s['filter_rarity'].lower(): continue
+            if s['filter_rarity'] and rarity.lower() != s['filter_rarity'].lower(): continue
 
             if s['filter_condition']:
-                 cond = item.get('condition')
-                 if not cond or cond not in s['filter_condition']: continue
+                 if entry.condition not in s['filter_condition']: continue
 
-            res.append(item)
+            res.append(entry)
 
         # Sort
         key = s['sort_by']
         desc = s['sort_desc']
 
-        def sort_key(item):
-            api_card = get_api(item)
-            if key == 'Name': return item.get('name', '')
-            if key == 'Set Code': return item.get('set_code', '')
-            if key == 'Rarity': return item.get('rarity', '')
-            if key == 'Newest': return self.scanned_cards.index(item) # Original order (top is new)
+        # Helper for sort keys on the ScanCollectionEntry object
+        def sort_key(e: ScanCollectionEntry):
+            if key == 'Name': return e.api_card.name
+            if key == 'Set Code': return e.set_code
+            if key == 'Rarity': return e.rarity
+            if key == 'Newest': return self.scanned_cards.index(e.scan_item_ref) # Maintain original insertion order logic
 
-            if api_card:
-                if key == 'ATK': return api_card.atk or -1
-                if key == 'DEF': return api_card.def_ or -1
-                if key == 'Level': return api_card.level or -1
+            if key == 'ATK': return e.api_card.atk or -1
+            if key == 'DEF': return e.api_card.def_ or -1
+            if key == 'Level': return e.api_card.level or -1
             return 0
 
         res.sort(key=sort_key, reverse=desc)
@@ -1024,23 +1099,22 @@ class ScanPage:
 
         await self.apply_filters()
 
-    async def open_single_view(self, item):
-        api_card = self.api_card_map.get(item.get('card_id'))
-        if not api_card:
-             ui.notify("Card data not found.", type='negative')
-             return
-
+    async def open_single_view(self, item: ScanCollectionEntry):
+        # Update callback needs to update the underlying dict in scanned_cards
         async def on_update(payload):
             try:
-                idx = self.scanned_cards.index(item)
-                old_item = item.copy()
+                # Use the reference
+                raw_item = item.scan_item_ref
+                idx = self.scanned_cards.index(raw_item)
+                old_item = raw_item.copy()
+
                 for k, v in payload.items():
                     if k in ['set_code', 'rarity', 'language', 'first_edition', 'condition', 'quantity']:
-                        item[k] = v
-                    if k == 'image_id': item['image_id'] = v
-                    if k == 'variant_id': item['variant_id'] = v
+                        raw_item[k] = v
+                    if k == 'image_id': raw_item['image_id'] = v
+                    if k == 'variant_id': raw_item['variant_id'] = v
 
-                self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': item.copy()})
+                self.push_scan_undo('UPDATE', {'index': idx, 'old': old_item, 'new': raw_item.copy()})
                 self.save_recent_scans()
                 await self.apply_filters()
                 ui.notify("Scan updated.", type='positive')
@@ -1049,7 +1123,8 @@ class ScanPage:
 
         async def on_save(card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, **kwargs):
             try:
-                idx = self.scanned_cards.index(item)
+                raw_item = item.scan_item_ref
+                idx = self.scanned_cards.index(raw_item)
             except ValueError:
                 return
 
@@ -1086,15 +1161,15 @@ class ScanPage:
                 ui.notify("Scan removed.", type='info')
 
         await self.single_card_view.open_collectors(
-            card=api_card,
+            card=item.api_card,
             owned_count=0,
-            set_code=item.get('set_code'),
-            rarity=item.get('rarity'),
-            set_name="",
-            language=item.get('language', 'EN'),
-            condition=self.default_condition,
-            first_edition=item.get('first_edition', False),
-            image_id=item.get('image_id'),
+            set_code=item.set_code,
+            rarity=item.rarity,
+            set_name=item.set_name,
+            language=item.language,
+            condition=item.condition,
+            first_edition=item.first_edition,
+            image_id=item.image_id,
             on_update_scan_callback=on_update,
             save_callback=on_save
         )
@@ -1216,22 +1291,10 @@ class ScanPage:
 
         with ui.grid(columns='repeat(auto-fill, minmax(110px, 1fr))').classes('w-full gap-2 p-2'):
             for i, item in enumerate(items):
-                img_src = None
-                if item.get('image_id'):
-                     img_src = f"/images/{item['image_id']}.jpg" if image_manager.image_exists(item['image_id']) else None
+                # Use enriched properties
+                img_src = f"/images/{item.image_id}.jpg" if image_manager.image_exists(item.image_id) else item.image_url
 
-                if not img_src:
-                     api_card = self.api_card_map.get(item.get('card_id'))
-                     if api_card and api_card.card_images:
-                         img_src = api_card.card_images[0].image_url_small
-
-                if not img_src and item.get('image_path'):
-                     if item['image_path'].startswith('data/scans/'):
-                         img_src = item['image_path'].replace('data/scans/', '/scans/')
-                     else:
-                         img_src = f"/images/{os.path.basename(item['image_path'])}"
-
-                cond = item.get('condition', self.default_condition)
+                cond = item.condition
                 cond_short = CONDITION_ABBREVIATIONS.get(cond, cond[:2].upper())
 
                 with ui.card().classes('p-0 cursor-pointer hover:scale-105 transition-transform border border-accent w-full aspect-[2/3] select-none') \
@@ -1244,28 +1307,28 @@ class ScanPage:
                          else:
                              ui.label("?").classes('w-full h-full flex items-center justify-center bg-gray-800 text-white')
 
-                         lang = item.get('language', 'EN').upper()
+                         lang = item.language.upper()
                          country_code = LANGUAGE_COUNTRY_MAP.get(lang)
                          if country_code:
                              ui.element('img').props(f'src="https://flagcdn.com/h24/{country_code}.png" alt="{lang}"').classes('absolute top-[1px] left-[1px] h-4 w-6 shadow-black drop-shadow-md rounded bg-black/30')
                          else:
                              ui.label(lang).classes('absolute top-[1px] left-[1px] text-[10px] font-bold shadow-black drop-shadow-md bg-black/50 rounded px-1 text-white')
 
-                         qty = item.get('quantity', 1)
+                         qty = item.quantity
                          if qty > 1:
                               ui.label(f"{qty}").classes('absolute top-1 right-1 bg-accent text-dark font-bold px-2 rounded-full text-xs shadow-md')
 
                          with ui.column().classes('absolute bottom-0 left-0 bg-black/80 text-white text-[9px] px-1 gap-0 w-full'):
-                             ui.label(item.get('name', 'Unknown')).classes('text-[9px] font-bold text-white leading-none truncate w-full')
+                             ui.label(item.api_card.name).classes('text-[9px] font-bold text-white leading-none truncate w-full')
 
                              with ui.row().classes('w-full justify-between items-center'):
                                  with ui.row().classes('gap-1'):
                                      ui.label(cond_short).classes('font-bold text-yellow-500')
-                                     if item.get('first_edition'):
+                                     if item.first_edition:
                                          ui.label('1st').classes('font-bold text-orange-400')
-                                 ui.label(item.get('set_code', '')).classes('font-mono')
+                                 ui.label(item.set_code).classes('font-mono')
 
-                             ui.label(item.get('rarity', '')).classes('text-[8px] text-gray-300 w-full truncate')
+                             ui.label(item.rarity).classes('text-[8px] text-gray-300 w-full truncate')
 
     @ui.refreshable
     def render_debug_results(self):
