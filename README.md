@@ -23,6 +23,12 @@ In an era where every app demands an account, a subscription, and an internet co
 
 ---
 
+## 📚 Documentation
+
+For detailed guides, tutorials, and help, please visit our **[Wiki](docs/Home.md)**.
+
+---
+
 ## ✨ Key Features at a Glance
 
 *   **Smart Inventory**: Track infinite cards with granular details (Set Code, Rarity, Condition, Language, Edition).
