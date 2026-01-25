@@ -145,6 +145,7 @@ class BulkAddPage:
             'default_language': default_lang,
             'default_condition': 'Near Mint',
             'default_first_ed': False,
+            'default_storage': None,
             'available_collections': [],
 
             # Library State
@@ -232,11 +233,13 @@ class BulkAddPage:
         self.state['default_language'] = ui_state.get('bulk_default_lang', self.state['default_language'])
         self.state['default_condition'] = ui_state.get('bulk_default_cond', self.state['default_condition'])
         self.state['default_first_ed'] = ui_state.get('bulk_default_first', self.state['default_first_ed'])
+        self.state['default_storage'] = ui_state.get('bulk_default_storage', self.state['default_storage'])
 
         # Load update options
         self.state['update_apply_lang'] = ui_state.get('bulk_update_apply_lang', False)
         self.state['update_apply_cond'] = ui_state.get('bulk_update_apply_cond', False)
         self.state['update_apply_first'] = ui_state.get('bulk_update_apply_first', False)
+        self.state['update_apply_storage'] = ui_state.get('bulk_update_apply_storage', False)
 
         # Load sort preferences
         self.state['library_sort_by'] = ui_state.get('bulk_library_sort_by', self.state['library_sort_by'])
@@ -529,7 +532,8 @@ class BulkAddPage:
         defaults = {
             'lang': self.state['default_language'],
             'cond': self.state['default_condition'],
-            'first': self.state['default_first_ed']
+            'first': self.state['default_first_ed'],
+            'storage': self.state['default_storage']
         }
 
         processed_changes = []
@@ -587,6 +591,7 @@ class BulkAddPage:
                 first_edition=defaults['first'],
                 image_id=image_id,
                 variant_id=variant_id,
+                storage_location=defaults['storage'],
                 mode='ADD'
             )
 
@@ -639,7 +644,8 @@ class BulkAddPage:
             cond=cond,
             first=first,
             img_id=entry.image_id,
-            mode='ADD'
+            mode='ADD',
+            storage_location=self.state['default_storage']
         )
 
         if success:
@@ -770,15 +776,17 @@ class BulkAddPage:
         apply_lang = self.state.get('update_apply_lang', False)
         apply_cond = self.state.get('update_apply_cond', False)
         apply_first = self.state.get('update_apply_first', False)
+        apply_storage = self.state.get('update_apply_storage', False)
 
-        if not (apply_lang or apply_cond or apply_first):
+        if not (apply_lang or apply_cond or apply_first or apply_storage):
             ui.notify("No update options selected.", type='warning')
             return
 
         defaults = {
             'lang': self.state['default_language'],
             'cond': self.state['default_condition'],
-            'first': self.state['default_first_ed']
+            'first': self.state['default_first_ed'],
+            'storage': self.state['default_storage']
         }
 
         processed_changes = []
@@ -792,11 +800,13 @@ class BulkAddPage:
             new_lang = defaults['lang'] if apply_lang else entry.language
             new_cond = defaults['cond'] if apply_cond else entry.condition
             new_first = defaults['first'] if apply_first else entry.first_edition
+            new_storage = defaults['storage'] if apply_storage else entry.storage_location
 
             # Check if any change is actually needed
             if (new_lang == entry.language and
                 new_cond == entry.condition and
-                new_first == entry.first_edition):
+                new_first == entry.first_edition and
+                new_storage == entry.storage_location):
                 continue
 
             qty = entry.quantity
@@ -814,7 +824,8 @@ class BulkAddPage:
                 first_edition=entry.first_edition,
                 image_id=entry.image_id,
                 variant_id=entry.variant_id,
-                mode='ADD'
+                mode='ADD',
+                storage_location=entry.storage_location
             )
 
             # ADD NEW
@@ -841,7 +852,8 @@ class BulkAddPage:
                 first_edition=new_first,
                 image_id=entry.image_id,
                 variant_id=entry.variant_id, # Re-use variant ID as basic properties (set/rarity) haven't changed
-                mode='ADD'
+                mode='ADD',
+                storage_location=new_storage
             )
 
             processed_changes.append({
@@ -856,12 +868,14 @@ class BulkAddPage:
                     'language': new_lang,
                     'condition': new_cond,
                     'first_edition': new_first,
-                    'variant_id': entry.variant_id
+                    'variant_id': entry.variant_id,
+                    'storage_location': new_storage
                 },
                 'old_data': {
                     'language': entry.language,
                     'condition': entry.condition,
-                    'first_edition': entry.first_edition
+                    'first_edition': entry.first_edition,
+                    'storage_location': entry.storage_location
                 }
             })
             updated_count += qty
@@ -889,8 +903,9 @@ class BulkAddPage:
 
         if not (self.state.get('update_apply_lang') or
                 self.state.get('update_apply_cond') or
-                self.state.get('update_apply_first')):
-            ui.notify("Select at least one property to update (Lang, Cond, or 1st).", type='warning')
+                self.state.get('update_apply_first') or
+                self.state.get('update_apply_storage')):
+            ui.notify("Select at least one property to update (Lang, Cond, 1st, or Storage).", type='warning')
             return
 
         async def execute():
@@ -900,6 +915,7 @@ class BulkAddPage:
         if self.state.get('update_apply_lang'): updates.append(f"Language -> {self.state['default_language']}")
         if self.state.get('update_apply_cond'): updates.append(f"Condition -> {self.state['default_condition']}")
         if self.state.get('update_apply_first'): updates.append(f"1st Ed -> {'Yes' if self.state['default_first_ed'] else 'No'}")
+        if self.state.get('update_apply_storage'): updates.append(f"Storage -> {self.state['default_storage'] or 'None'}")
 
         update_str = ", ".join(updates)
 
@@ -929,6 +945,7 @@ class BulkAddPage:
         lang = self.state['default_language']
         cond = self.state['default_condition']
         first = self.state['default_first_ed']
+        storage = self.state['default_storage']
 
         processed_changes = []
         added_count = 0
@@ -948,7 +965,8 @@ class BulkAddPage:
                 first_edition=first,
                 image_id=entry.image_id,
                 variant_id=variant_id,
-                mode='ADD'
+                mode='ADD',
+                storage_location=storage
             )
 
             processed_changes.append({
@@ -1387,6 +1405,7 @@ class BulkAddPage:
         try:
             col = await run.io_bound(persistence.load_collection, self.state['selected_collection'])
             self.current_collection_obj = col
+            self.render_header.refresh()
         except Exception as e:
             logger.error(f"Failed to load collection: {e}")
             ui.notify(f"Failed to load collection: {e}", type='negative')
@@ -1622,6 +1641,10 @@ class BulkAddPage:
 
              ui.separator().props('vertical')
 
+             storage_opts = [None]
+             if self.current_collection_obj:
+                 storage_opts.extend([s.name for s in self.current_collection_obj.storage_definitions])
+
              with ui.row().classes('items-center gap-2 bg-gray-800 p-2 rounded border border-gray-700'):
                  ui.label('Defaults:').classes('text-accent font-bold text-xs uppercase mr-2')
                  ui.select(['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP', 'KR'], label='Lang',
@@ -1632,6 +1655,10 @@ class BulkAddPage:
                            on_change=lambda e: [self.state.update({'default_condition': e.value}), persistence.save_ui_state({'bulk_default_cond': e.value})]).props('dense options-dense').classes('w-32')
                  ui.checkbox('1st Ed', value=self.state['default_first_ed'],
                              on_change=lambda e: [self.state.update({'default_first_ed': e.value}), persistence.save_ui_state({'bulk_default_first': e.value})]).props('dense')
+
+                 ui.select(storage_opts, label='Storage',
+                           value=self.state['default_storage'],
+                           on_change=lambda e: [self.state.update({'default_storage': e.value}), persistence.save_ui_state({'bulk_default_storage': e.value})]).props('dense options-dense').classes('w-32')
 
              ui.space()
 
@@ -1734,7 +1761,9 @@ class BulkAddPage:
                                      if item.first_edition:
                                          ui.label('1st').classes('font-bold text-orange-400')
                                  ui.label(item.set_code).classes('font-mono')
-                             ui.label(item.rarity).classes('text-[8px] text-gray-300 w-full truncate')
+                             with ui.row().classes('w-full justify-between items-center gap-1'):
+                                 ui.label(item.rarity).classes('text-[8px] text-gray-300 truncate flex-shrink')
+                                 ui.label(item.storage_location or "None").classes('text-[8px] text-gray-400 font-mono truncate flex-shrink text-right')
 
                     self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
 
@@ -1875,6 +1904,8 @@ class BulkAddPage:
                                         on_change=lambda e: [self.state.update({'update_apply_cond': e.value}), persistence.save_ui_state({'bulk_update_apply_cond': e.value})]).props('dense size=xs').classes('text-[10px]')
                             ui.checkbox('1st', value=self.state['update_apply_first'],
                                         on_change=lambda e: [self.state.update({'update_apply_first': e.value}), persistence.save_ui_state({'bulk_update_apply_first': e.value})]).props('dense size=xs').classes('text-[10px]')
+                            ui.checkbox('Storage', value=self.state['update_apply_storage'],
+                                        on_change=lambda e: [self.state.update({'update_apply_storage': e.value}), persistence.save_ui_state({'bulk_update_apply_storage': e.value})]).props('dense size=xs').classes('text-[10px]')
 
                         ui.button("Remove All", on_click=self.on_remove_all_click).props('flat dense color=negative size=sm')
 
