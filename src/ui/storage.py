@@ -44,7 +44,12 @@ class StorageDialog:
 
     async def load_sets(self):
         try:
-            self.sets_info = await ygo_service.get_all_sets_info()
+            all_sets = await ygo_service.get_all_sets_info()
+            # Filter out promo cards
+            self.sets_info = [
+                s for s in all_sets
+                if "promo card" not in s['name'].lower() and "promocard" not in s['name'].lower() and "promotional card" not in s['name'].lower()
+            ]
             self.set_options = {s['code']: f"{s['code']} - {s['name']}" for s in self.sets_info}
             # Update select if it exists
             if self.set_select:
@@ -103,11 +108,14 @@ class StorageDialog:
                              ui.notify(f"Error loading set info: {ex}", type='warning')
 
                      self.set_select = ui.select(self.set_options, label='Select Product', with_input=True, on_change=on_set_change) \
-                        .classes('w-full').props('clearable input-debounce=0 use-input behavior="menu" fill-input hide-selected')
+                        .classes('w-full').props('clearable input-debounce=300 use-input behavior="menu" fill-input hide-selected')
 
                      def filter_fn(e):
                          val = e.args
-                         self.set_select.options = {k: v for k, v in self.set_options.items() if val.lower() in v.lower()} if val else self.set_options
+                         if val is None:
+                             self.set_select.options = self.set_options
+                         else:
+                             self.set_select.options = {k: v for k, v in self.set_options.items() if val.lower() in v.lower()}
                          self.set_select.update()
 
                      self.set_select.on('input-value', filter_fn)
