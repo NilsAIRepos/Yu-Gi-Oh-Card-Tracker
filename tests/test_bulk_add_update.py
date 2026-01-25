@@ -72,7 +72,8 @@ class TestBulkAddUpdate(unittest.IsolatedAsyncioTestCase):
             image_url="url",
             image_id=123,
             variant_id="var_123",
-            price=10.0
+            price=10.0,
+            storage_entries={'None': 3}
         )
 
         # Act
@@ -120,7 +121,8 @@ class TestBulkAddUpdate(unittest.IsolatedAsyncioTestCase):
             image_url="url",
             image_id=123,
             variant_id="var_123",
-            price=0.0
+            price=0.0,
+            storage_entries={'None': 1}
         )
 
         await self.page.process_batch_update([entry])
@@ -151,7 +153,8 @@ class TestBulkAddUpdate(unittest.IsolatedAsyncioTestCase):
             image_url="url",
             image_id=123,
             variant_id="var_123",
-            price=0.0
+            price=0.0,
+            storage_entries={'None': 1}
         )
 
         await self.page.process_batch_update([entry])

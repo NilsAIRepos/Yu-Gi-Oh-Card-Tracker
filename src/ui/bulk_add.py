@@ -76,11 +76,13 @@ class BulkCollectionEntry:
     image_url: str
     image_id: int
     variant_id: str
-    storage_location: Optional[str] = None
+    storage_location: Optional[str] = None # Deprecated/Representational
+    storage_entries: Dict[Optional[str], int] = field(default_factory=dict)
     price: float = 0.0
 
 def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard]) -> List[BulkCollectionEntry]:
-    entries = []
+    grouped_entries = {} # Key -> BulkCollectionEntry
+
     for card in col.cards:
         api_card = api_card_map.get(card.card_id)
         if not api_card: continue
@@ -102,26 +104,37 @@ def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard])
                          break
 
             for entry in variant.entries:
-                # Include storage_location in ID to distinguish stacks
-                loc_str = str(entry.storage_location) if entry.storage_location else "None"
-                unique_id = f"{variant.variant_id}_{entry.language}_{entry.condition}_{entry.first_edition}_{loc_str}"
-                entries.append(BulkCollectionEntry(
-                    id=unique_id,
-                    api_card=api_card,
-                    quantity=entry.quantity,
-                    set_code=variant.set_code,
-                    set_name=set_name,
-                    rarity=variant.rarity,
-                    language=entry.language,
-                    condition=entry.condition,
-                    first_edition=entry.first_edition,
-                    image_url=img_url,
-                    image_id=img_id,
-                    variant_id=variant.variant_id,
-                    storage_location=entry.storage_location,
-                    price=0.0
-                ))
-    return entries
+                # Group Key: Variant + Lang + Cond + 1st
+                group_key = f"{variant.variant_id}_{entry.language}_{entry.condition}_{entry.first_edition}"
+
+                if group_key not in grouped_entries:
+                     grouped_entries[group_key] = BulkCollectionEntry(
+                        id=group_key,
+                        api_card=api_card,
+                        quantity=0,
+                        set_code=variant.set_code,
+                        set_name=set_name,
+                        rarity=variant.rarity,
+                        language=entry.language,
+                        condition=entry.condition,
+                        first_edition=entry.first_edition,
+                        image_url=img_url,
+                        image_id=img_id,
+                        variant_id=variant.variant_id,
+                        storage_location=None, # Will set to None as "Mixed" or "Default"
+                        storage_entries={},
+                        price=0.0
+                     )
+
+                b_entry = grouped_entries[group_key]
+                b_entry.quantity += entry.quantity
+
+                # Track storage location
+                loc = entry.storage_location
+                current_qty = b_entry.storage_entries.get(loc, 0)
+                b_entry.storage_entries[loc] = current_qty + entry.quantity
+
+    return list(grouped_entries.values())
 
 class BulkAddPage:
     def __init__(self):
@@ -232,6 +245,7 @@ class BulkAddPage:
         self.state['default_language'] = ui_state.get('bulk_default_lang', self.state['default_language'])
         self.state['default_condition'] = ui_state.get('bulk_default_cond', self.state['default_condition'])
         self.state['default_first_ed'] = ui_state.get('bulk_default_first', self.state['default_first_ed'])
+        self.state['default_storage'] = ui_state.get('bulk_default_storage', None)
 
         # Load update options
         self.state['update_apply_lang'] = ui_state.get('bulk_update_apply_lang', False)
@@ -377,8 +391,8 @@ class BulkAddPage:
         if not variant_id:
             variant_id = generate_variant_id(api_card.id, set_code, rarity, img_id)
 
-        loc_str = str(storage_location) if storage_location else "None"
-        unique_id = f"{variant_id}_{lang}_{cond}_{first}_{loc_str}"
+        # ID no longer contains storage location
+        unique_id = f"{variant_id}_{lang}_{cond}_{first}"
 
         cards = self.col_state['collection_cards']
 
@@ -390,20 +404,32 @@ class BulkAddPage:
 
         if target_index != -1:
             entry = cards[target_index]
-            if mode == 'SET':
-                entry.quantity = qty
-            else:
+
+            # For aggregated view, we update the total and the breakdown
+
+            if mode == 'ADD':
                 entry.quantity += qty
+                cur_s_qty = entry.storage_entries.get(storage_location, 0)
+                entry.storage_entries[storage_location] = cur_s_qty + qty
+
+            elif mode == 'SET':
+                # Replicate CollectionEditor logic: Set quantity for SPECIFIC location
+
+                old_s_qty = entry.storage_entries.get(storage_location, 0)
+                entry.storage_entries[storage_location] = qty # Set specific location quantity
+
+                diff = qty - old_s_qty
+                entry.quantity += diff
 
             if entry.quantity <= 0:
                 cards.pop(target_index)
         else:
+            # New Entry
+            new_qty = 0
             if mode == 'SET' and qty > 0:
                 new_qty = qty
             elif mode == 'ADD' and qty > 0:
                 new_qty = qty
-            else:
-                new_qty = 0
 
             if new_qty > 0:
                 # Create new entry
@@ -435,7 +461,8 @@ class BulkAddPage:
                     image_url=img_url,
                     image_id=img_id,
                     variant_id=variant_id,
-                    storage_location=storage_location,
+                    storage_location=None, # Aggregated
+                    storage_entries={storage_location: new_qty},
                     price=0.0
                 )
                 cards.insert(0, new_entry) # Add to top
@@ -473,7 +500,8 @@ class BulkAddPage:
                             img_id=data['image_id'],
                             variant_id=data.get('variant_id'),
                             mode='ADD',
-                            save=False
+                            save=False,
+                            storage_location=data.get('storage_location')
                         )
                         count += 1
 
@@ -510,7 +538,8 @@ class BulkAddPage:
                 first=data['first_edition'],
                 img_id=data['image_id'],
                 variant_id=data.get('variant_id'),
-                mode='ADD'
+                mode='ADD',
+                storage_location=data.get('storage_location')
             )
 
             if success:
@@ -529,7 +558,8 @@ class BulkAddPage:
         defaults = {
             'lang': self.state['default_language'],
             'cond': self.state['default_condition'],
-            'first': self.state['default_first_ed']
+            'first': self.state['default_first_ed'],
+            'storage': self.state.get('default_storage')
         }
 
         processed_changes = []
@@ -587,7 +617,8 @@ class BulkAddPage:
                 first_edition=defaults['first'],
                 image_id=image_id,
                 variant_id=variant_id,
-                mode='ADD'
+                mode='ADD',
+                storage_location=defaults['storage']
             )
 
             # Prepare log entry
@@ -607,7 +638,8 @@ class BulkAddPage:
                     'language': defaults['lang'],
                     'condition': defaults['cond'],
                     'first_edition': defaults['first'],
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'storage_location': defaults['storage']
                 }
             })
             added_count += qty
@@ -630,6 +662,7 @@ class BulkAddPage:
             ui.notify("No valid cards found to add (check database update?)", type='warning')
 
     async def add_card_to_collection(self, entry: LibraryEntry, lang, cond, first, qty):
+        storage = self.state.get('default_storage')
         success = await self._update_collection(
             api_card=entry.api_card,
             set_code=entry.set_code,
@@ -639,7 +672,8 @@ class BulkAddPage:
             cond=cond,
             first=first,
             img_id=entry.image_id,
-            mode='ADD'
+            mode='ADD',
+            storage_location=storage
         )
 
         if success:
@@ -654,7 +688,8 @@ class BulkAddPage:
                 'language': lang,
                 'condition': cond,
                 'first_edition': first,
-                'variant_id': var_id
+                'variant_id': var_id,
+                'storage_location': storage
              }
              changelog_manager.log_change(self.state['selected_collection'], 'ADD', card_data, qty)
              ui.notify(f"Added {entry.api_card.name}", type='positive')
@@ -662,40 +697,93 @@ class BulkAddPage:
         return success
 
     async def remove_card_from_collection(self, entry: BulkCollectionEntry):
-        qty_to_remove = entry.quantity # Remove All
+        # Remove entire quantity from all storage locations
+        # We need to iterate over all stored locations for this aggregated entry
 
-        success = await self._update_collection(
-            api_card=entry.api_card,
-            set_code=entry.set_code,
-            rarity=entry.rarity,
-            lang=entry.language,
-            qty=-qty_to_remove,
-            cond=entry.condition,
-            first=entry.first_edition,
-            img_id=entry.image_id,
-            variant_id=entry.variant_id,
-            mode='ADD',
-            storage_location=entry.storage_location
-        )
+        total_removed = 0
 
-        if success:
-             card_data = {
-                'card_id': entry.api_card.id,
-                'name': entry.api_card.name,
-                'set_code': entry.set_code,
-                'rarity': entry.rarity,
-                'image_id': entry.image_id,
-                'language': entry.language,
-                'condition': entry.condition,
-                'first_edition': entry.first_edition,
-                'variant_id': entry.variant_id
-             }
-             changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', card_data, qty_to_remove)
-             ui.notify(f"Removed {entry.api_card.name}", type='info')
+        # Snapshot keys because we might be modifying the underlying structure if we were operating directly on it
+        # But here entry.storage_entries is a dict in the VM.
+        # We need to call _update_collection for EACH location.
+
+        # We'll batch the log manually or just log each?
+        # Let's log batch for cleanliness if multiple locations.
+
+        changes = []
+
+        for loc, qty in entry.storage_entries.items():
+            if qty <= 0: continue
+
+            await self._update_collection(
+                api_card=entry.api_card,
+                set_code=entry.set_code,
+                rarity=entry.rarity,
+                lang=entry.language,
+                qty=-qty,
+                cond=entry.condition,
+                first=entry.first_edition,
+                img_id=entry.image_id,
+                variant_id=entry.variant_id,
+                mode='ADD',
+                storage_location=loc,
+                save=False # Defer save
+            )
+
+            changes.append({
+                'action': 'REMOVE',
+                'quantity': qty,
+                'card_data': {
+                    'card_id': entry.api_card.id,
+                    'name': entry.api_card.name,
+                    'set_code': entry.set_code,
+                    'rarity': entry.rarity,
+                    'image_id': entry.image_id,
+                    'language': entry.language,
+                    'condition': entry.condition,
+                    'first_edition': entry.first_edition,
+                    'variant_id': entry.variant_id,
+                    'storage_location': loc
+                }
+            })
+            total_removed += qty
+
+        if total_removed > 0:
+             await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
+
+             if len(changes) == 1:
+                 # Log single
+                 c = changes[0]
+                 changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', c['card_data'], c['quantity'])
+             else:
+                 changelog_manager.log_batch_change(self.state['selected_collection'], f"Removed {entry.api_card.name} from all locations", changes)
+
+             ui.notify(f"Removed {total_removed}x {entry.api_card.name}", type='info')
              self.render_header.refresh()
-        return success
+             await self.refresh_collection_view_from_memory()
+             return True
+        return False
 
     async def reduce_collection_card_qty(self, entry: BulkCollectionEntry):
+        # Determine which location to remove from.
+        # Priority: Default Storage -> None (Loose) -> Any available
+
+        target_loc = self.state.get('default_storage')
+
+        # Check if default storage has copies
+        if target_loc not in entry.storage_entries or entry.storage_entries[target_loc] <= 0:
+            target_loc = None # Fallback to loose
+
+            if target_loc not in entry.storage_entries or entry.storage_entries[target_loc] <= 0:
+                # Find any location with quantity
+                found = False
+                for loc, qty in entry.storage_entries.items():
+                    if qty > 0:
+                        target_loc = loc
+                        found = True
+                        break
+                if not found:
+                    return False # No quantity to remove
+
         success = await self._update_collection(
             api_card=entry.api_card,
             set_code=entry.set_code,
@@ -707,7 +795,7 @@ class BulkAddPage:
             img_id=entry.image_id,
             variant_id=entry.variant_id,
             mode='ADD',
-            storage_location=entry.storage_location
+            storage_location=target_loc
         )
 
         if success:
@@ -720,7 +808,8 @@ class BulkAddPage:
                 'language': entry.language,
                 'condition': entry.condition,
                 'first_edition': entry.first_edition,
-                'variant_id': entry.variant_id
+                'variant_id': entry.variant_id,
+                'storage_location': target_loc
              }
              changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', card_data, 1)
              ui.notify(f"Removed 1x {entry.api_card.name}", type='info')
@@ -744,6 +833,7 @@ class BulkAddPage:
              cond = self.state['default_condition']
              is_first = self.state['default_first_ed']
 
+             # Note: add_card_to_collection uses self.state['default_storage'] internally
              await self.add_card_to_collection(entry, lang, cond, is_first, 1)
 
         # REMOVE: Collection -> Library (Drag back to library to remove)
@@ -799,72 +889,64 @@ class BulkAddPage:
                 new_first == entry.first_edition):
                 continue
 
-            qty = entry.quantity
-            if qty <= 0: continue
+            # Iterate storage locations
+            for loc, qty in entry.storage_entries.items():
+                if qty <= 0: continue
 
-            # REMOVE OLD
-            CollectionEditor.apply_change(
-                collection=collection,
-                api_card=entry.api_card,
-                set_code=entry.set_code,
-                rarity=entry.rarity,
-                language=entry.language,
-                quantity=-qty,
-                condition=entry.condition,
-                first_edition=entry.first_edition,
-                image_id=entry.image_id,
-                variant_id=entry.variant_id,
-                mode='ADD'
-            )
+                # REMOVE OLD
+                CollectionEditor.apply_change(
+                    collection=collection,
+                    api_card=entry.api_card,
+                    set_code=entry.set_code,
+                    rarity=entry.rarity,
+                    language=entry.language,
+                    quantity=-qty,
+                    condition=entry.condition,
+                    first_edition=entry.first_edition,
+                    image_id=entry.image_id,
+                    variant_id=entry.variant_id,
+                    mode='ADD',
+                    storage_location=loc
+                )
 
-            # ADD NEW
-            # We need to let CollectionEditor handle variant ID for the NEW combination.
-            # We pass None for variant_id to force it to find/generate the correct one for the new attributes.
-            # However, if set_code/rarity/image_id are same, the base variant ID might be same.
-            # CollectionEditor.apply_change logic:
-            # "If not target_variant_id and set_code and rarity: target_variant_id = generate_variant_id..."
-            # So if we pass None, it generates/finds based on card props.
-            # But wait, we want to keep the same variant_id if it's just condition change?
-            # Variant ID is hash of (card_id, set_code, rarity, image_id).
-            # Language/Condition/FirstEd are properties of the ENTRY, not the VARIANT.
-            # So the Variant ID should be the SAME.
-            # So we CAN reuse entry.variant_id.
+                # ADD NEW (preserve location)
+                CollectionEditor.apply_change(
+                    collection=collection,
+                    api_card=entry.api_card,
+                    set_code=entry.set_code,
+                    rarity=entry.rarity,
+                    language=new_lang,
+                    quantity=qty,
+                    condition=new_cond,
+                    first_edition=new_first,
+                    image_id=entry.image_id,
+                    variant_id=entry.variant_id, # Re-use variant ID
+                    mode='ADD',
+                    storage_location=loc
+                )
 
-            CollectionEditor.apply_change(
-                collection=collection,
-                api_card=entry.api_card,
-                set_code=entry.set_code,
-                rarity=entry.rarity,
-                language=new_lang,
-                quantity=qty,
-                condition=new_cond,
-                first_edition=new_first,
-                image_id=entry.image_id,
-                variant_id=entry.variant_id, # Re-use variant ID as basic properties (set/rarity) haven't changed
-                mode='ADD'
-            )
-
-            processed_changes.append({
-                'action': 'UPDATE',
-                'quantity': qty,
-                'card_data': {
-                    'card_id': entry.api_card.id,
-                    'name': entry.api_card.name,
-                    'set_code': entry.set_code,
-                    'rarity': entry.rarity,
-                    'image_id': entry.image_id,
-                    'language': new_lang,
-                    'condition': new_cond,
-                    'first_edition': new_first,
-                    'variant_id': entry.variant_id
-                },
-                'old_data': {
-                    'language': entry.language,
-                    'condition': entry.condition,
-                    'first_edition': entry.first_edition
-                }
-            })
-            updated_count += qty
+                processed_changes.append({
+                    'action': 'UPDATE',
+                    'quantity': qty,
+                    'card_data': {
+                        'card_id': entry.api_card.id,
+                        'name': entry.api_card.name,
+                        'set_code': entry.set_code,
+                        'rarity': entry.rarity,
+                        'image_id': entry.image_id,
+                        'language': new_lang,
+                        'condition': new_cond,
+                        'first_edition': new_first,
+                        'variant_id': entry.variant_id,
+                        'storage_location': loc
+                    },
+                    'old_data': {
+                        'language': entry.language,
+                        'condition': entry.condition,
+                        'first_edition': entry.first_edition
+                    }
+                })
+                updated_count += qty
 
         if processed_changes:
             await run.io_bound(persistence.save_collection, collection, self.state['selected_collection'])
@@ -929,6 +1011,7 @@ class BulkAddPage:
         lang = self.state['default_language']
         cond = self.state['default_condition']
         first = self.state['default_first_ed']
+        storage = self.state.get('default_storage')
 
         processed_changes = []
         added_count = 0
@@ -948,7 +1031,8 @@ class BulkAddPage:
                 first_edition=first,
                 image_id=entry.image_id,
                 variant_id=variant_id,
-                mode='ADD'
+                mode='ADD',
+                storage_location=storage
             )
 
             processed_changes.append({
@@ -963,7 +1047,8 @@ class BulkAddPage:
                     'language': lang,
                     'condition': cond,
                     'first_edition': first,
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'storage_location': storage
                 }
             })
             added_count += 1
@@ -992,39 +1077,42 @@ class BulkAddPage:
         collection = self.current_collection_obj
 
         for entry in entries:
-            qty_to_remove = entry.quantity
-            if qty_to_remove <= 0: continue
+            # For each entry, we must remove from all its storage locations
+            for loc, qty in entry.storage_entries.items():
+                if qty <= 0: continue
 
-            CollectionEditor.apply_change(
-                collection=collection,
-                api_card=entry.api_card,
-                set_code=entry.set_code,
-                rarity=entry.rarity,
-                language=entry.language,
-                quantity=-qty_to_remove,
-                condition=entry.condition,
-                first_edition=entry.first_edition,
-                image_id=entry.image_id,
-                variant_id=entry.variant_id,
-                mode='ADD'
-            )
+                CollectionEditor.apply_change(
+                    collection=collection,
+                    api_card=entry.api_card,
+                    set_code=entry.set_code,
+                    rarity=entry.rarity,
+                    language=entry.language,
+                    quantity=-qty,
+                    condition=entry.condition,
+                    first_edition=entry.first_edition,
+                    image_id=entry.image_id,
+                    variant_id=entry.variant_id,
+                    mode='ADD',
+                    storage_location=loc
+                )
 
-            processed_changes.append({
-                'action': 'REMOVE',
-                'quantity': qty_to_remove,
-                'card_data': {
-                    'card_id': entry.api_card.id,
-                    'name': entry.api_card.name,
-                    'set_code': entry.set_code,
-                    'rarity': entry.rarity,
-                    'image_id': entry.image_id,
-                    'language': entry.language,
-                    'condition': entry.condition,
-                    'first_edition': entry.first_edition,
-                    'variant_id': entry.variant_id
-                }
-            })
-            removed_count += qty_to_remove
+                processed_changes.append({
+                    'action': 'REMOVE',
+                    'quantity': qty,
+                    'card_data': {
+                        'card_id': entry.api_card.id,
+                        'name': entry.api_card.name,
+                        'set_code': entry.set_code,
+                        'rarity': entry.rarity,
+                        'image_id': entry.image_id,
+                        'language': entry.language,
+                        'condition': entry.condition,
+                        'first_edition': entry.first_edition,
+                        'variant_id': entry.variant_id,
+                        'storage_location': loc
+                    }
+                })
+                removed_count += qty
 
         if processed_changes:
             await run.io_bound(persistence.save_collection, collection, self.state['selected_collection'])
@@ -1632,6 +1720,19 @@ class BulkAddPage:
                            on_change=lambda e: [self.state.update({'default_condition': e.value}), persistence.save_ui_state({'bulk_default_cond': e.value})]).props('dense options-dense').classes('w-32')
                  ui.checkbox('1st Ed', value=self.state['default_first_ed'],
                              on_change=lambda e: [self.state.update({'default_first_ed': e.value}), persistence.save_ui_state({'bulk_default_first': e.value})]).props('dense')
+
+                 # Storage Selector
+                 storage_opts = {'None': 'None (Loose)'}
+                 if self.current_collection_obj and self.current_collection_obj.storage_definitions:
+                     for sd in self.current_collection_obj.storage_definitions:
+                         storage_opts[sd.name] = sd.name
+
+                 # Ensure current value is valid
+                 if self.state['default_storage'] not in storage_opts and self.state['default_storage'] is not None:
+                     self.state['default_storage'] = 'None'
+
+                 ui.select(storage_opts, label='Storage', value=self.state['default_storage'] or 'None',
+                           on_change=lambda e: [self.state.update({'default_storage': e.value if e.value != 'None' else None}), persistence.save_ui_state({'bulk_default_storage': e.value if e.value != 'None' else None})]).props('dense options-dense').classes('w-32')
 
              ui.space()
 

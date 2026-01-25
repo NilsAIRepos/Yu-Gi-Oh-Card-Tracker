@@ -87,7 +87,31 @@ class TestBulkAddFiltering(unittest.TestCase):
         # Setup run.io_bound to return the collection
         # We patch the 'io_bound' method on the 'run' object in src.ui.bulk_add
         with patch('src.ui.bulk_add.run.io_bound', new_callable=AsyncMock) as mock_io:
-            mock_io.return_value = col
+            # run.io_bound is called twice:
+            # 1. persistence.load_collection -> returns col
+            # 2. _build_collection_entries -> returns list[BulkCollectionEntry]
+
+            # We need to construct the expected entries for the second call
+            expected_entries = [
+                BulkCollectionEntry(
+                    id="v1_EN_Near Mint_False",
+                    api_card=c1,
+                    quantity=1,
+                    set_code="LOB-EN001",
+                    set_name="Legend of Blue Eyes White Dragon",
+                    rarity="Ultra Rare",
+                    language="EN",
+                    condition="Near Mint",
+                    first_edition=False,
+                    image_url="url",
+                    image_id=1,
+                    variant_id="v1",
+                    storage_entries={None: 1},
+                    price=0.0
+                )
+            ]
+
+            mock_io.side_effect = [col, expected_entries, col, expected_entries] # Providing enough side effects for multiple calls if needed
 
             self.page.state['selected_collection'] = "Test Col"
 
@@ -109,7 +133,29 @@ class TestBulkAddFiltering(unittest.TestCase):
                     ])
                 ])
             ])
-            mock_io.return_value = col2
+
+            expected_entries_2 = [
+                BulkCollectionEntry(
+                    id="v2_EN_Near Mint_False",
+                    api_card=c1,
+                    quantity=1,
+                    set_code="UNKNOWN-CODE",
+                    set_name="Unknown Set",
+                    rarity="Common",
+                    language="EN",
+                    condition="Near Mint",
+                    first_edition=False,
+                    image_url="url",
+                    image_id=1,
+                    variant_id="v2",
+                    storage_entries={None: 1},
+                    price=0.0
+                )
+            ]
+
+            # Reset side effect for next calls (load_collection, then build_entries)
+            mock_io.side_effect = [col2, expected_entries_2]
+
             asyncio.run(self.page.load_collection_data())
 
             entries = self.page.col_state['collection_cards']
