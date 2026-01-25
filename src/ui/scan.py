@@ -8,6 +8,7 @@ import uuid
 import base64
 import queue
 import json
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 from PIL import Image
@@ -17,10 +18,13 @@ import io
 from src.services.scanner import manager as scanner_service
 from src.services.scanner import SCANNER_AVAILABLE
 from src.core.persistence import persistence
-from src.core.models import CollectionCard, CollectionVariant, CollectionEntry
+from src.core.models import Collection, CollectionCard, CollectionVariant, CollectionEntry, ApiCard
+from src.services.collection_editor import CollectionEditor
+from src.services.undo_service import UndoService
 from src.services.ygo_api import ygo_service
 from src.ui.components.ambiguity_dialog import AmbiguityDialog
 from src.core import config_manager
+from src.core.changelog_manager import changelog_manager
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +216,7 @@ function setRotation(deg) {
 
 class ScanPage:
     def __init__(self):
-        self.scanned_cards: List[Dict[str, Any]] = []
+        self.recent_collection: Collection = Collection(name="Recent Scans")
         self.target_collection_file = None
         self.collections = persistence.list_collections()
         if self.collections:
@@ -229,13 +233,12 @@ class ScanPage:
 
         # Initialize UI state from config
         self.ocr_tracks = self.config.get('ocr_tracks', ['doctr'])
-        # Ensure ocr_tracks is valid (only one active track supported for now, but keeping list structure for compat)
         if not self.ocr_tracks:
             self.ocr_tracks = ['doctr']
-        self.selected_track = self.ocr_tracks[0] # For UI Radio Button
+        self.selected_track = self.ocr_tracks[0]
 
         self.preprocessing_mode = self.config.get('preprocessing_mode', 'classic')
-        self.art_match_yolo = self.config.get('art_match_yolo', True) # Default to True per request
+        self.art_match_yolo = self.config.get('art_match_yolo', True)
         self.ambiguity_threshold = self.config.get('ambiguity_threshold', 10.0)
         self.save_warped_scan = self.config.get('save_warped_scan', True)
         self.save_raw_scan = self.config.get('save_raw_scan', True)
@@ -245,15 +248,87 @@ class ScanPage:
         # Load Recent Scans
         self.load_recent_scans()
 
-        # Debug Lab State (local cache of Pydantic model dump)
+        # Debug Lab State
         self.debug_report = {}
         self.debug_loading = False
         self.latest_capture_src = None
-        # self.was_processing is removed as we use event based updates now
         self.watchdog_counter = 0
 
         # UI State Persistence
         self.expansion_states = {}
+        self.undo_add_all_btn = None
+
+    def check_undo_add_all_availability(self):
+        if not self.target_collection_file:
+            if self.undo_add_all_btn: self.undo_add_all_btn.visible = False
+            return
+
+        last_change = changelog_manager.get_last_change(self.target_collection_file)
+        can_undo = False
+        if last_change and last_change.get('action') == 'BATCH' and last_change.get('description') == 'Batch Add from Scan':
+             can_undo = True
+
+        if self.undo_add_all_btn:
+            self.undo_add_all_btn.visible = can_undo
+
+    def undo_add_all(self):
+        if not self.target_collection_file: return
+
+        last_change = changelog_manager.get_last_change(self.target_collection_file)
+        if not last_change or last_change.get('description') != 'Batch Add from Scan':
+            ui.notify("Cannot undo: Last action mismatch.", type='warning')
+            self.check_undo_add_all_availability()
+            return
+
+        # Perform Undo
+        last_change = changelog_manager.undo_last_change(self.target_collection_file)
+
+        try:
+            target_collection = persistence.load_collection(self.target_collection_file)
+
+            # Revert on Target (Remove cards)
+            UndoService.apply_inverse(target_collection, last_change)
+            persistence.save_collection(target_collection, self.target_collection_file)
+
+            # Add cards back to Recent Scans
+            changes = last_change.get('changes', [])
+            count = 0
+            timestamp = datetime.now().isoformat()
+
+            for change in changes:
+                 card_data = change.get('card_data', {})
+                 qty = change.get('quantity', 1)
+
+                 api_card = ygo_service.get_card(card_data.get('card_id'))
+                 if not api_card:
+                     api_card = ApiCard(id=card_data.get('card_id'), name=card_data.get('name', 'Unknown'), type="", frameType="", desc="")
+
+                 CollectionEditor.apply_change(
+                    collection=self.recent_collection,
+                    api_card=api_card,
+                    set_code=card_data.get('set_code'),
+                    rarity=card_data.get('rarity'),
+                    language=card_data.get('language'),
+                    quantity=qty,
+                    condition=card_data.get('condition'),
+                    first_edition=card_data.get('first_edition'),
+                    image_id=card_data.get('image_id'),
+                    variant_id=card_data.get('variant_id'),
+                    mode='ADD'
+                 )
+
+                 self._update_entry_timestamp(card_data.get('card_id'), card_data, timestamp)
+                 count += qty
+
+            self.save_recent_scans()
+            self.render_live_list.refresh()
+            ui.notify(f"Restored {count} cards to Recent Scans.", type='positive')
+
+            self.check_undo_add_all_availability()
+
+        except Exception as e:
+            logger.error(f"Undo Add All failed: {e}")
+            ui.notify("Undo failed.", type='negative')
 
     def save_settings(self):
         """Saves current settings to config."""
@@ -272,24 +347,59 @@ class ScanPage:
         config_manager.save_config(self.config)
 
     def load_recent_scans(self):
-        """Loads scans from temp file."""
+        """Loads scans from temp file, handling migration from list to Collection."""
         temp_path = "data/scans/scans_temp.json"
-        if os.path.exists(temp_path):
-            try:
-                with open(temp_path, 'r') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        self.scanned_cards = data
-            except Exception as e:
-                logger.error(f"Failed to load recent scans: {e}")
+
+        # Reset
+        self.recent_collection = Collection(name="Recent Scans")
+
+        if not os.path.exists(temp_path):
+            return
+
+        try:
+            with open(temp_path, 'r') as f:
+                data = json.load(f)
+
+            if isinstance(data, list):
+                logger.info("Migrating Recent Scans from List to Collection...")
+                # Migration Logic
+                for item in data:
+                     card_id = item.get('card_id')
+                     if not card_id: continue
+
+                     api_card = ApiCard(
+                         id=card_id,
+                         name=item.get('name', 'Unknown'),
+                         type="", frameType="", desc=""
+                     )
+
+                     CollectionEditor.apply_change(
+                        collection=self.recent_collection,
+                        api_card=api_card,
+                        set_code=item.get('set_code'),
+                        rarity=item.get('rarity'),
+                        language=item.get('language', 'EN'),
+                        quantity=1,
+                        condition=self.default_condition,
+                        first_edition=item.get('first_edition', False),
+                        image_id=item.get('image_id'),
+                        variant_id=item.get('variant_id'),
+                        mode='ADD'
+                     )
+                self.save_recent_scans()
+            else:
+                self.recent_collection = persistence.load_collection(temp_path)
+        except Exception as e:
+            logger.error(f"Failed to load recent scans: {e}")
+            # Ensure valid state
+            self.recent_collection = Collection(name="Recent Scans")
 
     def save_recent_scans(self):
-        """Saves current scanned cards to temp file."""
+        """Saves current scanned collection to temp file."""
         temp_path = "data/scans/scans_temp.json"
         try:
             os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-            with open(temp_path, 'w') as f:
-                json.dump(self.scanned_cards, f, indent=4)
+            persistence.save_collection(self.recent_collection, temp_path)
         except Exception as e:
             logger.error(f"Failed to save recent scans: {e}")
 
@@ -370,10 +480,80 @@ class ScanPage:
                  os.remove(result_dict['raw_image_path'])
              except: pass
 
-        self.scanned_cards.insert(0, result_dict)
-        self.save_recent_scans()
-        self.render_live_list.refresh()
-        ui.notify(f"Added: {result_dict.get('name')}", type='positive')
+        # Add to Collection
+        card_id = result_dict.get('card_id')
+        if card_id:
+            api_card = ygo_service.get_card(card_id)
+            if not api_card:
+                api_card = ApiCard(
+                    id=card_id,
+                    name=result_dict.get('name', 'Unknown'),
+                    type="", frameType="", desc=""
+                )
+
+            # We need to inject the timestamp to ensure sorting works in recent list
+            # Since CollectionEntry doesn't have a dedicated timestamp, we misuse purchase_date or similar?
+            # User agreed to "Scan: Transform ... into a full fledged collection".
+            # I will reuse purchase_date as timestamp string
+
+            # Note: CollectionEditor doesn't let us pass purchase_date directly in apply_change easily without modifying it
+            # But CollectionEditor.apply_change returns True/False.
+            # I might need to find the entry and update it.
+
+            added = CollectionEditor.apply_change(
+                collection=self.recent_collection,
+                api_card=api_card,
+                set_code=result_dict.get('set_code'),
+                rarity=result_dict.get('rarity'),
+                language=result_dict.get('language', 'EN'),
+                quantity=1,
+                condition=self.default_condition,
+                first_edition=result_dict.get('first_edition', False),
+                image_id=result_dict.get('image_id'),
+                variant_id=result_dict.get('variant_id'),
+                mode='ADD'
+            )
+
+            # Post-update: Find the entry and set timestamp if added
+            # This is slightly inefficient but necessary for sorting
+            if added:
+                # Find the entry we just touched
+                # Logic: Search for entry matching the props
+                # ...
+                pass
+
+            # Log to Changelog
+            # We need to construct card_data for the log
+            card_data = {
+                'card_id': card_id,
+                'name': result_dict.get('name'),
+                'set_code': result_dict.get('set_code'),
+                'rarity': result_dict.get('rarity'),
+                'language': result_dict.get('language', 'EN'),
+                'condition': self.default_condition,
+                'first_edition': result_dict.get('first_edition', False),
+                'variant_id': result_dict.get('variant_id'),
+                'image_id': result_dict.get('image_id')
+            }
+            changelog_manager.log_change('scan_temp', 'ADD', card_data, 1)
+
+            # Force timestamp update on the entry we just added/updated
+            # Use shared helper
+            self._update_entry_timestamp(
+                card_id,
+                {
+                    'set_code': result_dict.get('set_code'),
+                    'rarity': result_dict.get('rarity'),
+                    'condition': self.default_condition,
+                    'language': result_dict.get('language', 'EN'),
+                    'first_edition': result_dict.get('first_edition', False)
+                },
+                datetime.now().isoformat()
+            )
+
+            self.save_recent_scans()
+            self.render_live_list.refresh()
+            ui.notify(f"Added: {result_dict.get('name')}", type='positive')
 
     async def event_consumer(self):
         """Consumes events from the local queue and updates UI."""
@@ -442,6 +622,39 @@ class ScanPage:
         except Exception as e:
             logger.error(f"Error in event_consumer: {e}")
 
+    def undo_recent_scan(self):
+        last_change = changelog_manager.undo_last_change('scan_temp')
+        if not last_change:
+            ui.notify("Nothing to undo.", type='info')
+            return
+
+        try:
+            UndoService.apply_inverse(self.recent_collection, last_change)
+
+            # If we just added a card back (Undo Remove), set its timestamp to now so it shows up at top
+            if last_change.get('action') == 'REMOVE':
+                card_data = last_change.get('card_data', {})
+                self._update_entry_timestamp(card_data.get('card_id'), card_data, datetime.now().isoformat())
+
+            self.save_recent_scans()
+            self.render_live_list.refresh()
+            ui.notify("Undid last action.", type='positive')
+        except Exception as e:
+            logger.error(f"Undo failed: {e}")
+            ui.notify("Undo failed.", type='negative')
+
+    def _update_entry_timestamp(self, card_id, match_criteria, timestamp):
+        if not card_id: return
+        for c in self.recent_collection.cards:
+            if c.card_id == card_id:
+                for v in c.variants:
+                    if v.set_code == match_criteria.get('set_code') and v.rarity == match_criteria.get('rarity'):
+                         for e in v.entries:
+                             if (e.condition == match_criteria.get('condition') and
+                                 e.language == match_criteria.get('language') and
+                                 e.first_edition == match_criteria.get('first_edition')):
+                                 e.purchase_date = timestamp
+
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
         try:
@@ -464,85 +677,121 @@ class ScanPage:
         self.start_btn.visible = True
         self.stop_btn.visible = False
 
-    def remove_card(self, index):
-        if 0 <= index < len(self.scanned_cards):
-            self.scanned_cards.pop(index)
-            self.save_recent_scans()
-            self.render_live_list.refresh()
+    def remove_card(self, card: CollectionCard, variant: CollectionVariant, entry: CollectionEntry):
+        """Removes a single quantity of the specified card/variant/entry."""
+
+        # We use CollectionEditor to remove 1
+        # Reconstruct params
+        api_card = ApiCard(id=card.card_id, name=card.name, type="", frameType="", desc="")
+
+        CollectionEditor.apply_change(
+            collection=self.recent_collection,
+            api_card=api_card,
+            set_code=variant.set_code,
+            rarity=variant.rarity,
+            language=entry.language,
+            quantity=-1, # Remove 1
+            condition=entry.condition,
+            first_edition=entry.first_edition,
+            image_id=variant.image_id,
+            variant_id=variant.variant_id,
+            mode='ADD' # ADD -1 = Remove 1
+        )
+
+        # Log Removal
+        card_data = {
+            'card_id': card.card_id,
+            'name': card.name,
+            'set_code': variant.set_code,
+            'rarity': variant.rarity,
+            'language': entry.language,
+            'condition': entry.condition,
+            'first_edition': entry.first_edition,
+            'variant_id': variant.variant_id,
+            'image_id': variant.image_id
+        }
+        changelog_manager.log_change('scan_temp', 'REMOVE', card_data, 1)
+
+        self.save_recent_scans()
+        self.render_live_list.refresh()
 
     async def commit_cards(self):
         if not self.target_collection_file:
             ui.notify("Please select a target collection.", type='warning')
             return
 
-        if not self.scanned_cards:
+        if not self.recent_collection.cards:
             ui.notify("No cards to add.", type='warning')
             return
 
         try:
-            collection = persistence.load_collection(self.target_collection_file)
+            target_collection = persistence.load_collection(self.target_collection_file)
+
+            # Prepare batch changes for logging
+            batch_changes = []
+
+            # Iterate through all cards in recent_collection and move to target
+            # Note: Modifying recent_collection while iterating might be risky if we remove from it.
+            # But here we are adding to target. We will clear recent_collection after.
 
             count = 0
-            for item in self.scanned_cards:
-                # item is dict from ScanResult.model_dump()
-                if not item.get('card_id'):
-                    continue
+            for card in self.recent_collection.cards:
+                api_card = ygo_service.get_card(card.card_id)
+                if not api_card:
+                     api_card = ApiCard(id=card.card_id, name=card.name, type="", frameType="", desc="")
 
-                target_card = next((c for c in collection.cards if c.card_id == item['card_id']), None)
-                if not target_card:
-                    target_card = CollectionCard(card_id=item['card_id'], name=item['name'])
-                    collection.cards.append(target_card)
+                for variant in card.variants:
+                    for entry in variant.entries:
+                        # Add to target
+                        CollectionEditor.apply_change(
+                            collection=target_collection,
+                            api_card=api_card,
+                            set_code=variant.set_code,
+                            rarity=variant.rarity,
+                            language=entry.language,
+                            quantity=entry.quantity,
+                            condition=entry.condition,
+                            first_edition=entry.first_edition,
+                            image_id=variant.image_id,
+                            variant_id=variant.variant_id,
+                            mode='ADD'
+                        )
 
-                target_variant = next((v for v in target_card.variants
-                                       if v.set_code == item['set_code'] and v.rarity == item['rarity']), None)
+                        # Record for log
+                        batch_changes.append({
+                            'action': 'ADD',
+                            'quantity': entry.quantity,
+                            'card_data': {
+                                'card_id': card.card_id,
+                                'name': card.name,
+                                'set_code': variant.set_code,
+                                'rarity': variant.rarity,
+                                'language': entry.language,
+                                'condition': entry.condition,
+                                'first_edition': entry.first_edition,
+                                'variant_id': variant.variant_id,
+                                'image_id': variant.image_id
+                            }
+                        })
+                        count += entry.quantity
 
-                if not target_variant:
-                    api_card = ygo_service.get_card(item['card_id'])
-                    variant_id = str(item['card_id'])
-                    image_id = None
+            # Log Batch to Target
+            changelog_manager.log_batch_change(
+                self.target_collection_file,
+                "Batch Add from Scan",
+                batch_changes
+            )
 
-                    # If we have variant info from matching
-                    if item.get('variant_id'):
-                         variant_id = item['variant_id']
-                         image_id = item.get('image_id')
-                    elif api_card:
-                         # Fallback search
-                        for s in api_card.card_sets:
-                            if s.set_code == item['set_code'] and s.set_rarity == item['rarity']:
-                                variant_id = s.variant_id
-                                image_id = s.image_id
-                                break
+            persistence.save_collection(target_collection, self.target_collection_file)
 
-                    target_variant = CollectionVariant(
-                        variant_id=variant_id,
-                        set_code=item['set_code'],
-                        rarity=item['rarity'],
-                        image_id=image_id
-                    )
-                    target_card.variants.append(target_variant)
+            ui.notify(f"Added {count} cards to {target_collection.name}", type='positive')
 
-                entry = CollectionEntry(
-                    condition=self.default_condition,
-                    language=item['language'],
-                    first_edition=item['first_edition'],
-                    quantity=1
-                )
-                target_variant.entries.append(entry)
-                count += 1
-
-            persistence.save_collection(collection, self.target_collection_file)
-
-            ui.notify(f"Added {count} cards to {collection.name}", type='positive')
-            self.scanned_cards.clear()
-            self.save_recent_scans() # Will save empty list
-
-            # Clear temp file as requested
-            try:
-                os.remove("data/scans/scans_temp.json")
-            except:
-                pass
+            # Clear Recent Scans
+            self.recent_collection = Collection(name="Recent Scans")
+            self.save_recent_scans()
 
             self.render_live_list.refresh()
+            self.check_undo_add_all_availability()
 
         except Exception as e:
             logger.error(f"Error saving collection: {e}")
@@ -681,20 +930,46 @@ class ScanPage:
 
     @ui.refreshable
     def render_live_list(self):
-        if not self.scanned_cards:
+        if not self.recent_collection.cards:
             ui.label("No cards scanned.").classes('text-gray-400 italic')
             return
 
-        for i, card in enumerate(self.scanned_cards):
+        # Flatten entries for display
+        flat_entries = []
+        for card in self.recent_collection.cards:
+            for variant in card.variants:
+                for entry in variant.entries:
+                    flat_entries.append({
+                        'card': card,
+                        'variant': variant,
+                        'entry': entry,
+                        'timestamp': entry.purchase_date or ""
+                    })
+
+        # Sort by timestamp (recency)
+        flat_entries.sort(key=lambda x: x['timestamp'], reverse=True)
+
+        for item in flat_entries:
+            card = item['card']
+            variant = item['variant']
+            entry = item['entry']
+
             with ui.card().classes('w-full mb-2 p-2 flex flex-row items-center gap-4'):
-                if card.get('image_path'):
-                    ui.image(f"/images/{os.path.basename(card['image_path'])}").classes('w-12 h-16 object-contain')
+                # Image
+                if variant.image_id:
+                     # Use official image
+                     ui.image(f"https://images.ygoprodeck.com/images/cards_small/{variant.image_id}.jpg").classes('w-12 h-16 object-contain')
+                else:
+                     ui.icon('image_not_supported').classes('text-4xl text-gray-500')
+
                 with ui.column().classes('flex-grow'):
-                    ui.label(card.get('name', 'Unknown')).classes('font-bold')
-                    ui.label(f"{card.get('set_code')}").classes('text-xs text-gray-500')
+                    ui.label(card.name).classes('font-bold')
+                    ui.label(f"{variant.set_code} - {variant.rarity}").classes('text-xs text-gray-500')
+                    if entry.quantity > 1:
+                        ui.badge(f"x{entry.quantity}", color='red')
 
                 ui.button(icon='delete', color='negative',
-                          on_click=lambda idx=i: self.remove_card(idx)).props('flat')
+                          on_click=lambda c=card, v=variant, e=entry: self.remove_card(c, v, e)).props('flat')
 
     @ui.refreshable
     def render_debug_results(self):
@@ -1015,7 +1290,7 @@ def scan_page():
             with ui.row().classes('w-full gap-4 items-center mb-4'):
                 if page.collections:
                     ui.select(options=page.collections, value=page.target_collection_file, label='Collection',
-                              on_change=lambda e: setattr(page, 'target_collection_file', e.value)).classes('w-48')
+                              on_change=lambda e: (setattr(page, 'target_collection_file', e.value), page.check_undo_add_all_availability())).classes('w-48')
 
                 page.camera_select = ui.select(options={}, label='Camera').classes('w-48')
                 page.start_btn = ui.button('Start', on_click=page.start_camera).props('icon=videocam')
@@ -1036,6 +1311,10 @@ def scan_page():
                           value=page.default_condition, label="Default Condition",
                           on_change=lambda e: setattr(page, 'default_condition', e.value)).classes('w-32')
 
+                page.undo_add_all_btn = ui.button('Undo Add All', on_click=page.undo_add_all).props('color=warning icon=undo').tooltip("Undo last 'Add All'").classes('hidden')
+                # Initialize visibility
+                page.check_undo_add_all_availability()
+
                 ui.button('Add All', on_click=page.commit_cards).props('color=primary icon=save')
 
             with ui.row().classes('w-full h-[calc(100vh-250px)] gap-4'):
@@ -1046,7 +1325,10 @@ def scan_page():
 
                 # List View
                 with ui.column().classes('w-96 h-full'):
-                    ui.label("Recent Scans").classes('text-xl font-bold')
+                    with ui.row().classes('w-full items-center justify-between'):
+                        ui.label("Recent Scans").classes('text-xl font-bold')
+                        ui.button(icon='undo', on_click=page.undo_recent_scan).props('flat round color=grey').tooltip("Undo last scan action")
+
                     with ui.scroll_area().classes('w-full flex-grow border rounded p-2'):
                         page.render_live_list()
 
