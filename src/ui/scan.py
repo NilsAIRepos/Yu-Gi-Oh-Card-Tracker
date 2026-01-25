@@ -388,7 +388,8 @@ class ScanPage:
                      )
                 self.save_recent_scans()
             else:
-                self.recent_collection = persistence.load_collection(temp_path)
+                # Manually load collection since it's outside data/collections
+                self.recent_collection = Collection(**data)
         except Exception as e:
             logger.error(f"Failed to load recent scans: {e}")
             # Ensure valid state
@@ -399,7 +400,10 @@ class ScanPage:
         temp_path = "data/scans/scans_temp.json"
         try:
             os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-            persistence.save_collection(self.recent_collection, temp_path)
+            # Manually save since persistence.save_collection forces data/collections dir
+            data = self.recent_collection.model_dump(mode='json')
+            with open(temp_path, 'w') as f:
+                json.dump(data, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save recent scans: {e}")
 
