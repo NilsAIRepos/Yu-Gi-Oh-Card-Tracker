@@ -756,7 +756,7 @@ class CardScanner:
 
                     # 2. Typo Fixes
                     number_fixed = normalize_number_part(number_raw)
-                    region_fixed = region.replace('0', 'O')
+                    region_fixed = region.replace('0', 'O').replace('1', 'I')
 
                     code_fixed = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
                     line_candidates.add((code_fixed, region_fixed, number_fixed))
@@ -780,7 +780,7 @@ class CardScanner:
                 number_raw = m.group(3)
 
                 number_fixed = normalize_number_part(number_raw)
-                region_fixed = region.replace('0', 'O')
+                region_fixed = region.replace('0', 'O').replace('1', 'I')
 
                 if number_fixed.isdigit():
                     code_cand = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
