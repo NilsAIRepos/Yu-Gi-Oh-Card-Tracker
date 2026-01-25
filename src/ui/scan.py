@@ -912,8 +912,8 @@ class ScanPage:
 
             # Text Filter
             if txt:
-                name = item.get('name', '').lower()
-                code = item.get('set_code', '').lower()
+                name = (item.get('name') or '').lower()
+                code = (item.get('set_code') or '').lower()
                 desc = api_card.desc.lower() if api_card else ""
                 if not (txt in name or txt in code or txt in desc):
                     continue
@@ -957,7 +957,7 @@ class ScanPage:
             if s['filter_set']:
                  target = s['filter_set'].split('|')[0].strip().lower()
                  match_set = False
-                 if target in item.get('set_code', '').lower(): match_set = True
+                 if target in (item.get('set_code') or '').lower(): match_set = True
                  if api_card and api_card.card_sets:
                      for cs in api_card.card_sets:
                          if cs.set_code == item.get('set_code'):
@@ -965,7 +965,7 @@ class ScanPage:
                              break
                  if not match_set: continue
 
-            if s['filter_rarity'] and item.get('rarity', '').lower() != s['filter_rarity'].lower(): continue
+            if s['filter_rarity'] and (item.get('rarity') or '').lower() != s['filter_rarity'].lower(): continue
 
             if s['filter_condition']:
                  cond = item.get('condition')
@@ -979,9 +979,9 @@ class ScanPage:
 
         def sort_key(item):
             api_card = get_api(item)
-            if key == 'Name': return item.get('name', '')
-            if key == 'Set Code': return item.get('set_code', '')
-            if key == 'Rarity': return item.get('rarity', '')
+            if key == 'Name': return item.get('name') or ''
+            if key == 'Set Code': return item.get('set_code') or ''
+            if key == 'Rarity': return item.get('rarity') or ''
             if key == 'Newest': return self.scanned_cards.index(item) # Original order (top is new)
 
             if api_card:
@@ -1262,9 +1262,9 @@ class ScanPage:
                                      ui.label(cond_short).classes('font-bold text-yellow-500')
                                      if item.get('first_edition'):
                                          ui.label('1st').classes('font-bold text-orange-400')
-                                 ui.label(item.get('set_code', '')).classes('font-mono')
+                                 ui.label(item.get('set_code') or '').classes('font-mono')
 
-                             ui.label(item.get('rarity', '')).classes('text-[8px] text-gray-300 w-full truncate')
+                             ui.label(item.get('rarity') or '').classes('text-[8px] text-gray-300 w-full truncate')
 
     @ui.refreshable
     def render_debug_results(self):
