@@ -37,6 +37,8 @@ class ScanResult(BaseModel):
     first_edition: bool = False
     ocr_conf: float = 0.0
     image_path: Optional[str] = None
+    image_id: Optional[int] = None
+    variant_id: Optional[str] = None
     match_score: int = 0
     ambiguity_flag: bool = False
     candidates: List[Dict[str, Any]] = [] # List of potential matches

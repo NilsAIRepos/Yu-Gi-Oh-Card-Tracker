@@ -749,6 +749,8 @@ class ScannerManager:
                     result.set_code = best.get('set_code')
                     result.rarity = best.get('rarity', 'Unknown')
                     result.match_score = int(best.get('score', 0))
+                    result.image_id = best.get('image_id')
+                    result.variant_id = best.get('variant_id')
 
                     # Image Path
                     if best.get('image_id'):
