@@ -112,6 +112,7 @@ window.debugVideo = null;
 window.scannerStream = null;
 window.overlayCanvas = null;
 window.overlayCtx = null;
+window.scanOverlayTimer = null;
 window.scanner_js_loaded = true;
 
 function initScanner() {
@@ -229,7 +230,7 @@ async function getVideoDevices() {
     }
 }
 
-async function captureSingleFrame() {
+async function captureSingleFrame(showOverlay = false, duration = 1000, rotation = 0) {
     let videoSource = window.scannerVideo;
     let usingDebug = false;
 
@@ -261,7 +262,43 @@ async function captureSingleFrame() {
     canvas.width = videoSource.videoWidth;
     canvas.height = videoSource.videoHeight;
     canvas.getContext('2d').drawImage(videoSource, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.95);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+    if (showOverlay) {
+        showScanOverlay(dataUrl, duration, rotation);
+    }
+
+    return dataUrl;
+}
+
+function showScanOverlay(imageData, duration, rotation) {
+    const overlay = document.getElementById('scan-overlay');
+    if (!overlay) return;
+
+    if (window.scanOverlayTimer) {
+        clearTimeout(window.scanOverlayTimer);
+        window.scanOverlayTimer = null;
+    }
+
+    overlay.src = imageData;
+    overlay.style.transform = 'rotate(' + rotation + 'deg)';
+
+    // Instant Show
+    overlay.style.transition = 'none';
+    overlay.style.opacity = '1';
+    overlay.style.display = 'block';
+
+    window.scanOverlayTimer = setTimeout(() => {
+        // Start Fade Out
+        overlay.style.transition = 'opacity 0.2s ease-out';
+        void overlay.offsetHeight; // Force reflow
+        overlay.style.opacity = '0';
+
+        window.scanOverlayTimer = setTimeout(() => {
+             overlay.style.display = 'none';
+             window.scanOverlayTimer = null;
+        }, 200);
+    }, duration);
 }
 
 function reattachScannerVideo() {
@@ -284,9 +321,11 @@ function reattachScannerVideo() {
 function setRotation(deg) {
     const v1 = document.getElementById('scanner-video');
     const v2 = document.getElementById('debug-video');
+    const overlay = document.getElementById('scan-overlay');
     const transform = 'rotate(' + deg + 'deg)';
     if (v1) v1.style.transform = transform;
     if (v2) v2.style.transform = transform;
+    if (overlay) overlay.style.transform = transform;
 }
 </script>
 """
@@ -321,6 +360,7 @@ class ScanPage:
         self.save_raw_scan = self.config.get('save_raw_scan', True)
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
         self.rotation = self.config.get('rotation', 0)
+        self.scan_overlay_duration = self.config.get('scan_overlay_duration', 1000)
 
         # Load Recent Scans
         self.load_recent_scans()
@@ -1060,6 +1100,7 @@ class ScanPage:
         self.config['save_raw_scan'] = self.save_raw_scan
         self.config['art_match_threshold'] = self.art_match_threshold
         self.config['rotation'] = self.rotation
+        self.config['scan_overlay_duration'] = self.scan_overlay_duration
 
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
@@ -1577,7 +1618,7 @@ class ScanPage:
             if scanner_service.scanner_manager.is_paused():
                 scanner_service.scanner_manager.resume()
 
-            data_url = await ui.run_javascript('captureSingleFrame()')
+            data_url = await ui.run_javascript(f'captureSingleFrame(true, {self.scan_overlay_duration}, {self.rotation})')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
                 return
@@ -1994,6 +2035,11 @@ class ScanPage:
                 ui.switch("Save Raw Scans", value=self.save_raw_scan,
                           on_change=lambda e: (setattr(self, 'save_raw_scan', e.value), self.save_settings())).props('color=secondary').classes('w-full')
 
+                # Scan Overlay Duration
+                ui.label("Scan Overlay Duration (ms):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.scan_overlay_duration, min=0, max=5000, step=100,
+                         on_change=lambda e: (setattr(self, 'scan_overlay_duration', e.value), self.save_settings())).classes('w-full')
+
                 # Camera Preview
                 ui.label("Camera Preview").classes('font-bold text-lg mt-4')
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
@@ -2093,6 +2139,8 @@ def scan_page():
                     with ui.card().classes('w-full aspect-video p-0 overflow-hidden relative bg-black border border-gray-700'):
                         ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
                         ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
+                        # Overlay Image for "Freeze Frame" effect
+                        ui.html('<img id="scan-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; display: none; pointer-events: none; transition: opacity 0.2s ease-out;">', sanitize=False)
 
                     # Capture Button
                     ui.button('CAPTURE & SCAN', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg').classes('w-full font-bold')
