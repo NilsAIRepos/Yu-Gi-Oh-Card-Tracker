@@ -392,7 +392,7 @@ class StoragePage:
 
         await self.load_data()
 
-    async def load_detail_rows(self):
+    async def load_detail_rows(self, reset_page: bool = True):
         if not self.state['current_collection']: return
 
         target_loc = self.state['current_storage']['name'] if self.state['current_storage'] else None
@@ -483,9 +483,9 @@ class StoragePage:
              tasks = [image_manager.ensure_flag_image(code) for code in unique_codes]
              await asyncio.gather(*tasks)
 
-        await self.apply_filters()
+        await self.apply_filters(reset_page=reset_page)
 
-    async def apply_filters(self):
+    async def apply_filters(self, reset_page: bool = True):
         res = list(self.state['rows'])
 
         txt = self.state['search_text'].lower()
@@ -585,8 +585,12 @@ class StoragePage:
             res.sort(key=lambda x: x.set_code, reverse=desc)
 
         self.state['filtered_rows'] = res
-        self.state['page'] = 1
         self.update_pagination()
+
+        if reset_page:
+            self.state['page'] = 1
+        elif self.state['page'] > self.state['total_pages']:
+            self.state['page'] = max(1, self.state['total_pages'])
 
         if hasattr(self, 'render_detail_grid'): self.render_detail_grid.refresh()
         if hasattr(self, 'render_pagination_controls'): self.render_pagination_controls.refresh()
@@ -872,7 +876,7 @@ class StoragePage:
         if success:
             self.schedule_save()
             ui.notify(msg, type='positive')
-            await self.load_detail_rows()
+            await self.load_detail_rows(reset_page=False)
             self.render_detail_grid.refresh()
         else:
             ui.notify(msg, type='warning')
