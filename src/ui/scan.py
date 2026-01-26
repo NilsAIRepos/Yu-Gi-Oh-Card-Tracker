@@ -327,6 +327,48 @@ function setRotation(deg) {
     if (v2) v2.style.transform = transform;
     if (overlay) overlay.style.transform = transform;
 }
+
+window.lastMotionData = null;
+window.motionScore = 0;
+
+function calculateMotion() {
+    if (!window.scannerVideo || window.scannerVideo.paused || window.scannerVideo.ended) return 0;
+
+    let mCanvas = document.getElementById('motion-canvas');
+    if (!mCanvas) {
+        mCanvas = document.createElement('canvas');
+        mCanvas.id = 'motion-canvas';
+        mCanvas.width = 32;
+        mCanvas.height = 32;
+        mCanvas.style.display = 'none';
+        document.body.appendChild(mCanvas);
+    }
+    const ctx = mCanvas.getContext('2d', {willReadFrequently: true});
+    ctx.drawImage(window.scannerVideo, 0, 0, 32, 32);
+
+    const imageData = ctx.getImageData(0, 0, 32, 32);
+    const data = imageData.data;
+
+    if (!window.lastMotionData) {
+        window.lastMotionData = data;
+        return 999; // Assume max motion on first frame
+    }
+
+    let diff = 0;
+    // Simple pixel diff (RGBA) - Sample every 4th pixel for speed
+    for (let i = 0; i < data.length; i += 4) {
+        diff += Math.abs(data[i] - window.lastMotionData[i]); // R
+        diff += Math.abs(data[i+1] - window.lastMotionData[i+1]); // G
+        diff += Math.abs(data[i+2] - window.lastMotionData[i+2]); // B
+    }
+
+    window.lastMotionData = data;
+
+    // Normalize: Max diff per pixel is 255*3. Total pixels 32*32 = 1024.
+    // Score range roughly 0 - 200 is typical for small movements
+    window.motionScore = diff / 1024.0;
+    return window.motionScore;
+}
 </script>
 """
 
@@ -369,6 +411,18 @@ class ScanPage:
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
         self.rotation = self.config.get('rotation', 0)
         self.scan_overlay_duration = self.config.get('scan_overlay_duration', 1000)
+        self.auto_scan_timeout = self.config.get('auto_scan_timeout', 3000)
+        self.motion_threshold = self.config.get('motion_threshold', 50)
+
+        # Auto Mode State
+        self.auto_mode = False
+        self.auto_scan_task = None
+        self.auto_mode_btn = None
+        self.scan_in_progress = False
+        self.last_scan_result = None
+        self.last_scan_time = 0
+        self.consecutive_still_frames = 0
+        self.waiting_for_movement = False
 
         # Load Recent Scans
         self.load_recent_scans()
@@ -1107,11 +1161,94 @@ class ScanPage:
         self.config['art_match_threshold'] = self.art_match_threshold
         self.config['rotation'] = self.rotation
         self.config['scan_overlay_duration'] = self.scan_overlay_duration
+        self.config['auto_scan_timeout'] = self.auto_scan_timeout
+        self.config['motion_threshold'] = self.motion_threshold
 
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
 
         config_manager.save_config(self.config)
+
+    async def toggle_auto_mode(self):
+        # Cancel existing task if any
+        if self.auto_scan_task and not self.auto_scan_task.done():
+            self.auto_scan_task.cancel()
+            try:
+                await self.auto_scan_task
+            except asyncio.CancelledError:
+                pass
+            self.auto_scan_task = None
+
+        self.auto_mode = not self.auto_mode
+        if self.auto_mode_btn:
+            if self.auto_mode:
+                self.auto_mode_btn.props('color=negative icon=stop')
+                self.auto_mode_btn.text = 'Stop Auto Mode'
+                self.waiting_for_movement = False # Reset state
+                self.consecutive_still_frames = 0
+                self.scan_in_progress = False
+                ui.notify("Auto Mode Started", type='positive')
+                self.auto_scan_task = asyncio.create_task(self.auto_scan_loop())
+            else:
+                self.auto_mode_btn.props('color=primary icon=play_circle')
+                self.auto_mode_btn.text = 'Start Auto Mode'
+                ui.notify("Auto Mode Stopped", type='info')
+
+    async def auto_scan_loop(self):
+        logger.info("Starting Auto Scan Loop")
+        while self.auto_mode:
+            try:
+                # 0. Check if processing/camera active
+                if self.scan_in_progress or not self.is_active:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                if scanner_service.scanner_manager.is_paused():
+                     await asyncio.sleep(0.5)
+                     continue
+
+                # 1. Check Motion
+                score = await ui.run_javascript('calculateMotion()')
+                if score is None: score = 999
+
+                is_moving = score > self.motion_threshold
+
+                # 2. State Machine
+                if self.waiting_for_movement:
+                    if is_moving:
+                        # Movement detected after match! Reset.
+                        self.waiting_for_movement = False
+                        self.consecutive_still_frames = 0
+                        # logger.debug("Movement detected, resetting cycle")
+                    else:
+                        # Still waiting for user to move card
+                        pass
+
+                else:
+                    # Waiting for Still
+                    if not is_moving:
+                        self.consecutive_still_frames += 1
+                    else:
+                        self.consecutive_still_frames = 0
+
+                    # Trigger Scan if still enough
+                    if self.consecutive_still_frames >= 5: # ~0.5s of stillness
+                        # Check timeout since last scan (if fail)
+                        time_since_last = time.time() - self.last_scan_time
+                        if self.last_scan_result == 'fail' and time_since_last < (self.auto_scan_timeout / 1000.0):
+                             pass # Wait for timeout
+                        else:
+                             logger.info("Auto Scan Triggered")
+                             self.scan_in_progress = True
+                             self.consecutive_still_frames = 0
+                             await self.trigger_live_scan()
+
+            except Exception as e:
+                logger.error(f"Auto Loop Error: {e}")
+                await asyncio.sleep(1.0)
+
+            await asyncio.sleep(0.1)
+        logger.info("Auto Scan Loop Exited")
 
     def load_recent_scans(self):
         """Loads scans from temp file, handling migration from list to Collection."""
@@ -1330,6 +1467,13 @@ class ScanPage:
             await self.load_data()
             ui.notify(f"Added: {result_dict.get('name')}", type='positive')
 
+        if self.auto_mode:
+             self.waiting_for_movement = True
+
+        self.scan_in_progress = False
+        self.last_scan_result = 'success'
+        self.last_scan_time = time.time()
+
     async def event_consumer(self):
         """Consumes events from the local queue and updates UI."""
         try:
@@ -1358,6 +1502,9 @@ class ScanPage:
                         if event.type == 'scan_finished':
                             if not event.data.get('success'):
                                 ui.notify(f"Scan Failed: {event.data.get('error', 'Unknown')}", type='negative')
+                                self.scan_in_progress = False
+                                self.last_scan_result = 'fail'
+                                self.last_scan_time = time.time()
 
                     if event.type == 'error':
                         ui.notify(event.data.get('message', 'Error'), type='negative')
@@ -1383,6 +1530,9 @@ class ScanPage:
                 # Check for empty candidates (No Match)
                 if not res.get('candidates'):
                     ui.notify("No match found", type='negative')
+                    self.scan_in_progress = False
+                    self.last_scan_result = 'fail'
+                    self.last_scan_time = time.time()
 
                 elif res.get('ambiguity_flag'):
                     ui.notify("Scan Ambiguous: Please resolve.", type='warning', timeout=5000)
@@ -1619,6 +1769,14 @@ class ScanPage:
 
     async def trigger_live_scan(self):
         """Triggers a scan from the Live Tab using current settings."""
+        if self.scan_in_progress and not self.auto_mode:
+            # Simple debounce for manual press
+            return
+
+        # For auto mode, the loop sets the flag. For manual, we set it here.
+        # But to be safe, we just set it here always.
+        self.scan_in_progress = True
+
         try:
             # Ensure scanner is running (unpause if needed)
             if scanner_service.scanner_manager.is_paused():
@@ -1627,6 +1785,7 @@ class ScanPage:
             data_url = await ui.run_javascript(f'captureSingleFrame(true, {self.scan_overlay_duration}, {self.rotation})')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
+                self.scan_in_progress = False
                 return
 
             header, encoded = data_url.split(",", 1)
@@ -1647,6 +1806,7 @@ class ScanPage:
             scanner_service.scanner_manager.submit_scan(content, options, label="Live Scan", filename=fname)
             ui.notify("Captured to Queue", type='positive')
         except Exception as e:
+            self.scan_in_progress = False
             ui.notify(f"Capture failed: {e}", type='negative')
 
     def refresh_debug_ui(self):
@@ -2046,6 +2206,16 @@ class ScanPage:
                 ui.number(value=self.scan_overlay_duration, min=0, max=5000, step=100,
                          on_change=lambda e: (setattr(self, 'scan_overlay_duration', e.value), self.save_settings())).classes('w-full')
 
+                # Auto Scan Timeout
+                ui.label("Auto Scan Timeout (ms):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.auto_scan_timeout, min=1000, max=10000, step=100,
+                         on_change=lambda e: (setattr(self, 'auto_scan_timeout', e.value), self.save_settings())).classes('w-full')
+
+                # Motion Threshold
+                ui.label("Motion Threshold (0-255):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.motion_threshold, min=0, max=255, step=1,
+                         on_change=lambda e: (setattr(self, 'motion_threshold', e.value), self.save_settings())).classes('w-full')
+
                 # Camera Preview
                 ui.label("Camera Preview").classes('font-bold text-lg mt-4')
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
@@ -2151,6 +2321,9 @@ def scan_page():
 
                     # Capture Button
                     ui.button('CAPTURE & SCAN', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg').classes('w-full font-bold')
+
+                    # Auto Mode Button
+                    page.auto_mode_btn = ui.button('Start Auto Mode', on_click=page.toggle_auto_mode).props('icon=play_circle color=primary size=md').classes('w-full font-bold mt-2')
 
                 # RIGHT PANEL: Recent Scans Gallery
                 with ui.column().classes('w-1/2 h-full bg-dark border-l border-gray-800 flex flex-col overflow-hidden'):
