@@ -1343,7 +1343,7 @@ class ScanPage:
                     dialog.open()
                 else:
                     ui.notify("Scan Successful!", type='positive', timeout=3000)
-                    self.on_card_confirmed(res)
+                    await self.on_card_confirmed(res)
 
                 self.refresh_debug_ui() # Ensure final result is shown
 

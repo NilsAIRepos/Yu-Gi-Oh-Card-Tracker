@@ -428,5 +428,10 @@ class AmbiguityDialog(ui.dialog):
         final_res['image_id'] = image_id
         final_res['variant_id'] = variant_id
 
-        self.on_confirm_cb(final_res)
+        # Determine if callback is async and await if so
+        if asyncio.iscoroutinefunction(self.on_confirm_cb):
+            await self.on_confirm_cb(final_res)
+        else:
+            self.on_confirm_cb(final_res)
+
         self.close()
