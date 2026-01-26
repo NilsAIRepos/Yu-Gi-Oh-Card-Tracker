@@ -590,6 +590,32 @@ class SingleCardView:
                 'image_id': image_id
             }
 
+            def get_ownership_text(set_base_code, rarity, image_id, language, condition, first_edition):
+                cur_owned = 0
+                storage_breakdown = {}
+                final_code = transform_set_code(set_base_code, language)
+
+                if current_collection:
+                    for c in current_collection.cards:
+                        if c.card_id == card.id:
+                            for v in c.variants:
+                                if v.set_code == final_code and v.rarity == rarity and v.image_id == image_id:
+                                    for e in v.entries:
+                                        if e.language == language and e.condition == condition and e.first_edition == first_edition:
+                                            cur_owned += e.quantity
+                                            loc = e.storage_location if e.storage_location else "Unsorted"
+                                            storage_breakdown[loc] = storage_breakdown.get(loc, 0) + e.quantity
+                                    break
+                            break
+
+                text = str(cur_owned)
+                if cur_owned > 0 and storage_breakdown:
+                    parts = []
+                    for loc, qty in sorted(storage_breakdown.items()):
+                        parts.append(f"[{loc}]: {qty}")
+                    text += f" | Locations {', '.join(parts)}"
+                return cur_owned, text
+
             with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
                 d.open()
                 ui.button(icon='close', on_click=d.close).props('flat round color=white').classes('absolute top-2 right-2 z-50')
@@ -628,13 +654,23 @@ class SingleCardView:
                         with ui.row().classes('w-full items-center justify-between'):
                             ui.label(card.name).classes('text-h3 font-bold text-white select-text')
 
+                        initial_owned_qty, initial_owned_text = get_ownership_text(
+                            initial_base_code, rarity, image_id, language, condition, first_edition
+                        )
+                        # Fallback to passed owned_count if calculation fails (e.g. mismatch), though calculation is preferred for breakdown
+                        if initial_owned_qty == 0 and owned_count > 0:
+                             # This happens if there's a mismatch in finding the variant/entries by properties
+                             # We use the simple count but lose the breakdown
+                             initial_owned_qty = owned_count
+                             initial_owned_text = str(owned_count)
+
                         with ui.row().classes('items-center gap-2'):
                              ui.label('Total Owned:').classes('text-lg text-gray-400 font-bold')
-                             owned_label = ui.label(str(owned_count)).classes('text-2xl font-bold text-accent')
+                             owned_label = ui.label(initial_owned_text).classes('text-2xl font-bold text-accent')
                              with owned_label:
                                 ui.tooltip('Owned Count')
 
-                        if owned_count == 0:
+                        if initial_owned_qty == 0:
                             owned_label.set_visibility(False)
 
                         if hide_header_stats:
@@ -719,21 +755,16 @@ class SingleCardView:
 
                             lbl_set_price.text = f"${s_price:.2f}" if s_price is not None else "-"
 
-                            cur_owned = 0
-                            if current_collection:
-                                for c in current_collection.cards:
-                                    if c.card_id == card.id:
-                                            for v in c.variants:
-                                                if v.set_code == final_code and v.rarity == input_state['rarity'] and v.image_id == input_state['image_id']:
-                                                    for e in v.entries:
-                                                        if e.language == input_state['language'] and e.condition == input_state['condition'] and e.first_edition == input_state['first_edition']:
-                                                            cur_owned = e.quantity
-                                                            break
-                                                    break
-                                            break
-                                            break
+                            cur_owned, text = get_ownership_text(
+                                input_state['set_base_code'],
+                                input_state['rarity'],
+                                input_state['image_id'],
+                                input_state['language'],
+                                input_state['condition'],
+                                input_state['first_edition']
+                            )
 
-                            owned_label.text = str(cur_owned)
+                            owned_label.text = text
                             owned_label.set_visibility(cur_owned > 0)
 
                             update_image()
