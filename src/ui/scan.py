@@ -1400,9 +1400,9 @@ def scan_page():
             with ui.row().classes('w-full h-[calc(100vh-250px)] gap-4'):
                 # Camera View
                 with ui.card().classes('flex-1 h-full p-0 overflow-hidden relative bg-black'):
-                    ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
-                    ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
-                    ui.html('<img id="capture-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; display: none; pointer-events: none; z-index: 10;">', sanitize=False)
+                    ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain; object-position: center;"></video>', sanitize=False)
+                    ui.html('<canvas id="overlay-canvas" style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
+                    ui.html('<img id="capture-overlay" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center; display: none; pointer-events: none; z-index: 10;">', sanitize=False)
 
                 # List View
                 with ui.column().classes('w-96 h-full'):
