@@ -332,6 +332,9 @@ window.lastMotionData = null;
 window.motionScore = 0;
 
 function calculateMotion() {
+    if (!window.scannerVideo) {
+        window.scannerVideo = document.getElementById('scanner-video');
+    }
     if (!window.scannerVideo || window.scannerVideo.paused || window.scannerVideo.ended) return 0;
 
     let mCanvas = document.getElementById('motion-canvas');
@@ -416,7 +419,7 @@ class ScanPage:
 
         # Auto Mode State
         self.auto_mode = False
-        self.auto_scan_task = None
+        self.auto_scan_timer = None
         self.auto_mode_btn = None
         self.scan_in_progress = False
         self.last_scan_result = None
@@ -1170,15 +1173,6 @@ class ScanPage:
         config_manager.save_config(self.config)
 
     async def toggle_auto_mode(self):
-        # Cancel existing task if any
-        if self.auto_scan_task and not self.auto_scan_task.done():
-            self.auto_scan_task.cancel()
-            try:
-                await self.auto_scan_task
-            except asyncio.CancelledError:
-                pass
-            self.auto_scan_task = None
-
         self.auto_mode = not self.auto_mode
         if self.auto_mode_btn:
             if self.auto_mode:
@@ -1193,77 +1187,71 @@ class ScanPage:
                     scanner_service.scanner_manager.resume()
 
                 ui.notify("Auto Mode Started", type='positive')
-                self.auto_scan_task = asyncio.create_task(self.auto_scan_loop())
+                if self.auto_scan_timer:
+                    self.auto_scan_timer.activate()
             else:
                 self.auto_mode_btn.props('color=primary icon=play_circle')
                 self.auto_mode_btn.text = 'Start Auto Mode'
                 ui.notify("Auto Mode Stopped", type='info')
+                if self.auto_scan_timer:
+                    self.auto_scan_timer.deactivate()
 
-    async def auto_scan_loop(self):
-        logger.info("Starting Auto Scan Loop")
-        while self.auto_mode:
-            try:
-                # 0. Check if processing/camera active
-                if self.scan_in_progress or not self.is_active:
-                    await asyncio.sleep(0.1)
-                    continue
+    async def _auto_scan_tick(self):
+        if not self.auto_mode: return
 
-                if scanner_service.scanner_manager.is_paused():
-                     await asyncio.sleep(0.5)
-                     continue
+        try:
+            # 0. Check if processing/camera active
+            if self.scan_in_progress or not self.is_active:
+                return
 
-                # 1. Check Motion
-                score = await ui.run_javascript('calculateMotion()')
-                if score is None: score = 999
+            if scanner_service.scanner_manager.is_paused():
+                 return
 
-                is_moving = score > self.motion_threshold
+            # 1. Check Motion
+            score = await ui.run_javascript('calculateMotion()')
+            if score is None: score = 999
 
-                # Debug logging (throttled)
-                if int(time.time() * 10) % 10 == 0:
-                     logger.info(f"AutoLoop: Score={score:.2f} Moving={is_moving} Still={self.consecutive_still_frames} InProg={self.scan_in_progress}")
+            is_moving = score > self.motion_threshold
 
-                # Visual Feedback
-                if self.auto_mode_btn:
-                    status_icon = 'stop' if is_moving else 'camera'
-                    self.auto_mode_btn.text = f'Stop Auto (M: {score:.0f})'
-                    # self.auto_mode_btn.icon = status_icon # leads to flickering
+            # Debug logging (throttled)
+            if int(time.time() * 10) % 10 == 0:
+                 logger.info(f"AutoLoop: Score={score:.2f} Moving={is_moving} Still={self.consecutive_still_frames} InProg={self.scan_in_progress}")
 
-                # 2. State Machine
-                if self.waiting_for_movement:
-                    if is_moving:
-                        # Movement detected after match! Reset.
-                        self.waiting_for_movement = False
-                        self.consecutive_still_frames = 0
-                        # logger.debug("Movement detected, resetting cycle")
-                    else:
-                        # Still waiting for user to move card
-                        pass
+            # Visual Feedback
+            if self.auto_mode_btn:
+                self.auto_mode_btn.text = f'Stop Auto (M: {score:.0f})'
 
+            # 2. State Machine
+            if self.waiting_for_movement:
+                if is_moving:
+                    # Movement detected after match! Reset.
+                    self.waiting_for_movement = False
+                    self.consecutive_still_frames = 0
                 else:
-                    # Waiting for Still
-                    if not is_moving:
-                        self.consecutive_still_frames += 1
+                    # Still waiting for user to move card
+                    pass
+
+            else:
+                # Waiting for Still
+                if not is_moving:
+                    self.consecutive_still_frames += 1
+                else:
+                    self.consecutive_still_frames = 0
+
+                # Trigger Scan if still enough
+                if self.consecutive_still_frames >= 5: # ~0.5s of stillness
+                    # Check timeout since last scan (if fail)
+                    time_since_last = time.time() - self.last_scan_time
+                    if self.last_scan_result == 'fail' and time_since_last < (self.auto_scan_timeout / 1000.0):
+                         pass # Wait for timeout
                     else:
-                        self.consecutive_still_frames = 0
+                         logger.info("Auto Scan Triggered")
+                         self.scan_in_progress = True
+                         self.consecutive_still_frames = 0
+                         await self.trigger_live_scan()
 
-                    # Trigger Scan if still enough
-                    if self.consecutive_still_frames >= 5: # ~0.5s of stillness
-                        # Check timeout since last scan (if fail)
-                        time_since_last = time.time() - self.last_scan_time
-                        if self.last_scan_result == 'fail' and time_since_last < (self.auto_scan_timeout / 1000.0):
-                             pass # Wait for timeout
-                        else:
-                             logger.info("Auto Scan Triggered")
-                             self.scan_in_progress = True
-                             self.consecutive_still_frames = 0
-                             await self.trigger_live_scan()
-
-            except Exception as e:
-                logger.error(f"Auto Loop Error: {e}")
-                await asyncio.sleep(1.0)
-
-            await asyncio.sleep(0.1)
-        logger.info("Auto Scan Loop Exited")
+        except Exception as e:
+            logger.error(f"Auto Loop Error: {e}")
 
     def load_recent_scans(self):
         """Loads scans from temp file, handling migration from list to Collection."""
@@ -2360,6 +2348,9 @@ def scan_page():
 
     # Use fast consumer loop instead of slow polling
     ui.timer(0.1, page.event_consumer)
+
+    # Auto Mode Timer (inactive by default)
+    page.auto_scan_timer = ui.timer(0.1, page._auto_scan_tick, active=False)
 
     # Initialize from current state immediately
     page.debug_report = scanner_service.scanner_manager.get_debug_snapshot()
