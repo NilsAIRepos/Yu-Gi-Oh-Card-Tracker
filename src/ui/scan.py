@@ -1187,14 +1187,21 @@ class ScanPage:
                     scanner_service.scanner_manager.resume()
 
                 ui.notify("Auto Mode Started", type='positive')
+
+                # Start Timer
                 if self.auto_scan_timer:
-                    self.auto_scan_timer.activate()
+                    self.auto_scan_timer.cancel()
+                self.auto_scan_timer = ui.timer(0.1, self._auto_scan_tick)
+
             else:
                 self.auto_mode_btn.props('color=primary icon=play_circle')
                 self.auto_mode_btn.text = 'Start Auto Mode'
                 ui.notify("Auto Mode Stopped", type='info')
+
+                # Stop Timer
                 if self.auto_scan_timer:
-                    self.auto_scan_timer.deactivate()
+                    self.auto_scan_timer.cancel()
+                    self.auto_scan_timer = None
 
     async def _auto_scan_tick(self):
         if not self.auto_mode: return
@@ -1208,7 +1215,13 @@ class ScanPage:
                  return
 
             # 1. Check Motion
-            score = await ui.run_javascript('calculateMotion()')
+            try:
+                score = await ui.run_javascript('calculateMotion()')
+            except Exception as js_err:
+                logger.error(f"JS Exec Error: {js_err}")
+                ui.notify(f"JS Error: {js_err}", type='negative') # Feedback to user
+                return
+
             if score is None: score = 999
 
             is_moving = score > self.motion_threshold
@@ -1252,6 +1265,7 @@ class ScanPage:
 
         except Exception as e:
             logger.error(f"Auto Loop Error: {e}")
+            ui.notify(f"Auto Loop Error: {e}", type='negative')
 
     def load_recent_scans(self):
         """Loads scans from temp file, handling migration from list to Collection."""
@@ -2348,9 +2362,6 @@ def scan_page():
 
     # Use fast consumer loop instead of slow polling
     ui.timer(0.1, page.event_consumer)
-
-    # Auto Mode Timer (inactive by default)
-    page.auto_scan_timer = ui.timer(0.1, page._auto_scan_tick, active=False)
 
     # Initialize from current state immediately
     page.debug_report = scanner_service.scanner_manager.get_debug_snapshot()
