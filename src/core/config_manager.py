@@ -12,7 +12,8 @@ DEFAULT_CONFIG = {
     "preprocessing_mode": "classic",
     "art_match_yolo": True,
     "ambiguity_threshold": 10.0,
-    "rotation": 0
+    "rotation": 0,
+    "scan_overlay_duration": 1000
 }
 
 def load_config() -> Dict[str, Any]:

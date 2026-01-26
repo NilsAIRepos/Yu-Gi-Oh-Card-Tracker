@@ -211,6 +211,26 @@ function setRotation(deg) {
     if (v1) v1.style.transform = transform;
     if (v2) v2.style.transform = transform;
 }
+
+async function captureAndShowOverlay(rotation, duration) {
+    const dataUrl = await captureSingleFrame();
+    if (!dataUrl) return null;
+
+    const overlay = document.getElementById('capture-overlay');
+    if (overlay) {
+        overlay.src = dataUrl;
+        overlay.style.transform = 'rotate(' + rotation + 'deg)';
+        overlay.style.display = 'block';
+
+        if (window.overlayTimeout) clearTimeout(window.overlayTimeout);
+
+        window.overlayTimeout = setTimeout(() => {
+            overlay.style.display = 'none';
+            overlay.src = '';
+        }, duration);
+    }
+    return dataUrl;
+}
 </script>
 """
 
@@ -244,6 +264,7 @@ class ScanPage:
         self.save_raw_scan = self.config.get('save_raw_scan', True)
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
         self.rotation = self.config.get('rotation', 0)
+        self.scan_overlay_duration = self.config.get('scan_overlay_duration', 1000)
 
         # Load Recent Scans
         self.load_recent_scans()
@@ -340,6 +361,7 @@ class ScanPage:
         self.config['save_raw_scan'] = self.save_raw_scan
         self.config['art_match_threshold'] = self.art_match_threshold
         self.config['rotation'] = self.rotation
+        self.config['scan_overlay_duration'] = self.scan_overlay_duration
 
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
@@ -857,7 +879,7 @@ class ScanPage:
             if scanner_service.scanner_manager.is_paused():
                 scanner_service.scanner_manager.resume()
 
-            data_url = await ui.run_javascript('captureSingleFrame()')
+            data_url = await ui.run_javascript(f'captureAndShowOverlay({self.rotation}, {self.scan_overlay_duration})')
             if not data_url:
                 ui.notify("Camera not active or ready", type='warning')
                 return
@@ -1257,6 +1279,11 @@ class ScanPage:
                 ui.number(value=self.art_match_threshold, min=0, max=1.0, step=0.01,
                          on_change=lambda e: (setattr(self, 'art_match_threshold', e.value), self.save_settings())).classes('w-full')
 
+                # Overlay Duration
+                ui.label("Overlay Duration (ms):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.scan_overlay_duration, min=0, max=5000, step=100,
+                          on_change=lambda e: (setattr(self, 'scan_overlay_duration', e.value), self.save_settings())).classes('w-full')
+
                 # Save Warped Scan
                 ui.switch("Save Warped Scans", value=self.save_warped_scan,
                           on_change=lambda e: (setattr(self, 'save_warped_scan', e.value), self.save_settings())).props('color=secondary').classes('w-full')
@@ -1375,6 +1402,7 @@ def scan_page():
                 with ui.card().classes('flex-1 h-full p-0 overflow-hidden relative bg-black'):
                     ui.html('<video id="scanner-video" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: contain;"></video>', sanitize=False)
                     ui.html('<canvas id="overlay-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;"></canvas>', sanitize=False)
+                    ui.html('<img id="capture-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; display: none; pointer-events: none; z-index: 10;">', sanitize=False)
 
                 # List View
                 with ui.column().classes('w-96 h-full'):
