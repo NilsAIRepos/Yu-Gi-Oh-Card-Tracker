@@ -372,7 +372,8 @@ class AmbiguityDialog(ui.dialog):
                 try:
                     # DUPLICATE CHECK:
                     # Check if this set code is already assigned to a DIFFERENT card in the database.
-                    cards = await ygo_service.load_card_database(self.selected_language.lower())
+                    # ALWAYS check English/Default DB as per requirement
+                    cards = await ygo_service.load_card_database("en")
                     duplicate_found = False
                     for c in cards:
                         if c.id == self.card_id: continue
@@ -391,31 +392,20 @@ class AmbiguityDialog(ui.dialog):
                     set_info = await ygo_service.get_set_info(final_set_code)
                     set_name = set_info.get('name', 'Custom Set') if set_info else 'Custom Set'
 
-                    # Ensure card exists in target language DB before adding variant
-                    # If not, we might fail with "Card ID not found" inside add_card_variant
-                    target_card = await run.io_bound(ygo_service.get_card, self.card_id, self.selected_language.lower())
-                    if not target_card:
-                         # Force creation of card entry in target language if missing
-                         # We can't easily "create" it without data, but maybe we can fetch it?
-                         # Or just warn?
-                         # Ideally ygo_service handles this, but if not:
-                         ui.notify(f"Card not found in {self.selected_language} database. Try fetching data first.", type='warning')
-                         return
-
                     new_set = await ygo_service.add_card_variant(
                         card_id=self.card_id,
                         set_name=set_name,
                         set_code=final_set_code,
                         set_rarity=final_rarity,
                         image_id=image_id,
-                        language=self.selected_language.lower()
+                        language="en" # Force EN db
                     )
                     if new_set:
                         variant_id = new_set.variant_id
                         ui.notify(f"Added new variant {final_set_code}", type='positive')
                     else:
                         # Duplicate? Find existing.
-                        card = await run.io_bound(ygo_service.get_card, self.card_id, self.selected_language.lower())
+                        card = await run.io_bound(ygo_service.get_card, self.card_id, "en")
                         if card and card.card_sets:
                              v = next((s for s in card.card_sets if s.set_code == final_set_code and s.set_rarity == final_rarity), None)
                              if v:
