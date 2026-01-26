@@ -255,6 +255,14 @@ class AmbiguityDialog(ui.dialog):
         # We can try to deduce label (e.g. "Art 1", "Art 2")
         image_ids = sorted(list(set(v['image_id'] for v in relevant_vars if v.get('image_id'))))
 
+        if not image_ids:
+             # Fallback: Use card default images
+             if self.full_card_data and self.full_card_data.card_images:
+                 image_ids = sorted(list(set(img.id for img in self.full_card_data.card_images)))
+             else:
+                 # Fallback to all variants (heuristic)
+                 image_ids = sorted(list(set(v['image_id'] for v in variants if v.get('image_id'))))
+
         art_opts = {}
         for i, img_id in enumerate(image_ids):
              art_opts[img_id] = f"Art Variation {i+1} (ID: {img_id})"
