@@ -595,17 +595,24 @@ class SingleCardView:
                 storage_breakdown = {}
                 final_code = transform_set_code(set_base_code, language)
 
+                # BulkAdd might save cards with the original base code (e.g. LOB-EN001) even if language is DE.
+                # So we check both the transformed code (LOB-DE001) and the base code (LOB-EN001).
+                target_codes = {final_code}
+                if set_base_code:
+                    target_codes.add(set_base_code)
+
                 if current_collection:
                     for c in current_collection.cards:
                         if c.card_id == card.id:
                             for v in c.variants:
-                                if v.set_code == final_code and v.rarity == rarity and v.image_id == image_id:
+                                if v.set_code in target_codes and v.rarity == rarity and v.image_id == image_id:
                                     for e in v.entries:
                                         if e.language == language and e.condition == condition and e.first_edition == first_edition:
                                             cur_owned += e.quantity
                                             loc = e.storage_location if e.storage_location else "Unsorted"
                                             storage_breakdown[loc] = storage_breakdown.get(loc, 0) + e.quantity
-                                    break
+                                    # Don't break here, we might have multiple variants matching (e.g. one EN code, one DE code)
+                                    # break
                             break
 
                 text = str(cur_owned)
