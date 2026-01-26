@@ -12,7 +12,6 @@ sys.modules['cv2'] = MagicMock()
 sys.modules['src.services.scanner.pipeline'] = MagicMock()
 
 from src.services.scanner.manager import ScannerManager
-from src.services.scanner.models import OCRResult
 
 async def test_image_id_propagation():
     print("Initializing ScannerManager...")
@@ -46,7 +45,13 @@ async def test_image_id_propagation():
             "ocr_result": {
                 "engine": "test",
                 "raw_text": "Test",
-                "language": "EN"
+                "language": "EN",
+                "set_id_conf": 99.0, # Added missing field
+                "set_id": "SRL-G021",
+                "card_name": "Test",
+                "card_type": "Monster",
+                "atk": "1000",
+                "def_val": "1000"
             },
             "art_match": None
         }

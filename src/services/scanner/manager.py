@@ -34,7 +34,15 @@ else:
     class ScanEvent: pass
     class ScanRequest: pass
     class ScanDebugReport: pass
-    class OCRResult: pass
+    class ScanResult:
+        def model_dump(self):
+            return self.__dict__
+    class OCRResult:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+        def model_dump(self):
+            return self.__dict__
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager

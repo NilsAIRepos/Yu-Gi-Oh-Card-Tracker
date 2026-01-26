@@ -187,30 +187,26 @@ class AmbiguityDialog(ui.dialog):
         for v in filtered_vars:
             codes.add(v['set_code'])
 
-        # Add OCR Code if valid
+        # Add OCR Code (unconditional)
         if self.ocr_set_id:
-             # Check compatibility
-             is_valid = False
-             norm_ocr = normalize_set_code(self.ocr_set_id)
-             for v in variants: # Check against ALL variants of this card
-                 if normalize_set_code(v['set_code']) == norm_ocr:
-                     is_valid = True
-                     break
+             codes.add(self.ocr_set_id)
 
-             if is_valid:
-                 codes.add(self.ocr_set_id)
-
-             # Also add transformed set code if applicable
-             transformed_ocr = transform_set_code(self.ocr_set_id, self.selected_language)
-             if transformed_ocr != self.ocr_set_id:
-                 codes.add(transformed_ocr)
-
-        # Also ensure current selected Set Code is preserved if valid (e.g. if it came from a candidate)
+        # Add Selected Set Code (unconditional)
         if self.selected_set_code and self.selected_set_code != "Other":
-             # Check if it matches any variant via normalization
-             norm_sel = normalize_set_code(self.selected_set_code)
-             if any(normalize_set_code(v['set_code']) == norm_sel for v in variants):
-                 codes.add(self.selected_set_code)
+             codes.add(self.selected_set_code)
+
+        # Add Candidate Set Codes (unconditional)
+        for c in self.candidates:
+             if c.get('set_code'):
+                 codes.add(c['set_code'])
+
+        # 2. Add localized/transformed versions of ALL gathered codes
+        # This ensures that if the user selects a language like "DE", they see the "DE" version of all available English codes
+        base_codes = list(codes)
+        for code in base_codes:
+            transformed = transform_set_code(code, self.selected_language)
+            if transformed and transformed != code:
+                codes.add(transformed)
 
         sorted_codes = sorted(list(codes))
         sorted_codes.append("Other")
