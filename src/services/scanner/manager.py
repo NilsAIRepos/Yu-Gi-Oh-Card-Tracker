@@ -34,6 +34,7 @@ else:
     class ScanEvent: pass
     class ScanRequest: pass
     class ScanDebugReport: pass
+    class OCRResult: pass
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
