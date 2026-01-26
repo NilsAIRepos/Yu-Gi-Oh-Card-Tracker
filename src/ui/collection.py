@@ -759,7 +759,7 @@ class CollectionPage:
 
         new_qty = 0
         if self.state['current_collection']:
-             qty = CollectionEditor.get_quantity(
+             qty = CollectionEditor.get_total_quantity(
                  self.state['current_collection'],
                  api_card.id,
                  variant_id=variant_id,
@@ -927,7 +927,7 @@ class CollectionPage:
         else:
             ui.notify("Nothing to undo.", type='warning')
 
-    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET', skip_log: bool = False, **kwargs):
+    async def save_card_change(self, api_card: ApiCard, set_code, rarity, language, quantity, condition, first_edition, image_id: Optional[int] = None, variant_id: Optional[str] = None, mode: str = 'SET', skip_log: bool = False, storage_location: Optional[str] = None, **kwargs):
         if not self.state['current_collection']:
             ui.notify('No collection selected.', type='negative')
             return
@@ -959,8 +959,10 @@ class CollectionPage:
                         col, api_card,
                         set_code=set_code, rarity=rarity,
                         language=language, quantity=src_qty, condition=condition, first_edition=first_edition,
-                        image_id=image_id, variant_id=variant_id, mode='ADD'
+                        image_id=image_id, variant_id=variant_id, mode='ADD',
+                        storage_location=storage_location
                     )
+                    # Note: _update_in_memory does not currently track storage location, but that's fine for totals.
                     self._update_in_memory(api_card, set_code, rarity, language, src_qty, condition, first_edition, image_id, variant_id, mode='ADD')
 
                     modified = True
@@ -971,7 +973,7 @@ class CollectionPage:
                                 'card_id': api_card.id, 'variant_id': src_var_id, 'language': src_lang, 'condition': src_cond, 'first_edition': src_first
                             }},
                             {'action': 'ADD', 'quantity': src_qty, 'card_data': {
-                                'card_id': api_card.id, 'variant_id': variant_id, 'set_code': set_code, 'rarity': rarity, 'language': language, 'condition': condition, 'first_edition': first_edition, 'image_id': image_id
+                                'card_id': api_card.id, 'variant_id': variant_id, 'set_code': set_code, 'rarity': rarity, 'language': language, 'condition': condition, 'first_edition': first_edition, 'image_id': image_id, 'storage_location': storage_location
                             }}
                         ]
                         changelog_manager.log_batch_change(self.state['selected_file'], "Moved Entry", changes)
@@ -989,7 +991,8 @@ class CollectionPage:
                     first_edition=first_edition,
                     image_id=image_id,
                     variant_id=variant_id,
-                    mode=mode
+                    mode=mode,
+                    storage_location=storage_location
                 )
 
                 if modified:
@@ -1005,7 +1008,8 @@ class CollectionPage:
                         'language': language,
                         'condition': condition,
                         'first_edition': first_edition,
-                        'variant_id': variant_id
+                        'variant_id': variant_id,
+                        'storage_location': storage_location
                     }
                     changelog_manager.log_change(self.state['selected_file'], mode, card_data, quantity)
 
@@ -1038,7 +1042,7 @@ class CollectionPage:
                                  total_owned += e.quantity
                          break
 
-            await self.single_card_view.open_consolidated(card, total_owned, owned_breakdown, on_save)
+            await self.single_card_view.open_consolidated(card, total_owned, owned_breakdown, on_save, current_collection=self.state['current_collection'])
             return
 
         if self.state['view_scope'] == 'collectors':

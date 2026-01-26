@@ -1468,7 +1468,7 @@ class BulkAddPage:
         self.col_state['collection_total_pages'] = max(1, (count + self.col_state['collection_page_size'] - 1) // self.col_state['collection_page_size'])
 
     async def open_single_view_library(self, entry: LibraryEntry):
-        async def on_save(card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
+        async def on_save(card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, storage_location=None, **kwargs):
              success = await self._update_collection(
                  api_card=card,
                  set_code=set_code,
@@ -1479,7 +1479,8 @@ class BulkAddPage:
                  first=first_edition,
                  img_id=image_id,
                  mode=mode,
-                 variant_id=variant_id
+                 variant_id=variant_id,
+                 storage_location=storage_location
              )
 
              if success:
@@ -1492,7 +1493,8 @@ class BulkAddPage:
                     'language': language,
                     'condition': condition,
                     'first_edition': first_edition,
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'storage_location': storage_location
                  }
                  # For logging, if mode is SET, we might need to know delta.
                  # But simplistic logging: just log the action.
@@ -1523,7 +1525,7 @@ class BulkAddPage:
         )
 
     async def open_single_view_collection(self, entry: BulkCollectionEntry):
-        async def on_save(card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode):
+        async def on_save(card, set_code, rarity, language, quantity, condition, first_edition, image_id, variant_id, mode, storage_location=None, **kwargs):
              success = await self._update_collection(
                  api_card=card,
                  set_code=set_code,
@@ -1534,7 +1536,8 @@ class BulkAddPage:
                  first=first_edition,
                  img_id=image_id,
                  mode=mode,
-                 variant_id=variant_id
+                 variant_id=variant_id,
+                 storage_location=storage_location
              )
 
              if success:
@@ -1547,7 +1550,8 @@ class BulkAddPage:
                     'language': language,
                     'condition': condition,
                     'first_edition': first_edition,
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'storage_location': storage_location
                  }
                  changelog_manager.log_change(self.state['selected_collection'], mode, card_data, quantity)
 

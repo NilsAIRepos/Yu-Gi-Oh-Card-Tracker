@@ -84,26 +84,25 @@ class SingleCardView:
         }
 
         with ui.card().classes('w-full bg-transparent p-4 gap-4'):
-            with ui.row().classes('w-full gap-4'):
+            # Determine initial rarity options based on the current set code
+            current_base_code = input_state['set_base_code']
+            if rarity_map and current_base_code in rarity_map:
+                rarity_options = sorted(list(rarity_map[current_base_code]))
+            else:
+                rarity_options = list(STANDARD_RARITIES)
+
+            # Ensure current rarity is available in options to prevent crash
+            if input_state['rarity'] not in rarity_options:
+                rarity_options.append(input_state['rarity'])
+
+            with ui.grid(columns=12).classes('w-full gap-2 items-center'):
                 lang_select = ui.select(SUPPORTED_LANGUAGES, label='Language', value=input_state['language'],
-                            on_change=lambda e: [input_state.update({'language': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
+                            on_change=lambda e: [input_state.update({'language': e.value}), on_change_callback()]).classes('col-span-2').props('dense options-dense dark')
 
-                set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-grow').props('dark')
-
-            with ui.row().classes('w-full gap-4'):
-                # Determine initial rarity options based on the current set code
-                current_base_code = input_state['set_base_code']
-                if rarity_map and current_base_code in rarity_map:
-                    rarity_options = sorted(list(rarity_map[current_base_code]))
-                else:
-                    rarity_options = list(STANDARD_RARITIES)
-
-                # Ensure current rarity is available in options to prevent crash
-                if input_state['rarity'] not in rarity_options:
-                    rarity_options.append(input_state['rarity'])
+                set_select = ui.select(set_options, label='Set Name', value=input_state['set_base_code']).classes('col-span-6').props('dense options-dense dark')
 
                 rarity_select = ui.select(rarity_options, label='Rarity', value=input_state['rarity'],
-                            on_change=lambda e: [input_state.update({'rarity': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
+                            on_change=lambda e: [input_state.update({'rarity': e.value}), on_change_callback()]).classes('col-span-4').props('dense options-dense dark')
 
                 def on_set_change(e):
                     new_code = e.value
@@ -142,21 +141,31 @@ class SingleCardView:
                     on_change_callback()
 
                 set_select.on_value_change(on_set_change)
-                ui.select(CARD_CONDITIONS, label='Condition', value=input_state['condition'],
-                            on_change=lambda e: [input_state.update({'condition': e.value}), on_change_callback()]).classes('w-1/3').props('dark')
-                ui.checkbox('1st Edition', value=input_state['first_edition'],
-                            on_change=lambda e: [input_state.update({'first_edition': e.value}), on_change_callback()]).classes('my-auto').props('dark')
 
-            with ui.row().classes('w-full gap-4 items-center'):
+                ui.select(CARD_CONDITIONS, label='Condition', value=input_state['condition'],
+                            on_change=lambda e: [input_state.update({'condition': e.value}), on_change_callback()]).classes('col-span-3').props('dense options-dense dark')
+
+                # Storage Dropdown
+                storage_opts = {None: 'None'}
+                if current_collection and hasattr(current_collection, 'storage_definitions'):
+                     for s in current_collection.storage_definitions:
+                         storage_opts[s.name] = s.name
+
+                ui.select(storage_opts, label='Storage', value=input_state.get('storage_location'),
+                          on_change=lambda e: input_state.update({'storage_location': e.value})).classes('col-span-5').props('dense options-dense dark')
+
+                ui.checkbox('1st Edition', value=input_state['first_edition'],
+                            on_change=lambda e: [input_state.update({'first_edition': e.value}), on_change_callback()]).classes('col-span-2 my-auto').props('dense dark')
+
+                ui.number('Quantity', min=0, value=input_state['quantity'],
+                            on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('col-span-2').props('dense dark')
+
                 if card.card_images and len(card.card_images) > 1:
                     art_options = {img.id: f"Artwork {i+1} (ID: {img.id})" for i, img in enumerate(card.card_images)}
                     # Ensure image_id is int for matching
                     current_img_id = int(input_state['image_id']) if input_state['image_id'] is not None else None
                     ui.select(art_options, label='Artwork', value=current_img_id,
-                                on_change=lambda e: [input_state.update({'image_id': e.value}), on_change_callback()]).classes('col-grow').props('dark')
-
-                ui.number('Quantity', min=0, value=input_state['quantity'],
-                            on_change=lambda e: input_state.update({'quantity': int(e.value or 0)})).classes('w-32').props('dark')
+                                on_change=lambda e: [input_state.update({'image_id': e.value}), on_change_callback()]).classes('col-span-12').props('dense options-dense dark')
 
             with ui.row().classes('w-full gap-4 justify-end q-mt-md'):
                 async def handle_update(mode, quantity_override: int = None):
@@ -178,7 +187,7 @@ class SingleCardView:
                              # Moving to same place = no-op
                              ui.notify('No changes detected.', type='warning')
                              return
-                        await on_save_callback(mode, original_variant_id, quantity_override=quantity_override)
+                        await on_save_callback(mode, original_variant_id, quantity_override=quantity_override, storage_location=input_state.get('storage_location'))
                         return
 
                     # Calculate the target code based on language
@@ -213,7 +222,8 @@ class SingleCardView:
                              variant_id=matched_variant_id,
                              language=input_state['language'],
                              condition=input_state['condition'],
-                             first_edition=input_state['first_edition']
+                             first_edition=input_state['first_edition'],
+                             storage_location=input_state.get('storage_location')
                          )
 
                          if qty > 0:
@@ -225,13 +235,13 @@ class SingleCardView:
                                      async def do_merge():
                                          d.close()
                                          # Proceed with MOVE
-                                         await on_save_callback(mode, matched_variant_id, quantity_override=quantity_override)
+                                         await on_save_callback(mode, matched_variant_id, quantity_override=quantity_override, storage_location=input_state.get('storage_location'))
                                      ui.button('Merge', on_click=do_merge).props('color=primary')
                              d.open()
                              return
 
                     # Normal flow
-                    await on_save_callback(mode, matched_variant_id, quantity_override=quantity_override)
+                    await on_save_callback(mode, matched_variant_id, quantity_override=quantity_override, storage_location=input_state.get('storage_location'))
 
                 async def do_add():
                     await handle_update('ADD')
@@ -302,7 +312,8 @@ class SingleCardView:
         card: ApiCard,
         total_owned: int,
         owned_breakdown: Dict[str, int],
-        save_callback: Callable
+        save_callback: Callable,
+        current_collection: Any = None
     ):
         try:
             with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
@@ -440,7 +451,7 @@ class SingleCardView:
                                 'image_id': img_id
                             }
 
-                            async def on_save_wrapper(mode, variant_id, quantity_override: int = None):
+                            async def on_save_wrapper(mode, variant_id, quantity_override: int = None, storage_location: str = None):
                                 # In Consolidated view, we probably just add/set.
                                 # Logic:
                                 # 1. Calculate final set code
@@ -459,7 +470,8 @@ class SingleCardView:
                                     input_state['first_edition'],
                                     input_state['image_id'],
                                     variant_id,
-                                    mode # Pass mode (SET/ADD) to handle logic in save_card_change or wrapper
+                                    mode, # Pass mode (SET/ADD) to handle logic in save_card_change or wrapper
+                                    storage_location=storage_location
                                 )
                                 d.close()
 
@@ -478,7 +490,8 @@ class SingleCardView:
                                 default_set_base_code=default_set_code,
                                 show_remove_button=False,
                                 rarity_map=rarity_map,
-                                view_mode='consolidated'
+                                view_mode='consolidated',
+                                current_collection=current_collection
                             )
 
                         self._render_available_sets(card)
@@ -731,7 +744,7 @@ class SingleCardView:
                         inventory_expansion.value = True
 
                         with inventory_expansion:
-                             async def on_save_wrapper(mode, target_variant_id, quantity_override: int = None):
+                             async def on_save_wrapper(mode, target_variant_id, quantity_override: int = None, storage_location: str = None):
                                 final_set_code = transform_set_code(input_state['set_base_code'], input_state['language'])
 
                                 qty = quantity_override if quantity_override is not None else input_state['quantity']
@@ -757,6 +770,7 @@ class SingleCardView:
                                     input_state['image_id'],
                                     target_variant_id,
                                     mode,
+                                    storage_location=storage_location,
                                     **extra_args
                                 )
                                 d.close()
