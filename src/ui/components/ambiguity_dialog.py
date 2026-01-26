@@ -265,6 +265,11 @@ class AmbiguityDialog(ui.dialog):
         if self.selected_image_id not in image_ids:
             if image_ids:
                 self.selected_image_id = image_ids[0]
+            # Fallback to card_id if no images found, to ensure dropdown has a value
+            elif self.card_id:
+                self.selected_image_id = self.card_id
+                art_opts[self.card_id] = f"Default Art (ID: {self.card_id})"
+                self.artstyle_select.options = art_opts
 
         self.artstyle_select.value = self.selected_image_id
         self.artstyle_select.update()
@@ -337,6 +342,10 @@ class AmbiguityDialog(ui.dialog):
 
         variant_id = None
         image_id = self.selected_image_id
+
+        # Fallback for image_id if None
+        if image_id is None and self.card_id:
+            image_id = self.card_id
 
         if self.selected_set_code == "Other":
             final_set_code = self.other_set_code_val
