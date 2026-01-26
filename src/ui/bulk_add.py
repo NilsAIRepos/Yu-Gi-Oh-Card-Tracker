@@ -204,6 +204,7 @@ class BulkAddPage:
             'filter_price_min': 0.0, 'filter_price_max': 1000.0,
             'filter_ownership_min': 0, 'filter_ownership_max': 100,
             'filter_condition': [], 'filter_owned_lang': '',
+            'filter_storage': [], 'available_storage': [],
 
              # Metadata linking
             **self.metadata
@@ -296,6 +297,7 @@ class BulkAddPage:
         s['filter_ownership_max'] = 100
         s['filter_condition'] = []
         s['filter_owned_lang'] = ''
+        s['filter_storage'] = []
 
         # Reset UI
         if self.library_filter_pane:
@@ -1098,6 +1100,7 @@ class BulkAddPage:
         if set(s['filter_card_type']) != {'Monster', 'Spell', 'Trap'}: return True
         if s['filter_condition']: return True
         if s['filter_owned_lang']: return True
+        if s['filter_storage']: return True
 
         return False
         if s['filter_set']: return True
@@ -1424,6 +1427,12 @@ class BulkAddPage:
         try:
             col = await run.io_bound(persistence.load_collection, self.state['selected_collection'])
             self.current_collection_obj = col
+
+            storage_opts = ['None']
+            if col.storage_definitions:
+                storage_opts.extend(sorted([s.name for s in col.storage_definitions]))
+            self.col_state['available_storage'] = storage_opts
+
             self.render_header.refresh()
         except Exception as e:
             logger.error(f"Failed to load collection: {e}")
@@ -1466,6 +1475,12 @@ class BulkAddPage:
              res = [e for e in res if e.language == s['filter_owned_lang']]
         if s['filter_condition']:
              res = [e for e in res if e.condition in s['filter_condition']]
+        if s['filter_storage']:
+             selected = set(s['filter_storage'])
+             def match_storage(e):
+                 loc = e.storage_location if e.storage_location else 'None'
+                 return loc in selected
+             res = [e for e in res if match_storage(e)]
 
         key = s['sort_by']
         reverse = s['sort_desc']

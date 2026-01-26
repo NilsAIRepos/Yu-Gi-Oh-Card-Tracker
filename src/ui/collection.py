@@ -9,7 +9,7 @@ from src.core.utils import transform_set_code, generate_variant_id, normalize_se
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.services.collection_editor import CollectionEditor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional, Dict, Set, Callable
 import asyncio
 import traceback
@@ -43,6 +43,7 @@ class CollectorRow:
     first_edition: bool
     image_id: Optional[int] = None
     variant_id: Optional[str] = None
+    entries: List[CollectionEntry] = field(default_factory=list)
 
 def build_consolidated_vms(api_cards: List[ApiCard], owned_details: Dict[int, CollectionCard]) -> List[CardViewModel]:
     vms = []
@@ -146,6 +147,7 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                             groups[k] = groups.get(k, 0) + entry.quantity
 
                         for (lang, cond, first), qty in groups.items():
+                            group_entries = [e for e in matched_cv.entries if e.language == lang and e.condition == cond and e.first_edition == first]
                             rows.append(CollectorRow(
                                 api_card=card,
                                 set_code=matched_cv.set_code, # Use owned set code
@@ -159,7 +161,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                                 condition=cond,
                                 first_edition=first,
                                 image_id=matched_cv.image_id,
-                                variant_id=matched_cv.variant_id
+                                variant_id=matched_cv.variant_id,
+                                entries=group_entries
                             ))
                 else:
                     # Empty Row
@@ -205,6 +208,7 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                              break
 
                 for (lang, cond, first), qty in groups.items():
+                     group_entries = [e for e in cv.entries if e.language == lang and e.condition == cond and e.first_edition == first]
                      rows.append(CollectorRow(
                         api_card=card,
                         set_code=cv.set_code,
@@ -218,7 +222,8 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         condition=cond,
                         first_edition=first,
                         image_id=cv.image_id,
-                        variant_id=cv.variant_id
+                        variant_id=cv.variant_id,
+                        entries=group_entries
                     ))
 
         # 3. Fallback if no sets in API and no owned variants
@@ -281,6 +286,8 @@ class CollectionPage:
             'filter_price_max': 1000.0,
 
             'filter_owned_lang': '',
+            'filter_storage': [],
+            'available_storage': [],
             'only_owned': saved_state.get('collection_only_owned', False),
             'language': config_manager.get_language(),
             'sort_by': saved_state.get('collection_sort_by', 'Name'),
@@ -382,6 +389,11 @@ class CollectionPage:
         owned_details = {}
         max_qty = 0
         if collection:
+            storage_opts = ['None']
+            if collection.storage_definitions:
+                storage_opts.extend(sorted([s.name for s in collection.storage_definitions]))
+            self.state['available_storage'] = storage_opts
+
             for c in collection.cards:
                 owned_details[c.card_id] = c
                 max_qty = max(max_qty, c.total_quantity)
@@ -424,6 +436,7 @@ class CollectionPage:
             'filter_price_min': 0.0,
             'filter_price_max': 1000.0,
             'filter_owned_lang': '',
+            'filter_storage': [],
             'only_owned': False
         })
 
@@ -548,6 +561,27 @@ class CollectionPage:
                 res = [c for c in res if any(cond in c.owned_conditions for cond in conds)]
             else:
                 res = [c for c in res if c.condition in conds]
+
+        if self.state.get('filter_storage'):
+            selected_storage = set(self.state['filter_storage'])
+
+            new_res = []
+            for item in res:
+                if self.state['view_scope'] == 'collectors':
+                    visible_qty = 0
+                    for e in item.entries:
+                        loc = e.storage_location if e.storage_location else 'None'
+                        if loc in selected_storage:
+                            visible_qty += e.quantity
+
+                    if visible_qty > 0:
+                        new_item = replace(item, owned_count=visible_qty)
+                        new_res.append(new_item)
+                else:
+                    new_res.append(item)
+
+            if self.state['view_scope'] == 'collectors':
+                res = new_res
 
         if self.state['filter_attr']:
             res = [c for c in res if c.api_card.attribute == self.state['filter_attr']]
@@ -769,10 +803,25 @@ class CollectionPage:
              )
              new_qty = qty
 
+        # Refresh entries from collection to support storage filtering
+        row_entries = []
+        if self.state['current_collection']:
+             for c in self.state['current_collection'].cards:
+                 if c.card_id == api_card.id:
+                     for v in c.variants:
+                         if v.variant_id == variant_id:
+                             row_entries = [e for e in v.entries
+                                            if e.language == language
+                                            and e.condition == condition
+                                            and e.first_edition == first_edition]
+                             break
+                     break
+
         if target_row_index != -1:
             row = self.state['cards_collectors'][target_row_index]
             row.owned_count = new_qty
             row.is_owned = new_qty > 0
+            row.entries = row_entries
         else:
             if new_qty > 0:
                 set_name = "Unknown Set"
@@ -805,7 +854,8 @@ class CollectionPage:
                     condition=condition,
                     first_edition=first_edition,
                     image_id=image_id,
-                    variant_id=variant_id
+                    variant_id=variant_id,
+                    entries=row_entries
                 )
                 self.state['cards_collectors'].append(new_row)
 

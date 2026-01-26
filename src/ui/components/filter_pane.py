@@ -82,6 +82,13 @@ class FilterPane:
             ui.select(CARD_CONDITIONS, label='Condition', multiple=True, clearable=True,
                       on_change=self.on_change).bind_value(self.state, 'filter_condition').classes('w-full').props('use-chips')
 
+            # Storage
+            self.storage_selector = ui.select(
+                self.state.get('available_storage', []),
+                label='Storage Location', multiple=True, clearable=True,
+                on_change=self.on_change
+            ).bind_value(self.state, 'filter_storage').classes('w-full').props('use-chips')
+
             self.setup_range_filter('Ownership Quantity Range', 'filter_ownership_min', 'filter_ownership_max', 0, self.state.get('max_owned_quantity', 100), 1, 'ownership')
             self.setup_range_filter('Price Range ($)', 'filter_price_min', 'filter_price_max', 0, 1000, 1, 'price')
 
@@ -204,6 +211,10 @@ class FilterPane:
         if hasattr(self, 'archetype_selector'):
             self.archetype_selector.options = self.state.get('available_archetypes', [])
             self.archetype_selector.update()
+
+        if hasattr(self, 'storage_selector'):
+            self.storage_selector.options = self.state.get('available_storage', [])
+            self.storage_selector.update()
 
         if 'ownership' in self.filter_inputs:
              slider, min_inp, max_inp = self.filter_inputs['ownership']
