@@ -17,7 +17,7 @@ class CollectionEditor:
         storage_location: Optional[str] = None
     ) -> int:
         """
-        Returns the quantity of a specific card entry.
+        Returns the quantity of a specific card entry (specific storage location).
         """
         target_card = next((c for c in collection.cards if c.card_id == card_id), None)
         if not target_card:
@@ -41,6 +41,44 @@ class CollectionEditor:
                                 e.storage_location == storage_location), None)
 
         return target_entry.quantity if target_entry else 0
+
+    @staticmethod
+    def get_total_quantity(
+        collection: Collection,
+        card_id: int,
+        variant_id: Optional[str] = None,
+        set_code: Optional[str] = None,
+        rarity: Optional[str] = None,
+        image_id: Optional[int] = None,
+        language: str = 'EN',
+        condition: str = 'Near Mint',
+        first_edition: bool = False
+    ) -> int:
+        """
+        Returns the total quantity of a card configuration across all storage locations.
+        """
+        target_card = next((c for c in collection.cards if c.card_id == card_id), None)
+        if not target_card:
+            return 0
+
+        target_variant_id = variant_id
+        if not target_variant_id and set_code and rarity:
+             target_variant_id = generate_variant_id(card_id, set_code, rarity, image_id)
+
+        if not target_variant_id:
+            return 0
+
+        target_variant = next((v for v in target_card.variants if v.variant_id == target_variant_id), None)
+        if not target_variant:
+            return 0
+
+        total = 0
+        for e in target_variant.entries:
+            if (e.language == language and
+                e.condition == condition and
+                e.first_edition == first_edition):
+                total += e.quantity
+        return total
 
     @staticmethod
     def apply_change(

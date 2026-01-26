@@ -759,7 +759,7 @@ class CollectionPage:
 
         new_qty = 0
         if self.state['current_collection']:
-             qty = CollectionEditor.get_quantity(
+             qty = CollectionEditor.get_total_quantity(
                  self.state['current_collection'],
                  api_card.id,
                  variant_id=variant_id,
