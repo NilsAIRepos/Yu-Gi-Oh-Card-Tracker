@@ -152,11 +152,8 @@ class AmbiguityDialog(ui.dialog):
             # Fallback to candidates only
             self.update_options()
 
-    def update_options(self):
-        """Updates all dropdown options based on current selections."""
-        # Safeguard against UI not being ready
-        if not self.set_code_select: return
-
+    def _get_current_variants(self):
+        """Helper to get list of variant dicts based on current loaded data or candidates."""
         if not self.full_card_data:
             # Fallback to candidates list
             variants = self.candidates
@@ -171,14 +168,18 @@ class AmbiguityDialog(ui.dialog):
                         'image_id': s.image_id,
                         'name': self.full_card_data.name # Assuming name is constant for ID
                     })
-            # Also add any candidates not in DB (e.g. custom ones detected? unlikely but safe)
-            # Actually just use full_card_data as source of truth for "Other" checks
 
         # Filter by Name (if applicable)
         if self.name_select:
-             filtered_vars = [v for v in variants if v['name'] == self.selected_name]
-        else:
-             filtered_vars = variants
+             return [v for v in variants if v['name'] == self.selected_name]
+        return variants
+
+    def update_options(self):
+        """Updates all dropdown options based on current selections."""
+        # Safeguard against UI not being ready
+        if not self.set_code_select: return
+
+        filtered_vars = self._get_current_variants()
 
         # 1. Update Set Codes
         codes = set()
@@ -192,7 +193,7 @@ class AmbiguityDialog(ui.dialog):
              # Check compatibility
              is_valid = False
              norm_ocr = normalize_set_code(self.ocr_set_id)
-             for v in variants: # Check against ALL variants of this card
+             for v in filtered_vars: # Check against ALL variants of this card
                  if normalize_set_code(v['set_code']) == norm_ocr:
                      is_valid = True
                      break
@@ -204,7 +205,7 @@ class AmbiguityDialog(ui.dialog):
         if self.selected_set_code and self.selected_set_code != "Other":
              # Check if it matches any variant via normalization
              norm_sel = normalize_set_code(self.selected_set_code)
-             if any(normalize_set_code(v['set_code']) == norm_sel for v in variants):
+             if any(normalize_set_code(v['set_code']) == norm_sel for v in filtered_vars):
                  codes.add(self.selected_set_code)
 
         sorted_codes = sorted(list(codes))
@@ -289,7 +290,17 @@ class AmbiguityDialog(ui.dialog):
 
     def on_name_change(self, e):
         self.selected_name = e.value
-        self.update_options()
+
+        # Find corresponding card_id from candidates
+        candidate = next((c for c in self.candidates if c['name'] == self.selected_name), None)
+        if candidate and candidate.get('card_id') != self.card_id:
+             self.card_id = candidate['card_id']
+             self.full_card_data = None # Clear old data
+             self.update_options() # Update immediately with candidates fallback
+             # Reload data for new card
+             asyncio.create_task(self.load_full_data())
+        else:
+            self.update_options()
 
     def on_language_change(self, e):
         self.selected_language = e.value
@@ -299,18 +310,7 @@ class AmbiguityDialog(ui.dialog):
     def on_set_code_change(self, e):
         self.selected_set_code = e.value
         # Update Art/Rarity
-        # We need the variants list again.
-        # Ideally we store current filtered variants, but re-computing is cheap.
-        if self.full_card_data and self.full_card_data.card_sets:
-             variants = [{
-                        'set_code': s.set_code,
-                        'rarity': s.set_rarity,
-                        'image_id': s.image_id,
-                        'name': self.full_card_data.name
-                    } for s in self.full_card_data.card_sets]
-        else:
-             variants = self.candidates
-
+        variants = self._get_current_variants()
         self.update_art_and_rarity_options(variants)
 
         # Show/Hide input (handled by binding, but logic check here)
@@ -322,7 +322,8 @@ class AmbiguityDialog(ui.dialog):
         self.selected_image_id = e.value
         self.update_preview()
         # Update Rarity (constrained by art)
-        self.on_set_code_change({'value': self.selected_set_code})
+        variants = self._get_current_variants()
+        self.update_art_and_rarity_options(variants)
 
     def update_preview(self):
         if self.selected_image_id:
