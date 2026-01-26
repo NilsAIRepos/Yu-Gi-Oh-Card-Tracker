@@ -104,6 +104,22 @@ class CardScanner:
 
         self._load_validation_data()
 
+    def detect_blur(self, image: Any, threshold: float = 100.0) -> Tuple[bool, float]:
+        """
+        Detects if the image is blurry using the Variance of Laplacian method.
+        Returns (is_blurred, score). Lower score means more blurry.
+        """
+        if image is None:
+            return True, 0.0
+
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            score = cv2.Laplacian(gray, cv2.CV_64F).var()
+            return score < threshold, score
+        except Exception as e:
+            logger.error(f"Error in detect_blur: {e}")
+            return False, 0.0
+
     def _normalize_card_name(self, text: str) -> str:
         """
         Normalizes card name text:

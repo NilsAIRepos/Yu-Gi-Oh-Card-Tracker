@@ -466,7 +466,9 @@ class ScannerManager:
                                 "warped_image_url": report.get("warped_image_url"),
                                 "raw_image_path": temp_raw_path,
                                 "threshold": ambiguity_threshold,
-                                "art_threshold": art_threshold
+                                "art_threshold": art_threshold,
+                                "is_blurred": report.get('is_blurred', False),
+                                "blur_score": report.get('blur_score', 0.0)
                             }
                             self.lookup_queue.put(lookup_data)
 
@@ -539,6 +541,12 @@ class ScannerManager:
         report = {
             "steps": [],
         }
+
+        # 0. Blur Detection
+        is_blurred, blur_score = self.scanner.detect_blur(frame)
+        report['is_blurred'] = is_blurred
+        report['blur_score'] = blur_score
+
         for i in range(1, 3): # 1 to 2
             report[f"t{i}_full"] = None
             report[f"t{i}_crop"] = None
@@ -725,6 +733,8 @@ class ScannerManager:
             result.first_edition = data.get('first_edition', False)
             result.raw_ocr = [ocr_res]
             result.raw_image_path = raw_path
+            result.is_blurred = data.get('is_blurred', False)
+            result.blur_score = data.get('blur_score', 0.0)
 
             # Resolve warped image path for result
             if warped_url:

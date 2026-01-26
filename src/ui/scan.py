@@ -258,6 +258,9 @@ class ScanPage:
         self.expansion_states = {}
         self.undo_add_all_btn = None
 
+        # State for Blur Retry
+        self.has_retried_blur = False
+
     def check_undo_add_all_availability(self):
         if not self.target_collection_file:
             if self.undo_add_all_btn: self.undo_add_all_btn.visible = False
@@ -613,6 +616,25 @@ class ScanPage:
             if res:
                 logger.info(f"UI Received Result: {res.get('set_code')}, Ambiguous: {res.get('ambiguity_flag')}")
 
+                # Blur Retry Logic
+                is_blurred = res.get('is_blurred', False)
+                no_match = not res.get('candidates')
+                low_conf = False
+                if res.get('candidates'):
+                     best = res['candidates'][0]
+                     # If score is below 50, consider it low confidence for blur retry purposes
+                     if best.get('score', 0) < 50:
+                         low_conf = True
+
+                if is_blurred and (no_match or low_conf):
+                     if not self.has_retried_blur:
+                         self.has_retried_blur = True
+                         ui.notify("Photo is blurry... retaking", type='warning', timeout=2000)
+                         # Schedule retry
+                         ui.timer(1.0, self.trigger_live_scan, once=True)
+                         self.refresh_debug_ui()
+                         return # Skip further processing for this scan
+
                 # Check for empty candidates (No Match)
                 if not res.get('candidates'):
                     ui.notify("No match found", type='negative')
@@ -850,8 +872,12 @@ class ScanPage:
             logger.error(f"Error saving collection: {e}")
             ui.notify(f"Error saving collection: {e}", type='negative')
 
-    async def trigger_live_scan(self):
+    async def trigger_live_scan(self, e=None):
         """Triggers a scan from the Live Tab using current settings."""
+        # Reset retry flag if this is a user-initiated click
+        if e is not None:
+             self.has_retried_blur = False
+
         try:
             # Ensure scanner is running (unpause if needed)
             if scanner_service.scanner_manager.is_paused():
