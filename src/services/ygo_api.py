@@ -1,5 +1,10 @@
 import requests
 import json
+try:
+    import orjson
+    HAS_ORJSON = True
+except ImportError:
+    HAS_ORJSON = False
 import os
 import asyncio
 import uuid
@@ -246,8 +251,7 @@ class YugiohService:
             os.makedirs(DB_DIR)
 
         filepath = self._get_db_file(language)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
+        self._save_json_file(filepath, data)
 
     async def add_card_variant(self, card_id: int, set_name: str, set_code: str, set_rarity: str,
                                set_rarity_code: Optional[str] = None, set_price: Optional[str] = None,
@@ -421,8 +425,25 @@ class YugiohService:
 
     def _read_db_file(self, language: str = "en"):
         db_file = self._get_db_file(language)
-        with open(db_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        return self._read_json_file(db_file)
+
+    def _read_json_file(self, filepath: str) -> Any:
+        """Reads a JSON file using orjson if available, otherwise json. Blocks."""
+        if HAS_ORJSON:
+            with open(filepath, 'rb') as f:
+                return orjson.loads(f.read())
+        else:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+
+    def _save_json_file(self, filepath: str, data: Any):
+        """Saves a JSON file using orjson if available, otherwise json. Blocks."""
+        if HAS_ORJSON:
+            with open(filepath, 'wb') as f:
+                f.write(orjson.dumps(data))
+        else:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
 
     def get_card(self, card_id: int, language: str = "en") -> Optional[ApiCard]:
         cards = self._cards_cache.get(language, [])
@@ -498,17 +519,20 @@ class YugiohService:
         # Try load from disk if not forcing refresh
         if not force_refresh and os.path.exists(SETS_FILE):
              try:
-                 with open(SETS_FILE, 'r', encoding='utf-8') as f:
-                     data = json.load(f)
-                     if data:
-                         # Validate structure - check if values are strings (old format) or dicts (new format)
-                         first_val = next(iter(data.values())) if data else None
-                         if isinstance(first_val, str):
-                             logger.info("Old sets cache format detected. Migrating...")
-                             force_refresh = True # Force fetch to update
-                         else:
-                            self._sets_cache = data
-                            return
+                 try:
+                     data = await run.io_bound(self._read_json_file, SETS_FILE)
+                 except RuntimeError:
+                     data = await asyncio.to_thread(self._read_json_file, SETS_FILE)
+
+                 if data:
+                     # Validate structure - check if values are strings (old format) or dicts (new format)
+                     first_val = next(iter(data.values())) if data else None
+                     if isinstance(first_val, str):
+                         logger.info("Old sets cache format detected. Migrating...")
+                         force_refresh = True # Force fetch to update
+                     else:
+                        self._sets_cache = data
+                        return
              except Exception as e:
                  logger.error(f"Error reading sets file: {e}")
 
@@ -558,8 +582,10 @@ class YugiohService:
             # Save to disk
             try:
                 if not os.path.exists(DB_DIR): os.makedirs(DB_DIR)
-                with open(SETS_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(self._sets_cache, f)
+                try:
+                    await run.io_bound(self._save_json_file, SETS_FILE, self._sets_cache)
+                except RuntimeError:
+                    await asyncio.to_thread(self._save_json_file, SETS_FILE, self._sets_cache)
             except Exception as e:
                 logger.error(f"Error saving sets file: {e}")
         else:

@@ -12,3 +12,4 @@ easyocr
 ultralytics
 python-doctr[torch]
 numpy<2
+orjson
