@@ -1468,7 +1468,8 @@ class ScanPage:
                     card_id=card_id,
                     set_name=set_name,
                     set_code=set_code,
-                    set_rarity=rarity
+                    set_rarity=rarity,
+                    image_id=result_dict.get('image_id')
                 )
                 ui.notify(f"Added new variant to database: {set_code}", type='positive')
 
