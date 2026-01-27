@@ -3,7 +3,7 @@ from typing import Dict, Any, List, Optional, Callable
 import logging
 import asyncio
 
-from src.core.utils import is_set_code_compatible, normalize_set_code, REGION_TO_LANGUAGE_MAP
+from src.core.utils import is_set_code_compatible, normalize_set_code, transform_set_code, REGION_TO_LANGUAGE_MAP
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
 
@@ -21,6 +21,7 @@ class AmbiguityDialog(ui.dialog):
         # State
         self.card_id = self.candidates[0]['card_id'] if self.candidates else None
         self.full_card_data = None # Will be loaded async
+        self.english_card_data = None # Will be loaded async
 
         # Initial Selection (Best Guess)
         self.selected_name = scan_result.get('name') or (self.candidates[0]['name'] if self.candidates else "Unknown")
@@ -145,7 +146,16 @@ class AmbiguityDialog(ui.dialog):
         if not self.card_id: return
 
         try:
+            # 1. Fetch Target Language Data
             self.full_card_data = await run.io_bound(ygo_service.get_card, self.card_id, self.selected_language.lower())
+
+            # 2. Fetch English Data (Always)
+            # Optimization: If selected is English, we can reuse it, but safer to separate references or just use one logic.
+            if self.selected_language.lower() == 'en':
+                self.english_card_data = self.full_card_data
+            else:
+                self.english_card_data = await run.io_bound(ygo_service.get_card, self.card_id, 'en')
+
             self.update_options()
         except Exception as e:
             logger.error(f"Failed to load full card data: {e}")
@@ -153,21 +163,67 @@ class AmbiguityDialog(ui.dialog):
             self.update_options()
 
     def _get_current_variants(self):
-        """Helper to get list of variant dicts based on current loaded data or candidates."""
-        if not self.full_card_data:
-            # Fallback to candidates list
-            variants = self.candidates
-        else:
-            # Convert full card sets to list of dicts similar to candidates
-            variants = []
-            if self.full_card_data.card_sets:
-                for s in self.full_card_data.card_sets:
+        """
+        Helper to get list of variant dicts based on current loaded data.
+        Implements merging of DB variants and Synthetic (transformed) variants.
+        """
+        variants = []
+        seen_keys = set() # (set_code, rarity) to avoid duplicates
+
+        target_lang = self.selected_language
+
+        # 1. Existing Variants from DB (Target Language)
+        if self.full_card_data and self.full_card_data.card_sets:
+            for s in self.full_card_data.card_sets:
+                # STRICT FILTERING: Only show codes compatible with the selected language
+                if is_set_code_compatible(s.set_code, target_lang):
+                    key = (s.set_code, s.set_rarity)
                     variants.append({
                         'set_code': s.set_code,
                         'rarity': s.set_rarity,
                         'image_id': s.image_id,
-                        'name': self.full_card_data.name # Assuming name is constant for ID
+                        'variant_id': s.variant_id,
+                        'name': self.full_card_data.name,
+                        'source': 'db'
                     })
+                    seen_keys.add(key)
+
+        # 2. Transformed Variants from English DB
+        # Only relevant if we have English data
+        if self.english_card_data and self.english_card_data.card_sets:
+             for s in self.english_card_data.card_sets:
+                 # Transform English Code -> Target Language Code
+                 new_code = transform_set_code(s.set_code, target_lang)
+
+                 # STRICT FILTERING: Check if the *new* code is compatible with target language
+                 if not is_set_code_compatible(new_code, target_lang):
+                     continue
+
+                 key = (new_code, s.set_rarity)
+
+                 # If we already have this exact variant from the DB, skip it (prefer DB source)
+                 if key in seen_keys:
+                     continue
+
+                 # Add Synthetic Variant
+                 variants.append({
+                     'set_code': new_code,
+                     'rarity': s.set_rarity,
+                     'image_id': s.image_id, # Inherit English Image
+                     'variant_id': None,     # Synthetic, no ID yet
+                     'name': self.english_card_data.name, # Use English name? Or target? Usually should align.
+                     'source': 'synthetic'
+                 })
+                 seen_keys.add(key)
+
+        # Fallback to candidates if no data loaded yet (and no full data)
+        if not variants and not self.full_card_data and self.candidates:
+             # Just return candidates, but we should probably filter them too?
+             # Candidates usually come from OCR which might be mixed.
+             # Let's filter candidates by compatibility too.
+             for c in self.candidates:
+                 if is_set_code_compatible(c['set_code'], target_lang):
+                     variants.append(c)
 
         # Filter by Name (if applicable)
         if self.name_select:
@@ -184,29 +240,28 @@ class AmbiguityDialog(ui.dialog):
         # 1. Update Set Codes
         codes = set()
 
-        # Add valid codes from DB
+        # Add valid codes from filtered list
         for v in filtered_vars:
             codes.add(v['set_code'])
 
-        # Add OCR Code if valid
+        # Add OCR Code if valid and compatible
         if self.ocr_set_id:
              # Check compatibility
-             is_valid = False
-             norm_ocr = normalize_set_code(self.ocr_set_id)
-             for v in filtered_vars: # Check against ALL variants of this card
-                 if normalize_set_code(v['set_code']) == norm_ocr:
-                     is_valid = True
-                     break
+             if is_set_code_compatible(self.ocr_set_id, self.selected_language):
+                 # Also check if it somewhat matches normalized version of any variant?
+                 # Or just allow it if compatible?
+                 # Original logic checked normalized match.
+                 norm_ocr = normalize_set_code(self.ocr_set_id)
+                 if any(normalize_set_code(v['set_code']) == norm_ocr for v in filtered_vars):
+                     codes.add(self.ocr_set_id)
 
-             if is_valid:
-                 codes.add(self.ocr_set_id)
-
-        # Also ensure current selected Set Code is preserved if valid (e.g. if it came from a candidate)
+        # Also ensure current selected Set Code is preserved if valid
         if self.selected_set_code and self.selected_set_code != "Other":
-             # Check if it matches any variant via normalization
-             norm_sel = normalize_set_code(self.selected_set_code)
-             if any(normalize_set_code(v['set_code']) == norm_sel for v in filtered_vars):
-                 codes.add(self.selected_set_code)
+             # Check compatibility first
+             if is_set_code_compatible(self.selected_set_code, self.selected_language):
+                 norm_sel = normalize_set_code(self.selected_set_code)
+                 if any(normalize_set_code(v['set_code']) == norm_sel for v in filtered_vars):
+                     codes.add(self.selected_set_code)
 
         sorted_codes = sorted(list(codes))
         sorted_codes.append("Other")
@@ -246,7 +301,7 @@ class AmbiguityDialog(ui.dialog):
         else:
             # BROADENED SEARCH: Use normalized set code to find all equivalent variants (e.g. EN and DE)
             # This ensures that if a non-English code is selected (which might lack images),
-            # we still show images from the English equivalent.
+            # we still show images from the English equivalent (Synthetic variants handled this already).
             norm_sel = normalize_set_code(self.selected_set_code)
             relevant_vars = [v for v in variants if normalize_set_code(v['set_code']) == norm_sel]
 
@@ -275,10 +330,6 @@ class AmbiguityDialog(ui.dialog):
         rarity_vars = [v for v in relevant_vars if v.get('image_id') == self.selected_image_id]
         rarities = sorted(list(set(v['rarity'] for v in rarity_vars)))
 
-        # If "Other", allow user to pick from ALL rarities known? Or just standard list?
-        # Maybe just list rarities found for this card + common ones?
-        # For now, stick to db-found rarities.
-
         self.rarity_select.options = rarities
         if self.selected_rarity not in rarities:
             if rarities:
@@ -295,6 +346,7 @@ class AmbiguityDialog(ui.dialog):
         if candidate and candidate.get('card_id') != self.card_id:
              self.card_id = candidate['card_id']
              self.full_card_data = None # Clear old data
+             self.english_card_data = None
              self.update_options() # Update immediately with candidates fallback
              # Reload data for new card
              asyncio.create_task(self.load_full_data())
@@ -406,7 +458,9 @@ class AmbiguityDialog(ui.dialog):
                     ui.notify(f"Failed to add variant: {e}", type='negative')
                     return
         else:
-             # Find existing variant_id
+             # Find existing variant_id (DB or Synthetic)
+
+             # 1. Try finding in loaded Full Data (DB)
              if self.full_card_data and self.full_card_data.card_sets:
                  # Try exact match first
                  v = next((s for s in self.full_card_data.card_sets if s.set_code == final_set_code and s.set_rarity == final_rarity and s.image_id == image_id), None)
@@ -416,6 +470,10 @@ class AmbiguityDialog(ui.dialog):
                      # Fallback to loose match (ignore image id if not found)
                      v = next((s for s in self.full_card_data.card_sets if s.set_code == final_set_code and s.set_rarity == final_rarity), None)
                      if v: variant_id = v.variant_id
+
+             # 2. If not found (Synthetic), variant_id remains None.
+             # This signal to the ScanPage that it should verify/add this variant to the Global DB.
+             # ScanPage._ensure_global_variant_exists handles this based on set_code/rarity.
 
         # Construct Result
         final_res = self.result.copy()
