@@ -1388,6 +1388,8 @@ class CollectionPage:
                 ui.tooltip('Select which collection file to view')
 
             async def on_search(e):
+                if self.state['search_text'] == e.value:
+                    return
                 self.state['search_text'] = e.value
                 await self.apply_filters()
 

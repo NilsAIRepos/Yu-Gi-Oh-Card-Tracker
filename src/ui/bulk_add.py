@@ -445,8 +445,8 @@ class BulkAddPage:
                 )
                 cards.insert(0, new_entry) # Add to top
 
-        # Refresh View
-        await self.apply_collection_filters()
+        # Refresh View (preserve page)
+        await self.apply_collection_filters(reset_page=False)
 
     async def undo_last_action(self):
         col_name = self.state['selected_collection']
@@ -1444,7 +1444,7 @@ class BulkAddPage:
         await self.apply_collection_filters()
         if self.collection_filter_pane: self.collection_filter_pane.update_options()
 
-    async def apply_collection_filters(self):
+    async def apply_collection_filters(self, reset_page=True):
         source = self.col_state['collection_cards']
         res = list(source)
         s = self.col_state
@@ -1493,7 +1493,8 @@ class BulkAddPage:
         elif key == 'Newest': res.sort(key=lambda x: x.api_card.id, reverse=reverse)
 
         self.col_state['collection_filtered'] = res
-        self.col_state['collection_page'] = 1
+        if reset_page:
+            self.col_state['collection_page'] = 1
         self.update_collection_pagination()
         self.render_collection_content.refresh()
 
@@ -1954,8 +1955,13 @@ class BulkAddPage:
 
                         ui.separator().props('vertical')
 
+                        async def on_col_search(e):
+                            if self.col_state['search_text'] == e.value:
+                                return
+                            await self.apply_collection_filters()
+
                         ui.input(placeholder='Search...',
-                                 on_change=lambda e: self.apply_collection_filters()) \
+                                 on_change=on_col_search) \
                             .bind_value(self.col_state, 'search_text') \
                             .props('dense borderless dark debounce=300') \
                             .classes('w-52 text-sm')
