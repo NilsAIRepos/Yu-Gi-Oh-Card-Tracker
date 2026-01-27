@@ -1271,7 +1271,7 @@ class ScanPage:
 
         # Ensure variant exists in Global DB
         if result_dict.get('card_id'):
-             asyncio.create_task(self._ensure_global_variant_exists(result_dict))
+             await self._ensure_global_variant_exists(result_dict)
 
         # Add to Collection
         card_id = result_dict.get('card_id')
