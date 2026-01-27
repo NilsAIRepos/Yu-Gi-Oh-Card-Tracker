@@ -35,6 +35,13 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+# Auto Scan States
+AUTO_IDLE = 'IDLE'
+AUTO_WAIT_FOR_STILL = 'WAIT_FOR_STILL'
+AUTO_SCANNING = 'SCANNING'
+AUTO_WAIT_FOR_MOVEMENT = 'WAIT_FOR_MOVEMENT'
+AUTO_TIMEOUT = 'TIMEOUT'
+
 @dataclass
 class BulkCollectionEntry:
     id: str # Unique ID for UI
@@ -114,6 +121,10 @@ window.overlayCanvas = null;
 window.overlayCtx = null;
 window.scanOverlayTimer = null;
 window.scanner_js_loaded = true;
+window.motionScore = 1000;
+window.lastMotionData = null;
+window.motionCanvas = null;
+window.motionCtx = null;
 
 function initScanner() {
     window.scannerVideo = document.getElementById('scanner-video');
@@ -328,6 +339,52 @@ function setRotation(deg) {
     if (overlay) overlay.style.transform = transform;
 }
 
+function checkMotion() {
+    if (!window.scannerVideo || window.scannerVideo.paused || window.scannerVideo.ended) {
+        return 1000; // High score = not stable
+    }
+
+    if (!window.motionCanvas) {
+        window.motionCanvas = document.createElement('canvas');
+        window.motionCanvas.width = 32;
+        window.motionCanvas.height = 32;
+        window.motionCtx = window.motionCanvas.getContext('2d');
+    }
+
+    // Draw current frame to small canvas
+    window.motionCtx.drawImage(window.scannerVideo, 0, 0, 32, 32);
+
+    // Get pixel data
+    let frameData = null;
+    try {
+        frameData = window.motionCtx.getImageData(0, 0, 32, 32).data;
+    } catch(e) {
+        return 1000;
+    }
+
+    if (window.lastMotionData) {
+        let score = 0;
+        let diff = 0;
+        // Compare with last frame
+        // Sample every 4th pixel to save time? No, 32x32 is small.
+        for (let i = 0; i < frameData.length; i += 4) {
+            diff += Math.abs(frameData[i] - window.lastMotionData[i]);     // R
+            diff += Math.abs(frameData[i+1] - window.lastMotionData[i+1]); // G
+            diff += Math.abs(frameData[i+2] - window.lastMotionData[i+2]); // B
+        }
+        // Normalize: Average difference per pixel channel
+        // 32*32 pixels * 3 channels = 3072 values
+        window.motionScore = diff / (32 * 32 * 3);
+    }
+
+    // Store for next time
+    // We need to copy it, because getImageData returns a typed array that might be reused?
+    // Actually getImageData returns a new Uint8ClampedArray.
+    window.lastMotionData = frameData;
+
+    return window.motionScore;
+}
+
 // Global Hotkey for Spacebar to trigger Live Scan
 document.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
@@ -387,6 +444,17 @@ class ScanPage:
         self.art_match_threshold = self.config.get('art_match_threshold', 0.42)
         self.rotation = self.config.get('rotation', 0)
         self.scan_overlay_duration = self.config.get('scan_overlay_duration', 1000)
+
+        # Auto Scan Config
+        self.auto_scan_timeout = self.config.get('auto_scan_timeout', 3000)
+        self.motion_threshold = self.config.get('motion_threshold', 50)
+
+        self.auto_mode_active = False
+        self.auto_state = AUTO_IDLE
+        self.last_auto_action_time = 0
+        self.current_motion_score = 1000
+        self.btn_auto_mode = None
+        self.auto_scan_timer = ui.timer(0.2, self._auto_scan_tick) # 5Hz check
 
         # Load Recent Scans
         self.load_recent_scans()
@@ -1129,7 +1197,65 @@ class ScanPage:
         # Sync list used by logic
         self.ocr_tracks = [self.selected_track]
 
+        # Save Auto Scan settings too
+        self.config['auto_scan_timeout'] = self.auto_scan_timeout
+        self.config['motion_threshold'] = self.motion_threshold
+
         config_manager.save_config(self.config)
+
+    def toggle_auto_mode(self):
+        self.auto_mode_active = not self.auto_mode_active
+        if self.auto_mode_active:
+            self.auto_state = AUTO_WAIT_FOR_STILL
+            if self.btn_auto_mode:
+                self.btn_auto_mode.props('color=negative icon=stop')
+                self.btn_auto_mode.text = "Stop Auto Mode"
+            ui.notify("Auto Mode Started: Waiting for stillness...", type='positive')
+        else:
+            self.auto_state = AUTO_IDLE
+            if self.btn_auto_mode:
+                self.btn_auto_mode.props('color=primary icon=play_circle')
+                self.btn_auto_mode.text = "Start Auto Mode"
+            ui.notify("Auto Mode Stopped", type='info')
+
+    async def _auto_scan_tick(self):
+        if not self.auto_mode_active:
+            return
+
+        # Poll motion score
+        try:
+            score = await ui.run_javascript('checkMotion()')
+            if score is None: score = 1000
+            self.current_motion_score = score
+        except Exception:
+            self.current_motion_score = 1000 # Assume moving/error
+            return
+
+        now = time.time() * 1000 # ms
+
+        # State Machine
+        if self.auto_state == AUTO_WAIT_FOR_STILL:
+            if self.current_motion_score < self.motion_threshold:
+                # Still! Trigger Scan
+                logger.info(f"Auto Mode: Stable (Score {score:.1f}). Triggering scan.")
+                self.auto_state = AUTO_SCANNING
+                await self.trigger_live_scan()
+
+        elif self.auto_state == AUTO_WAIT_FOR_MOVEMENT:
+            if self.current_motion_score > self.motion_threshold:
+                # Movement detected! Reset cycle
+                # Wait for stillness again
+                logger.info(f"Auto Mode: Movement detected (Score {score:.1f}). Resetting.")
+                self.auto_state = AUTO_WAIT_FOR_STILL
+
+        elif self.auto_state == AUTO_TIMEOUT:
+            # Check if timeout elapsed
+            elapsed = now - self.last_auto_action_time
+            if elapsed > self.auto_scan_timeout:
+                logger.info("Auto Mode: Timeout elapsed. Trying again.")
+                self.auto_state = AUTO_WAIT_FOR_STILL
+
+        # SCANNING state is handled by result events transitioning out of it
 
     def load_recent_scans(self):
         """Loads scans from temp file, handling migration from list to Collection."""
@@ -1348,6 +1474,10 @@ class ScanPage:
             await self.load_data()
             ui.notify(f"Added: {result_dict.get('name')}", type='positive')
 
+            if self.auto_mode_active:
+                logger.info("Auto Mode: Card confirmed. Waiting for movement to clear.")
+                self.auto_state = AUTO_WAIT_FOR_MOVEMENT
+
     async def event_consumer(self):
         """Consumes events from the local queue and updates UI."""
         try:
@@ -1376,6 +1506,9 @@ class ScanPage:
                         if event.type == 'scan_finished':
                             if not event.data.get('success'):
                                 ui.notify(f"Scan Failed: {event.data.get('error', 'Unknown')}", type='negative')
+                                if self.auto_mode_active:
+                                    self.auto_state = AUTO_TIMEOUT
+                                    self.last_auto_action_time = time.time() * 1000
 
                     if event.type == 'error':
                         ui.notify(event.data.get('message', 'Error'), type='negative')
@@ -1401,10 +1534,23 @@ class ScanPage:
                 # Check for empty candidates (No Match)
                 if not res.get('candidates'):
                     ui.notify("No match found", type='negative')
+                    if self.auto_mode_active:
+                        self.auto_state = AUTO_TIMEOUT
+                        self.last_auto_action_time = time.time() * 1000
 
                 elif res.get('ambiguity_flag'):
                     ui.notify("Scan Ambiguous: Please resolve.", type='warning', timeout=5000)
+
+                    # Define cancel handler to prevent getting stuck
+                    def on_dialog_close(e=None):
+                        # If dialog closed and we are still in SCANNING (meaning not confirmed),
+                        # treat as skip/timeout
+                        if self.auto_mode_active and self.auto_state == AUTO_SCANNING:
+                             self.auto_state = AUTO_TIMEOUT
+                             self.last_auto_action_time = time.time() * 1000
+
                     dialog = AmbiguityDialog(res, self.on_card_confirmed)
+                    dialog.on('close', on_dialog_close)
                     dialog.open()
                 else:
                     ui.notify("Scan Successful!", type='positive', timeout=3000)
@@ -2065,6 +2211,16 @@ class ScanPage:
                 ui.number(value=self.scan_overlay_duration, min=0, max=5000, step=100,
                          on_change=lambda e: (setattr(self, 'scan_overlay_duration', e.value), self.save_settings())).classes('w-full')
 
+                # Auto Scan Timeout
+                ui.label("Auto Scan Timeout (ms):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.auto_scan_timeout, min=500, max=10000, step=100,
+                         on_change=lambda e: (setattr(self, 'auto_scan_timeout', e.value), self.save_settings())).classes('w-full')
+
+                # Motion Threshold
+                ui.label("Motion Threshold (0-255):").classes('font-bold text-gray-300 text-sm')
+                ui.number(value=self.motion_threshold, min=0, max=255, step=1,
+                         on_change=lambda e: (setattr(self, 'motion_threshold', e.value), self.save_settings())).classes('w-full')
+
                 # Camera Preview
                 ui.label("Camera Preview").classes('font-bold text-lg mt-4')
                 with ui.element('div').classes('w-full aspect-video bg-black rounded relative overflow-hidden'):
@@ -2170,6 +2326,9 @@ def scan_page():
 
                     # Capture Button
                     ui.button('CAPTURE & SCAN', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg id=btn-live-scan').classes('w-full font-bold')
+
+                    # Auto Mode Button
+                    page.btn_auto_mode = ui.button('Start Auto Mode', on_click=page.toggle_auto_mode).props('icon=play_circle color=primary size=md').classes('w-full font-bold')
 
                 # RIGHT PANEL: Recent Scans Gallery
                 with ui.column().classes('w-1/2 h-full bg-dark border-l border-gray-800 flex flex-col overflow-hidden'):
