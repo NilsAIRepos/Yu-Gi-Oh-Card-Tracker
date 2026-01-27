@@ -70,21 +70,6 @@ class TestOCRLogic(unittest.TestCase):
             'giftzahne': 'Giftzähne' # DB entry (ä -> a)
         }
 
-    def test_set_id_typo_correction_prefix(self):
-        # DB1 scanned as DBI (I -> 1)
-        self.scanner.valid_set_codes.add("DB1-EN001")
-        texts = ["DBI-EN001"]
-        confs = [0.9]
-        set_id, score, lang = self.scanner._parse_set_id(texts, confs)
-        self.assertEqual(set_id, "DB1-EN001")
-
-        # IOC scanned as 1OC (1 -> I)
-        self.scanner.valid_set_codes.add("IOC-EN001")
-        texts = ["1OC-EN001"]
-        confs = [0.9]
-        set_id, score, lang = self.scanner._parse_set_id(texts, confs)
-        self.assertEqual(set_id, "IOC-EN001")
-
     def test_all_number_prefix_penalty(self):
         # "8552-0851" (Pure number) vs "LOB-EN001" (Valid)
         texts = ["8552-0851", "LOB-EN001"]

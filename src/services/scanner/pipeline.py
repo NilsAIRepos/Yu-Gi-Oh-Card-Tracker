@@ -2,7 +2,6 @@ import logging
 import re
 import os
 import json
-from itertools import product
 from typing import Optional, Tuple, List, Dict, Any
 
 try:
@@ -696,30 +695,11 @@ class CardScanner:
             'B': '8', 'G': '6', 'Q': '0', 'D': '0'
         }
 
-        # Create bidirectional map for generation
-        variation_map = {}
-        for k, v in typo_map.items():
-            # Forward: k -> v (and k itself)
-            variation_map.setdefault(k, {k}).add(v)
-            # Reverse: v -> k (and v itself)
-            variation_map.setdefault(v, {v}).add(k)
-
         def normalize_number_part(txt):
             res = ""
             for char in txt:
                 res += typo_map.get(char, char)
             return res
-
-        def generate_typo_variants(text: str) -> List[str]:
-            """Generates all valid combinations of typo corrections for a given string."""
-            options = []
-            for char in text:
-                # Get variants or just the char itself
-                variants = list(variation_map.get(char, {char}))
-                options.append(variants)
-
-            # Cartesian product
-            return [''.join(p) for p in product(*options)]
 
         def validate_and_score(raw_code, region_part, base_conf, list_index):
             is_valid = raw_code in self.valid_set_codes
@@ -780,23 +760,6 @@ class CardScanner:
 
                     code_fixed = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
                     line_candidates.add((code_fixed, region_fixed, number_fixed))
-
-                    # 3. Recursive Prefix Variation Generation
-                    # Generate all valid variations of the prefix based on typo_map
-                    # to catch cases like 'DBI' -> 'DB1' or '1OC' -> 'IOC'
-                    prefix_variants = generate_typo_variants(prefix)
-
-                    # Limit number of variants to prevent performance issues (e.g. max 100)
-                    if len(prefix_variants) < 200:
-                        for p_var in prefix_variants:
-                            if p_var == prefix: continue # Already added
-
-                            # Check against fixed number (most likely correct for Number part)
-                            code_var = f"{p_var}-{region_fixed}{number_fixed}" if region_fixed else f"{p_var}-{number_fixed}"
-
-                            # Only add if it maps to a VALID Set Code to avoid flooding candidates with junk
-                            if code_var in self.valid_set_codes:
-                                line_candidates.add((code_var, region_fixed, number_fixed))
 
             # Process candidates for this line
             base_conf = confs[i] if i < len(confs) else 0.5
