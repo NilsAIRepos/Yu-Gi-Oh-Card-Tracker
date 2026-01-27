@@ -365,16 +365,19 @@ function checkMotion() {
     if (window.lastMotionData) {
         let score = 0;
         let diff = 0;
+        let pixels = 32 * 32;
+
         // Compare with last frame
-        // Sample every 4th pixel to save time? No, 32x32 is small.
         for (let i = 0; i < frameData.length; i += 4) {
-            diff += Math.abs(frameData[i] - window.lastMotionData[i]);     // R
-            diff += Math.abs(frameData[i+1] - window.lastMotionData[i+1]); // G
-            diff += Math.abs(frameData[i+2] - window.lastMotionData[i+2]); // B
+            let rDiff = Math.abs(frameData[i] - window.lastMotionData[i]);
+            let gDiff = Math.abs(frameData[i+1] - window.lastMotionData[i+1]);
+            let bDiff = Math.abs(frameData[i+2] - window.lastMotionData[i+2]);
+
+            // Sum differences
+            diff += (rDiff + gDiff + bDiff) / 3;
         }
-        // Normalize: Average difference per pixel channel
-        // 32*32 pixels * 3 channels = 3072 values
-        window.motionScore = diff / (32 * 32 * 3);
+        // Average difference per pixel (0-255 range)
+        window.motionScore = diff / pixels;
     }
 
     // Store for next time
@@ -1242,7 +1245,11 @@ class ScanPage:
                 await self.trigger_live_scan()
 
         elif self.auto_state == AUTO_WAIT_FOR_MOVEMENT:
-            if self.current_motion_score > self.motion_threshold:
+            # We need significant movement to reset
+            # If threshold is 50, we might need > 50 to reset.
+            # But let's use a slightly lower threshold to be sensitive to removal
+            reset_threshold = self.motion_threshold * 0.5
+            if self.current_motion_score > reset_threshold:
                 # Movement detected! Reset cycle
                 # Wait for stillness again
                 logger.info(f"Auto Mode: Movement detected (Score {score:.1f}). Resetting.")
