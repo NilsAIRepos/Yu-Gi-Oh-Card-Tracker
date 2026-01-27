@@ -327,6 +327,24 @@ function setRotation(deg) {
     if (v2) v2.style.transform = transform;
     if (overlay) overlay.style.transform = transform;
 }
+
+// Global Hotkey for Spacebar to trigger Live Scan
+document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+        const target = e.target;
+        // Avoid triggering if user is typing in an input or focused on a button/link
+        if (target.matches('input, textarea, select, button, a, [contenteditable]')) {
+             return;
+        }
+
+        const btn = document.getElementById('btn-live-scan');
+        // Check if button exists and is visible (offsetParent is null if hidden/display:none)
+        if (btn && btn.offsetParent !== null) {
+            e.preventDefault(); // Prevent scrolling
+            btn.click();
+        }
+    }
+});
 </script>
 """
 
@@ -2150,7 +2168,7 @@ def scan_page():
                         ui.html('<img id="scan-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; display: none; pointer-events: none; transition: opacity 0.2s ease-out;">', sanitize=False)
 
                     # Capture Button
-                    ui.button('CAPTURE & SCAN', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg').classes('w-full font-bold')
+                    ui.button('CAPTURE & SCAN', on_click=page.trigger_live_scan).props('icon=camera color=accent text-color=black size=lg id=btn-live-scan').classes('w-full font-bold')
 
                 # RIGHT PANEL: Recent Scans Gallery
                 with ui.column().classes('w-1/2 h-full bg-dark border-l border-gray-800 flex flex-col overflow-hidden'):
