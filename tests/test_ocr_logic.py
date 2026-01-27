@@ -106,6 +106,23 @@ class TestOCRLogic(unittest.TestCase):
         # The map logic: E is EN legacy. G is DE legacy.
         self.assertIn("LOB-G001", self.scanner.valid_set_codes)
 
+    def test_set_code_prefix_correction(self):
+        # Add targets to valid set codes
+        self.scanner.valid_set_codes.add("DB1-EN001")
+        self.scanner.valid_set_codes.add("IOC-EN001")
+
+        # Case 1: DBI -> DB1 (Letter I to Number 1)
+        texts = ["DBI-EN001"]
+        confs = [0.9]
+        set_id, _, _ = self.scanner._parse_set_id(texts, confs)
+        self.assertEqual(set_id, "DB1-EN001")
+
+        # Case 2: 1OC -> IOC (Number 1 to Letter I)
+        texts = ["1OC-EN001"]
+        confs = [0.9]
+        set_id, _, _ = self.scanner._parse_set_id(texts, confs)
+        self.assertEqual(set_id, "IOC-EN001")
+
     def test_db_name_match_german(self):
         block = MockBlock("Schwarzer Magier")
         res = MockDocTRResult([block])

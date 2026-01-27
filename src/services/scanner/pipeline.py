@@ -701,6 +701,21 @@ class CardScanner:
                 res += typo_map.get(char, char)
             return res
 
+        def generate_prefix_variants(raw_p):
+            variants = {raw_p}
+            # L -> N (DBI -> DB1)
+            p_ln = raw_p
+            for c_old, c_new in [('I', '1'), ('O', '0'), ('S', '5'), ('Z', '2')]:
+                p_ln = p_ln.replace(c_old, c_new)
+            variants.add(p_ln)
+
+            # N -> L (1OC -> IOC)
+            p_nl = raw_p
+            for c_old, c_new in [('1', 'I'), ('0', 'O'), ('5', 'S'), ('2', 'Z')]:
+                p_nl = p_nl.replace(c_old, c_new)
+            variants.add(p_nl)
+            return variants
+
         def validate_and_score(raw_code, region_part, base_conf, list_index):
             is_valid = raw_code in self.valid_set_codes
 
@@ -750,16 +765,19 @@ class CardScanner:
                     region = m.group(2) if m.group(2) else ""
                     number_raw = m.group(3)
 
-                    # 1. Direct Match
-                    code_direct = f"{prefix}-{region}{number_raw}" if region else f"{prefix}-{number_raw}"
-                    line_candidates.add((code_direct, region, number_raw))
+                    p_vars = generate_prefix_variants(prefix)
 
-                    # 2. Typo Fixes
-                    number_fixed = normalize_number_part(number_raw)
-                    region_fixed = region.replace('0', 'O')
+                    for p_cand in p_vars:
+                        # 1. Direct Match
+                        code_direct = f"{p_cand}-{region}{number_raw}" if region else f"{p_cand}-{number_raw}"
+                        line_candidates.add((code_direct, region, number_raw))
 
-                    code_fixed = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
-                    line_candidates.add((code_fixed, region_fixed, number_fixed))
+                        # 2. Typo Fixes
+                        number_fixed = normalize_number_part(number_raw)
+                        region_fixed = region.replace('0', 'O')
+
+                        code_fixed = f"{p_cand}-{region_fixed}{number_fixed}" if region_fixed else f"{p_cand}-{number_fixed}"
+                        line_candidates.add((code_fixed, region_fixed, number_fixed))
 
             # Process candidates for this line
             base_conf = confs[i] if i < len(confs) else 0.5
@@ -783,10 +801,12 @@ class CardScanner:
                 region_fixed = region.replace('0', 'O')
 
                 if number_fixed.isdigit():
-                    code_cand = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
-                    # Use a moderate index for fallback (e.g., 5) to avoid huge penalties but not boost as "early"
-                    v_code, v_score = validate_and_score(code_cand, region_fixed, 0.4, 5)
-                    candidates.append((v_code, v_score, region_fixed))
+                    p_vars = generate_prefix_variants(prefix)
+                    for p_cand in p_vars:
+                        code_cand = f"{p_cand}-{region_fixed}{number_fixed}" if region_fixed else f"{p_cand}-{number_fixed}"
+                        # Use a moderate index for fallback (e.g., 5) to avoid huge penalties but not boost as "early"
+                        v_code, v_score = validate_and_score(code_cand, region_fixed, 0.4, 5)
+                        candidates.append((v_code, v_score, region_fixed))
 
         if not candidates:
             return None, 0.0, "EN"
