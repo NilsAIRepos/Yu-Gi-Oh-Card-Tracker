@@ -1,106 +1,163 @@
-# AI Card Scanner
+# AI Card Scanner Documentation
 
-OpenYuGi features a powerful local AI scanner that runs entirely on your machine. It uses advanced computer vision (YOLO, OCR, Feature Matching) to identify cards from your webcam feed in real-time.
+## 1. Introduction
 
-## 1. Overview & Requirements
+The OpenYuGi AI Scanner is a local-first computer vision system designed to identify Yu-Gi-Oh! cards via a webcam. Unlike cloud-based scanners, it runs entirely on your hardware, ensuring privacy and zero latency penalties from network uploads.
 
-The scanner is designed to be **Privacy-First** and **Local-Only**. No images are sent to the cloud.
+It utilizes a multi-stage pipeline involving:
+1.  **Object Detection**: Finding the card in the video frame (Contour or YOLO).
+2.  **Optical Character Recognition (OCR)**: Reading text (Set Code, Name, Stats) using EasyOCR or DocTR.
+3.  **Visual Analysis**: Identifying Rarity (foil vs common) and 1st Edition status.
+4.  **Feature Matching**: Verifying artwork against a local database using YOLO classification or ORB features.
+5.  **Heuristic Matching**: A weighted scoring algorithm to determine the best match from the database.
+
+---
+
+## 2. Hardware & Setup
 
 ### Requirements
-- **Webcam**: A standard 1080p webcam is recommended.
-- **Lighting**: Good, even lighting is critical. Avoid glare on the card surface (sleeves can cause reflections).
-- **Hardware**: Runs on CPU, but an NVIDIA GPU is recommended for faster inference (via CUDA).
+*   **Webcam**: 1080p resolution recommended. The scanner relies on reading small text (Set IDs), so 720p or lower may struggle.
+*   **Lighting**: Bright, even, diffused lighting is critical.
+    *   *Avoid*: Direct overhead lights that create glare (white spots) on glossy cards/sleeves. Glare blinds the OCR.
+    *   *Best*: Angled desk lamp or natural daylight.
+*   **Compute**:
+    *   **CPU**: Works on modern CPUs (Intel i5/Ryzen 5 or newer).
+    *   **GPU**: Highly recommended for real-time performance. Supports NVIDIA (CUDA) and Apple Silicon (MPS) if PyTorch is configured correctly.
 
-## 2. Interface Overview
+### Initial Configuration
+1.  Navigate to the **Scan Cards** tab.
+2.  **Camera Selection**: In the left panel, select your device from the dropdown.
+3.  **Start/Stop**: Click **Start** to initialize the feed.
 
-The Scanner is divided into two tabs:
+---
 
-### A. Live Scan (Main)
-This is your primary workspace.
-- **Left Panel**: Camera feed, Camera selection, and Capture controls.
-- **Right Panel**: "Recent Scans" gallery. This acts as a staging area where you review cards before adding them to your collection.
-- **Header**: Target Collection selection and Default Attribute settings.
+## 3. Workflow Guide
 
-### B. Debug Lab (Advanced)
-A playground for configuring the AI pipeline and troubleshooting.
-- **Pipeline Visualization**: See exactly what the AI sees (Warped view, Regions of Interest).
-- **Configuration**: Fine-tune OCR engines, preprocessing modes, and thresholds.
-- **Manual Upload**: Test the scanner with static image files.
+### A. The "Live Scan" Interface
 
-## 3. Scanning Workflow
+The interface is split into two zones:
+*   **Left (Capture)**: The active camera feed and capture controls.
+*   **Right (Staging Gallery)**: The "Recent Scans" list. This is a temporary holding area (persisted to `data/scans/scans_temp.json`) where you review cards before committing them to your main collection.
 
-### Step 1: Setup
-1.  **Select Camera**: Choose your webcam from the dropdown in the left panel.
-2.  **Target Collection**: In the top header, select the collection where you want the cards to eventually go (e.g., "My Binder").
-3.  **Set Defaults**: Configure the attributes for upcoming scans:
-    -   **Lang**: Default Language (e.g., EN, DE).
-    -   **Cond**: Default Condition (e.g., Near Mint).
-    -   **Storage**: (Optional) Default Storage container (e.g., "Binder 1").
+### B. Scanning Process
 
-### Step 2: Capture
-1.  Place a card in the center of the camera view.
-    -   *Tip: Ensure the card is roughly aligned, though the AI handles rotation well.*
-2.  **Trigger Scan**:
-    -   Click the **CAPTURE & SCAN** button.
-    -   OR Press the **Spacebar** (ensure focus is not on a text input).
-3.  The system will freeze the frame, detect the card, read the text, and match the artwork.
+#### 1. Preparation
+*   **Target Collection**: Select the destination collection in the top header (e.g., "Main Binder").
+*   **Set Defaults**: Configure the attributes that will apply to *all new scans*:
+    *   **Lang**: Default language (e.g., EN, DE). The scanner will try to detect this, but this serves as a fallback.
+    *   **Cond**: Default condition (e.g., Near Mint).
+    *   **Storage**: (Optional) Assign a default container (e.g., "Binder 1").
 
-### Step 3: Review & Resolve
-*   **Success**: The card appears in the **Recent Scans** gallery on the right.
-*   **Ambiguity**: If the scanner finds multiple matches (e.g., same card in multiple sets, or same set with different rarities), an **Ambiguity Dialog** will appear.
-    -   Select the correct version from the list.
-    -   If the correct version isn't listed (e.g. OCR error), you can cancel and retry.
-*   **Failure**: A notification will appear if no card was found. Try adjusting lighting or background contrast.
+#### 2. Capture
+Place the card in the center of the frame.
+*   **Trigger**: Press **SPACEBAR** or click **CAPTURE & SCAN**.
+*   **Freeze Frame**: The video will freeze for a configurable duration (default 1000ms) to confirm the capture.
+*   **Feedback**:
+    *   *Success*: A green notification appears, and the card is added to the right-hand gallery.
+    *   *Ambiguous*: An orange dialog appears asking you to clarify (see below).
+    *   *Failure*: A red notification indicates no match or detection failure.
 
-### Step 4: Manage Recent Scans
-The "Recent Scans" area is a powerful grid view similar to the Bulk Add page.
-*   **Edit**: Click any card to open the **Single Card View**, where you can modify Edition, Condition, Language, or Storage.
-*   **Remove**: Right-click a card to decrease its quantity by 1.
-*   **Filter & Sort**: Use the header controls to search by name/set, sort by price/rarity, or filter by specific attributes.
+#### 3. Resolving Ambiguity
+The system triggers an **Ambiguity Dialog** if:
+*   **DB Ambiguity**: The detected Set Code (e.g., `LOB-EN001`) exists in the database with multiple rarities (e.g., Ultra Rare vs. Secret Rare) or different artworks.
+*   **Match Ambiguity**: The top two candidates have a Score difference smaller than the **Ambiguity Threshold**.
+
+**Action**: Click the correct card from the list. If the correct card is missing (e.g., OCR misread `LOB` as `L0B`), you can dismiss and rescan.
+
+#### 4. Managing "Recent Scans"
+This gallery supports bulk operations similar to the main storage views.
+*   **Right-Click**: Decrement quantity by 1 (removes card if qty becomes 0).
+*   **Tooltip**: Hover over any card to fetch and display the high-resolution artwork from the local cache or API.
+*   **Edit**: Click a card to open the **Single Card View** editor.
+*   **Undo**: Reverts the last action.
+    *   *Logic*: It compares the timestamp of the last "Recent Scan" change vs. the last "Target Collection" change. It effectively undoes whichever happened last.
 *   **Batch Update**:
-    1.  Check the boxes for properties you want to update (Lang, Cond, Storage) in the header.
-    2.  Click **UPDATE** to apply the current Default values to *all visible cards* in the list.
-*   **Undo**: Click the **Undo** button to revert the last action (scan or edit).
+    1.  In the gallery header, check the properties to update (Lang, Cond, Storage).
+    2.  Click **UPDATE**.
+    3.  The system applies the *current defaults* from the top header to *all filtered cards* in the list.
 
-### Step 5: Commit
-Once you are happy with the list:
-1.  Click the **COMMIT** button in the top-right.
-2.  All cards in "Recent Scans" will be moved to your **Target Collection**.
-3.  The Recent Scans list is cleared, ready for the next batch.
+#### 5. Commit
+Click **COMMIT** to move all cards from "Recent Scans" to your **Target Collection**. This action clears the staging area.
 
-## 4. Advanced Configuration (Debug Lab)
+---
 
-If you are having trouble scanning specific cards, the **Debug Lab** offers granular control.
+## 4. Technical Deep Dive: The Matching Algorithm
 
-### Preprocessing Modes
-Determines how the card is isolated from the background.
-*   **Classic**: Standard contour detection. Fast, but needs good contrast (dark background recommended).
-*   **Classic (White BG)**: Optimized for scanning on white surfaces (paper, mats).
-*   **YOLO / YOLOv26**: Uses a Neural Network to detect the card object. Slower but extremely robust against cluttered backgrounds.
+The scanner uses a weighted scoring system to rank database candidates against the OCR results. A score > 30 is required for a match.
 
-### OCR Engines
-*   **EasyOCR**: Faster, general-purpose text reading.
-*   **DocTR**: Slower but significantly more accurate, especially for small text or non-English languages.
+| Factor | Points | Description |
+| :--- | :--- | :--- |
+| **Exact Set Code** | **+80** | OCR matches DB exactly (e.g., `MRD-EN001`). |
+| **Normalized Code** | **+75** | Region-agnostic match (e.g., OCR sees `MRD-DE001`, DB has `MRD-EN001`). |
+| **Name Match** | **+50** | Exact name match (normalized). |
+| **Partial Name** | **+25** | Partial string match on name. |
+| **Passcode** | **+45** | 8-digit code at bottom-left matches exactly. |
+| **Art Match** | **+40** | Artwork matches a specific variant image ID. |
+| **Card Type** | **+10** | "Spell"/"Trap" keyword matches card type. |
+| **Stats** | **+15** (x2) | ATK and/or DEF values match. |
 
-### Art Style Match
-*   **YOLO Classification**: Uses a secondary AI model to verify the card identity by its artwork.
-*   **Index Images**: If enabled, you may need to click "Index Images" to build the database from your local card images (`data/images`).
+**Virtual Candidates**: If the scanner finds a "Normalized Match" (e.g., German card scanned, only English in DB), it injects a "Virtual Candidate" with the scanned Set Code (`MRD-DE...`) and gives it a score boost (+12) to ensure it appears as the top result, allowing you to add the localized variant to your DB automatically.
 
-### Settings
-*   **Rotation**: Rotate the camera feed (0°, 90°, 180°, 270°) if your webcam is mounted upside down or sideways.
-*   **Ambiguity Threshold**: Adjust how strict the matcher is. Lower values result in fewer ambiguity dialogs but higher risk of incorrect rarity assignment.
-*   **Overlay Duration**: How long the "freeze frame" lasts after scanning.
-*   **Save Scans**: Options to save the raw or warped images to `data/scans/` for debugging purposes.
+---
 
-## 5. Troubleshooting
+## 5. Advanced Configuration (Debug Lab)
 
-*   **"No Card Found"**:
-    *   Ensure the background contrasts with the card borders.
-    *   Try switching **Preprocessing Mode** to **YOLO** in the Debug Lab.
-*   **Wrong Set/Rarity**:
-    *   Glare is the enemy. It creates white spots that blind the OCR. Use diffused lighting.
-    *   Increase the **Ambiguity Threshold** to force the dialog to appear more often.
-*   **Scanner is Slow**:
-    *   Disable **DocTR** (use EasyOCR).
-    *   Disable **Art Match**.
-    *   Ensure you are using a GPU if possible.
+The **Debug Lab** tab exposes the internal parameters of the pipeline.
+
+### A. Preprocessing Modes
+Controls how the system finds the card in the video frame.
+1.  **Classic (Default)**: Uses OpenCV Contour detection. Fast. Requires a dark background.
+2.  **Classic (White BG)**: Uses inverted thresholding. Optimized for white paper/mats.
+3.  **YOLO / YOLOv26**: Uses a Neural Network (`yolov8n-obb` or `yolo26l-obb`) to detect the card.
+    *   *Pros*: Extremely robust. Ignores background clutter. Handles partial occlusion.
+    *   *Cons*: Slower (requires GPU for smooth performance).
+
+### B. OCR Engines
+1.  **EasyOCR**:
+    *   *Speed*: Fast.
+    *   *Accuracy*: Good for Set Codes, decent for names.
+2.  **DocTR**:
+    *   *Speed*: Slow (1-2s per scan).
+    *   *Accuracy*: Excellent. Handles non-English characters and small text significantly better.
+
+### C. Thresholds
+*   **Ambiguity Threshold (Default: 10.0)**:
+    *   The "Safety Zone" score difference.
+    *   *Example*: Candidate A (Score 85), Candidate B (Score 80). Diff is 5. Since 5 < 10, the system flags this as ambiguous and asks the user.
+    *   *Tuning*: Lower this value if you want fewer dialogs (but more risk of wrong auto-selection).
+*   **Art Match Threshold (Default: 0.42)**:
+    *   Minimum Cosine Similarity (0.0 - 1.0) required to consider an image a match.
+    *   *Note*: Requires "Index Images" to be run once to build the `art_index_yolo.pkl` from your `data/images` folder.
+
+### D. Visualizations
+*   **Latest Capture**: The raw frame passed to the pipeline.
+*   **Perspective Warp**: The rectified "top-down" view of the card used for OCR.
+*   **Regions of Interest (ROI)**: Boxes showing where the scanner looked for Set ID, Name, and Art.
+
+---
+
+## 6. Troubleshooting
+
+### "No Match Found"
+*   **Cause**: OCR failed to read the Set Code AND Name.
+*   **Fix**:
+    *   Check lighting. Glare on the Set ID is the #1 cause of failure.
+    *   Try **DocTR** engine in Debug Lab.
+    *   Ensure the card is oriented correctly (text right-side up).
+
+### "Scanner is Stuck / Frozen"
+*   **Cause**: The backend worker thread might have crashed or paused.
+*   **Fix**:
+    *   Click **Stop** then **Start** in the Live Scan tab.
+    *   Check the console logs for error tracebacks.
+
+### "Wrong Rarity Detected"
+*   **Cause**: Visual rarity detection (Common vs Foil) is based on pixel brightness variance and specific color thresholds (Gold/Silver).
+*   **Fix**: This is heuristic-only. Always verify the rarity in the Ambiguity Dialog or Recent Scans list.
+
+### "Art Match Not Working"
+*   **Cause**: The index is empty or the image isn't in `data/images`.
+*   **Fix**:
+    1.  Go to **Debug Lab**.
+    2.  Click **Index Images** (Purple button).
+    3.  Wait for the logs to show "Art Index complete".
