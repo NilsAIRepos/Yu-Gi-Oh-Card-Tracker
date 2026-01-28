@@ -333,7 +333,7 @@ class AmbiguityDialog(ui.dialog):
         self.rarity_select.options = rarities
         if self.selected_rarity not in rarities:
             if rarities:
-                self.selected_rarity = rarities[0]
+                self.selected_rarity = rarities[-1]
 
         self.rarity_select.value = self.selected_rarity
         self.rarity_select.update()
