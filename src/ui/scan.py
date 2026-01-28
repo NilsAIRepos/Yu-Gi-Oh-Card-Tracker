@@ -350,6 +350,7 @@ document.addEventListener('keydown', (e) => {
 
 class ScanPage:
     def __init__(self):
+        # ScanPage manages the scanning session
         self.recent_collection: Collection = Collection(name="Recent Scans")
         self.target_collection_file = None
         self.collections = persistence.list_collections()
