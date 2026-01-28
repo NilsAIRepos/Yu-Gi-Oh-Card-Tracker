@@ -830,6 +830,14 @@ class ScannerManager:
             else:
                 logger.info(f"Art Match Discarded: Score {score:.3f} < Threshold {art_threshold}")
 
+        # Passcode Match Check
+        passcode_id = None
+        if ocr_res.card_passcode:
+            try:
+                passcode_id = int(ocr_res.card_passcode)
+            except ValueError:
+                pass
+
         potential_cards = []
 
         for card in cards:
@@ -852,6 +860,11 @@ class ScannerManager:
                  elif any(img.id == art_id for img in card.card_images):
                      is_candidate = True
                  elif card.card_sets and any(s.image_id == art_id for s in card.card_sets):
+                     is_candidate = True
+
+            # Check Passcode
+            if not is_candidate and passcode_id:
+                 if card.id == passcode_id:
                      is_candidate = True
 
             if is_candidate:
@@ -910,6 +923,10 @@ class ScannerManager:
                         val = str(card.def_) if card.def_ is not None else "?"
                         if val == ocr_res.def_val: score += 15.0
                      except: pass
+
+                # E. Passcode Match (+45)
+                if passcode_id and card.id == passcode_id:
+                    score += 45.0
 
                 if score > 30.0: # Minimum threshold
                     # Debug log for Art-Only matches
