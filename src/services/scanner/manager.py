@@ -968,7 +968,8 @@ class ScannerManager:
 
         # A. Database Ambiguity: Top winner has multiple rarities OR multiple images for SAME Set Code
         top = scored_variants[0]
-        same_code_variants = [v for v in scored_variants if v['set_code'] == top['set_code'] and v['score'] >= top['score'] - 5.0]
+        # Use the configured threshold instead of hardcoded 5.0
+        same_code_variants = [v for v in scored_variants if v['set_code'] == top['set_code'] and v['score'] >= top['score'] - threshold]
 
         # Check if they have different rarities
         rarities = set(v['rarity'] for v in same_code_variants)
