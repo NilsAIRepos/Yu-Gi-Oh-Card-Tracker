@@ -350,6 +350,7 @@ document.addEventListener('keydown', (e) => {
 
 class ScanPage:
     def __init__(self):
+        # ScanPage manages the scanning session
         self.recent_collection: Collection = Collection(name="Recent Scans")
         self.target_collection_file = None
         self.collections = persistence.list_collections()
@@ -675,7 +676,7 @@ class ScanPage:
                  image_id=image_id,
                  variant_id=variant_id,
                  mode=mode,
-                 storage_location=entry.storage_location
+                 storage_location=kwargs.get('storage_location', entry.storage_location)
              )
 
              if success:
@@ -1098,7 +1099,8 @@ class ScanPage:
                     first_edition=card_data.get('first_edition'),
                     image_id=card_data.get('image_id'),
                     variant_id=card_data.get('variant_id'),
-                    mode='ADD'
+                    mode='ADD',
+                    storage_location=card_data.get('storage_location')
                  )
 
                  self._update_entry_timestamp(card_data.get('card_id'), card_data, timestamp)
@@ -1304,7 +1306,8 @@ class ScanPage:
                 first_edition=result_dict.get('first_edition', False),
                 image_id=result_dict.get('image_id'),
                 variant_id=result_dict.get('variant_id'),
-                mode='ADD'
+                mode='ADD',
+                storage_location=self.default_storage
             )
 
             # Post-update: Find the entry and set timestamp if added
@@ -1326,7 +1329,8 @@ class ScanPage:
                 'condition': self.default_condition,
                 'first_edition': result_dict.get('first_edition', False),
                 'variant_id': result_dict.get('variant_id'),
-                'image_id': result_dict.get('image_id')
+                'image_id': result_dict.get('image_id'),
+                'storage_location': self.default_storage
             }
             changelog_manager.log_change('scan_temp', 'ADD', card_data, 1)
 
@@ -1593,7 +1597,8 @@ class ScanPage:
                             first_edition=entry.first_edition,
                             image_id=variant.image_id,
                             variant_id=variant.variant_id,
-                            mode='ADD'
+                            mode='ADD',
+                            storage_location=entry.storage_location
                         )
 
                         # Record for log
@@ -1609,7 +1614,8 @@ class ScanPage:
                                 'condition': entry.condition,
                                 'first_edition': entry.first_edition,
                                 'variant_id': variant.variant_id,
-                                'image_id': variant.image_id
+                                'image_id': variant.image_id,
+                                'storage_location': entry.storage_location
                             }
                         })
                         count += entry.quantity
