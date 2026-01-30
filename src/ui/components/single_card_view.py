@@ -12,6 +12,7 @@ import requests
 import os
 from PIL import Image
 import io
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -1076,7 +1077,59 @@ class SingleCardView:
                                     ui.button('Download URL', on_click=download_from_url).props('color=secondary icon=cloud_download').classes('w-full')
 
                                     ui.separator().classes('my-2 bg-gray-600')
-                                    ui.label('OR Upload File').classes('text-white text-sm')
+                                    ui.label('OR Paste / Upload').classes('text-white text-sm')
+
+                                    async def paste_from_clipboard():
+                                        try:
+                                            # Execute client-side JS to read clipboard
+                                            # Requires secure context (localhost or https)
+                                            # We iterate through items to find an image type
+                                            js_code = """
+                                            (async () => {
+                                                try {
+                                                    const items = await navigator.clipboard.read();
+                                                    for (const item of items) {
+                                                        const imageType = item.types.find(type => type.startsWith('image/'));
+                                                        if (imageType) {
+                                                            const blob = await item.getType(imageType);
+                                                            return await new Promise((resolve) => {
+                                                                const reader = new FileReader();
+                                                                reader.onload = () => resolve(reader.result); // Returns data:image/png;base64,...
+                                                                reader.readAsDataURL(blob);
+                                                            });
+                                                        }
+                                                    }
+                                                    return null;
+                                                } catch (err) {
+                                                    console.error('Clipboard read failed:', err);
+                                                    return 'ERROR: ' + err.message;
+                                                }
+                                            })()
+                                            """
+                                            data_url = await ui.run_javascript(js_code, timeout=5.0)
+
+                                            if not data_url:
+                                                ui.notify('No image found in clipboard.', type='warning')
+                                                return
+
+                                            if isinstance(data_url, str) and data_url.startswith('ERROR:'):
+                                                ui.notify(f"Clipboard Access Error: {data_url[7:]}", type='negative')
+                                                return
+
+                                            # Parse Base64 Data URL
+                                            # Format: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAU..."
+                                            if ',' in data_url:
+                                                header, encoded = data_url.split(',', 1)
+                                                content = base64.b64decode(encoded)
+                                                save_new_image(content)
+                                            else:
+                                                ui.notify('Invalid clipboard data format.', type='negative')
+
+                                        except Exception as e:
+                                            logger.error(f"Paste error: {e}")
+                                            ui.notify(f"Failed to paste: {e}", type='negative')
+
+                                    ui.button('Paste from Clipboard', on_click=paste_from_clipboard).props('color=accent icon=content_paste').classes('w-full')
 
                                     # File Upload
                                     def handle_upload(e):
