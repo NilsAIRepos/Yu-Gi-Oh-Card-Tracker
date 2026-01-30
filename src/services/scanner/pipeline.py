@@ -803,8 +803,9 @@ class CardScanner:
             base_conf = confs[i] if i < len(confs) else 0.5
 
             for code, region, num_part in line_candidates:
-                # Basic sanity check: Number part must be digits after fix
-                if num_part.isdigit():
+                # Basic sanity check: Number part must be digits OR the code must be valid in DB
+                # This allows codes like SHSP-ENSE1 to pass through if they exist in the DB
+                if num_part.isdigit() or code in self.valid_set_codes:
                     v_code, v_score = validate_and_score(code, region, base_conf, i)
                     candidates.append((v_code, v_score, region))
 
@@ -817,13 +818,21 @@ class CardScanner:
                 region = m.group(2) if m.group(2) else ""
                 number_raw = m.group(3)
 
+                # 1. Try Direct (Raw) Match
+                # Allows SHSP-ENSE1 if it is valid
+                code_direct = f"{prefix}-{region}{number_raw}" if region else f"{prefix}-{number_raw}"
+                if code_direct in self.valid_set_codes:
+                    v_code, v_score = validate_and_score(code_direct, region, 0.4, 5)
+                    candidates.append((v_code, v_score, region))
+
+                # 2. Try Typo Fixes
                 number_fixed = normalize_number_part(number_raw)
                 region_fixed = region.replace('0', 'O')
+                code_fixed = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
 
-                if number_fixed.isdigit():
-                    code_cand = f"{prefix}-{region_fixed}{number_fixed}" if region_fixed else f"{prefix}-{number_fixed}"
+                if number_fixed.isdigit() or code_fixed in self.valid_set_codes:
                     # Use a moderate index for fallback (e.g., 5) to avoid huge penalties but not boost as "early"
-                    v_code, v_score = validate_and_score(code_cand, region_fixed, 0.4, 5)
+                    v_code, v_score = validate_and_score(code_fixed, region_fixed, 0.4, 5)
                     candidates.append((v_code, v_score, region_fixed))
 
         if not candidates:
