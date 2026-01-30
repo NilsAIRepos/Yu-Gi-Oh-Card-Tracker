@@ -104,7 +104,8 @@ class DbEditorPage:
             'sort_by': saved_state.get('db_editor_sort_by', 'Name'),
             'sort_descending': saved_state.get('db_editor_sort_descending', False),
             'view_mode': saved_state.get('db_editor_view_mode', 'grid'),
-            'main_view': 'cards', # cards, sets, set_detail
+            'main_view': 'cards', # cards, consolidated, sets, set_detail
+            'consolidated_items': [],
             'selected_set_code': None,
             'set_gallery_items': [],
             'sets_search_query': '',
@@ -229,6 +230,8 @@ class DbEditorPage:
 
         if self.state['main_view'] == 'set_detail':
             all_items = self.state.get('set_detail_rows', [])
+        elif self.state['main_view'] == 'consolidated':
+            all_items = self.state.get('consolidated_items', [])
         else:
             all_items = self.state['filtered_items']
 
@@ -323,6 +326,16 @@ class DbEditorPage:
              res.sort(key=lambda x: x.set_price, reverse=reverse)
 
         self.state['filtered_items'] = res
+
+        # Build consolidated items (unique cards from the filtered results)
+        seen_ids = set()
+        cons_items = []
+        for row in res:
+            if row.api_card.id not in seen_ids:
+                seen_ids.add(row.api_card.id)
+                cons_items.append(row)
+        self.state['consolidated_items'] = cons_items
+
         self.state['page'] = 1
         self.update_pagination()
         await self.prepare_current_page_images()
@@ -334,6 +347,8 @@ class DbEditorPage:
             count = len(self.state['set_gallery_items'])
         elif self.state['main_view'] == 'set_detail':
             count = len(self.state.get('set_detail_rows', []))
+        elif self.state['main_view'] == 'consolidated':
+            count = len(self.state.get('consolidated_items', []))
         else:
             count = len(self.state['filtered_items'])
         self.state['total_pages'] = (count + self.state['page_size'] - 1) // self.state['page_size']
@@ -343,6 +358,8 @@ class DbEditorPage:
             items = self.state['set_gallery_items']
         elif self.state['main_view'] == 'set_detail':
             items = self.state.get('set_detail_rows', [])
+        elif self.state['main_view'] == 'consolidated':
+            items = self.state.get('consolidated_items', [])
         else:
             items = self.state['filtered_items']
 
@@ -419,6 +436,59 @@ class DbEditorPage:
         except Exception as e:
             logger.error(f"Error opening edit view: {e}", exc_info=True)
 
+    async def open_consolidated_view(self, row: DbEditorRow):
+        card = row.api_card
+        logger.info(f"Opening consolidated view for card: {card.name}")
+
+        # Find all variants for this card from the global list (not filtered)
+        # This allows seeing all variants even if filters hide them in the main view
+        variants = [r for r in self.state['cards_rows'] if r.api_card.id == card.id]
+
+        async def on_apply_art(variant_ids: List[str], new_image_id: int):
+            logger.info(f"Applying art {new_image_id} to {len(variant_ids)} variants")
+            count = 0
+            for r in variants:
+                if r.variant_id in variant_ids:
+                    success = await ygo_service.update_card_variant(
+                        card_id=card.id,
+                        variant_id=r.variant_id,
+                        set_code=r.set_code,
+                        set_rarity=r.rarity,
+                        image_id=new_image_id,
+                        language=self.state['language']
+                    )
+                    if success: count += 1
+
+            ui.notify(f"Updated artwork for {count} variants.", type='positive')
+            await self.load_data()
+
+        async def on_add_variant(source_variants: List[DbEditorRow], new_image_id: int):
+            logger.info(f"Adding {len(source_variants)} new variants with art {new_image_id}")
+            count = 0
+            for r in source_variants:
+                # Try to resolve set name
+                s_name = await ygo_service.get_set_name_by_code(r.set_code) or r.set_name or "Custom Set"
+
+                new_variant = await ygo_service.add_card_variant(
+                    card_id=card.id,
+                    set_name=s_name,
+                    set_code=r.set_code,
+                    set_rarity=r.rarity,
+                    image_id=new_image_id,
+                    language=self.state['language']
+                )
+                if new_variant: count += 1
+
+            ui.notify(f"Created {count} new variants.", type='positive')
+            await self.load_data()
+
+        await self.single_card_view.open_db_consolidated_view(
+            card=card,
+            variants=variants,
+            on_apply_art=on_apply_art,
+            on_add_variant=on_add_variant
+        )
+
     def _setup_card_tooltip(self, card: ApiCard, specific_image_id: int = None):
         if not card: return
         target_img = card.card_images[0] if card.card_images else None
@@ -443,19 +513,37 @@ class DbEditorPage:
                 img_src = item.image_url
                 if image_manager.image_exists(item.image_id): img_src = f"/images/{item.image_id}.jpg"
 
+                click_handler = lambda c=item: self.open_edit_view(c)
+                if self.state['main_view'] == 'consolidated':
+                    click_handler = lambda c=item: self.open_consolidated_view(c)
+
                 with ui.card().classes('collection-card w-full p-0 cursor-pointer opacity-100 border border-gray-700 hover:scale-105 transition-transform') \
-                        .on('click', lambda c=item: self.open_edit_view(c)):
+                        .on('click', click_handler):
                     with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                         if img_src: ui.image(img_src).classes('w-full h-full object-cover')
-                        ui.label(item.set_code).classes('absolute bottom-0 right-0 bg-black/80 text-white text-[10px] px-1 font-mono rounded-tl')
+
+                        if self.state['main_view'] != 'consolidated':
+                            ui.label(item.set_code).classes('absolute bottom-0 right-0 bg-black/80 text-white text-[10px] px-1 font-mono rounded-tl')
+
                     with ui.column().classes('p-2 gap-0 w-full'):
                         ui.label(item.api_card.name).classes('text-xs font-bold truncate w-full')
-                        ui.label(f"{item.rarity}").classes('text-[10px] text-gray-400')
+                        if self.state['main_view'] != 'consolidated':
+                            ui.label(f"{item.rarity}").classes('text-[10px] text-gray-400')
+                        else:
+                            ui.label(item.api_card.type).classes('text-[10px] text-gray-400 truncate')
+
                     self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
 
     def render_list(self, items: List[DbEditorRow]):
+        is_consolidated = self.state['main_view'] == 'consolidated'
+
         headers = ['Image', 'Name', 'Set', 'Rarity', 'Price']
         cols = '60px 4fr 2fr 1.5fr 1fr'
+
+        if is_consolidated:
+            headers = ['Image', 'Name', 'Type', 'Race', 'Level']
+            cols = '60px 4fr 2fr 2fr 1fr'
+
         with ui.column().classes('w-full gap-1'):
             with ui.grid(columns=cols).classes('w-full bg-gray-800 p-2 font-bold rounded'):
                 for h in headers: ui.label(h)
@@ -463,22 +551,39 @@ class DbEditorPage:
                 img_src = item.image_url
                 if image_manager.image_exists(item.image_id): img_src = f"/images/{item.image_id}.jpg"
 
+                click_handler = lambda c=item: self.open_edit_view(c)
+                if is_consolidated:
+                    click_handler = lambda c=item: self.open_consolidated_view(c)
+
                 with ui.grid(columns=cols).classes('w-full bg-gray-900 p-1 items-center rounded hover:bg-gray-700 transition cursor-pointer') \
-                        .on('click', lambda c=item: self.open_edit_view(c)):
+                        .on('click', click_handler):
                     with ui.image(img_src).classes('h-10 w-8 object-cover'):
                          self._setup_card_tooltip(item.api_card, specific_image_id=item.image_id)
+
                     ui.label(item.api_card.name).classes('truncate text-sm font-bold')
-                    with ui.column().classes('gap-0'):
-                        ui.label(item.set_code).classes('text-xs font-mono font-bold text-yellow-500')
-                        ui.label(item.set_name).classes('text-xs text-gray-400 truncate')
-                    ui.label(item.rarity).classes('text-xs')
-                    ui.label(f"${item.set_price:.2f}").classes('text-sm text-green-400')
+
+                    if not is_consolidated:
+                        with ui.column().classes('gap-0'):
+                            ui.label(item.set_code).classes('text-xs font-mono font-bold text-yellow-500')
+                            ui.label(item.set_name).classes('text-xs text-gray-400 truncate')
+                        ui.label(item.rarity).classes('text-xs')
+                        ui.label(f"${item.set_price:.2f}").classes('text-sm text-green-400')
+                    else:
+                        ui.label(item.api_card.type).classes('text-xs text-gray-400')
+                        ui.label(item.api_card.race).classes('text-xs text-gray-400')
+                        level = str(item.api_card.level) if item.api_card.level else "-"
+                        ui.label(level).classes('text-xs text-gray-400')
 
     @ui.refreshable
     def render_card_display(self):
         start = (self.state['page'] - 1) * self.state['page_size']
-        end = min(start + self.state['page_size'], len(self.state['filtered_items']))
-        page_items = self.state['filtered_items'][start:end]
+
+        items_source = self.state['filtered_items']
+        if self.state['main_view'] == 'consolidated':
+            items_source = self.state.get('consolidated_items', [])
+
+        end = min(start + self.state['page_size'], len(items_source))
+        page_items = items_source[start:end]
 
         if not page_items:
             ui.label('No items found.').classes('w-full text-center text-xl text-grey italic q-mt-xl')
@@ -491,7 +596,7 @@ class DbEditorPage:
 
     @ui.refreshable
     def render_content(self):
-        if self.state['main_view'] == 'cards':
+        if self.state['main_view'] in ['cards', 'consolidated']:
             self.render_card_display()
         elif self.state['main_view'] == 'sets':
             self.render_set_list()
@@ -654,20 +759,22 @@ class DbEditorPage:
                     self.update_pagination_labels()
 
                 if hasattr(self, 'pagination_row'):
-                    self.pagination_row.set_visibility(mode in ['cards', 'sets', 'set_detail'])
+                    self.pagination_row.set_visibility(mode in ['cards', 'sets', 'set_detail', 'consolidated'])
 
                 self.render_content.refresh()
                 self.render_header.refresh()
 
             with ui.button_group():
                 is_cards = self.state['main_view'] == 'cards'
+                is_consolidated = self.state['main_view'] == 'consolidated'
                 is_sets = self.state['main_view'] in ['sets', 'set_detail']
                 ui.button('Cards', on_click=lambda: switch_main_view('cards')).props(f'flat={not is_cards} color=accent')
+                ui.button('Consolidated', on_click=lambda: switch_main_view('consolidated')).props(f'flat={not is_consolidated} color=accent')
                 ui.button('Sets', on_click=lambda: switch_main_view('sets')).props(f'flat={not is_sets} color=accent')
 
             ui.separator().props('vertical')
 
-            if self.state['main_view'] == 'cards':
+            if self.state['main_view'] in ['cards', 'consolidated']:
                 async def on_search(e):
                     self.state['search_text'] = e.value
                     await self.apply_filters()
