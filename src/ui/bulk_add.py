@@ -79,6 +79,23 @@ class BulkCollectionEntry:
     storage_location: Optional[str] = None
     price: float = 0.0
 
+def _resolve_set_name(api_card: ApiCard, target_set_code: str) -> str:
+    if not api_card or not api_card.card_sets:
+        return "Unknown Set"
+
+    # 1. Exact Match
+    for s in api_card.card_sets:
+         if s.set_code == target_set_code:
+             return s.set_name
+
+    # 2. Normalized Match
+    target_norm = normalize_set_code(target_set_code)
+    for s in api_card.card_sets:
+        if normalize_set_code(s.set_code) == target_norm:
+            return s.set_name
+
+    return "Unknown Set"
+
 def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard]) -> List[BulkCollectionEntry]:
     entries = []
     for card in col.cards:
@@ -94,12 +111,7 @@ def _build_collection_entries(col: Collection, api_card_map: Dict[int, ApiCard])
                         img_url = img.image_url_small
                         break
 
-            set_name = "Unknown Set"
-            if api_card.card_sets:
-                for s in api_card.card_sets:
-                     if s.set_code == variant.set_code:
-                         set_name = s.set_name
-                         break
+            set_name = _resolve_set_name(api_card, variant.set_code)
 
             for entry in variant.entries:
                 # Include storage_location in ID to distinguish stacks
@@ -412,12 +424,7 @@ class BulkAddPage:
 
             if new_qty > 0:
                 # Create new entry
-                set_name = "Unknown Set"
-                if api_card.card_sets:
-                    for s in api_card.card_sets:
-                        if s.set_code == set_code:
-                            set_name = s.set_name
-                            break
+                set_name = _resolve_set_name(api_card, set_code)
 
                 # Image URL
                 img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
