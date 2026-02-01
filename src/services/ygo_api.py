@@ -254,6 +254,99 @@ class YugiohService:
         filepath = self._get_db_file(language)
         self._save_json_file(filepath, data)
 
+    async def ensure_card_variant(self, card_id: int, set_code: str, set_rarity: str, image_id: Optional[int] = None, language: str = "en") -> bool:
+        """
+        Ensures a variant exists in the database. If not, adds it.
+        Returns True if a new variant was added.
+        """
+        cards = await self.load_card_database(language)
+        card = next((c for c in cards if c.id == card_id), None)
+        if not card: return False
+
+        # Check if exists
+        exists = False
+        if card.card_sets:
+            for s in card.card_sets:
+                if s.set_code == set_code and s.set_rarity == set_rarity:
+                    exists = True
+                    break
+
+        if not exists:
+            # Resolve Set Name
+            set_name = await self.get_set_name_by_code(set_code) or "Unknown Set"
+            await self.add_card_variant(
+                card_id=card_id,
+                set_name=set_name,
+                set_code=set_code,
+                set_rarity=set_rarity,
+                image_id=image_id,
+                language=language
+            )
+            return True
+        return False
+
+    async def ensure_card_variants(self, variants: List[Dict[str, Any]], language: str = "en") -> int:
+        """
+        Batch ensures variants exist.
+        variants: List of dicts with keys: card_id, set_code, set_rarity, image_id (optional)
+        """
+        if not variants: return 0
+
+        cards = await self.load_card_database(language)
+        card_map = {c.id: c for c in cards}
+        added_count = 0
+        modified = False
+
+        for v in variants:
+            card_id = v.get('card_id')
+            set_code = v.get('set_code')
+            set_rarity = v.get('set_rarity')
+            image_id = v.get('image_id')
+
+            if not card_id or not set_code or not set_rarity: continue
+
+            card = card_map.get(card_id)
+            if not card: continue
+
+            exists = False
+            if card.card_sets:
+                for s in card.card_sets:
+                    if s.set_code == set_code and s.set_rarity == set_rarity:
+                        exists = True
+                        break
+
+            if not exists:
+                set_name = await self.get_set_name_by_code(set_code) or "Unknown Set"
+
+                # Logic from add_card_variant but without immediate save
+                # Resolve set_rarity_code
+                set_rarity_code = None
+                abbr = RARITY_ABBREVIATIONS.get(set_rarity)
+                if abbr:
+                    set_rarity_code = f"({abbr})"
+
+                new_variant_id = str(uuid.uuid4())
+
+                new_set = ApiCardSet(
+                    variant_id=new_variant_id,
+                    set_name=set_name,
+                    set_code=set_code,
+                    set_rarity=set_rarity,
+                    set_rarity_code=set_rarity_code,
+                    set_price="0.00",
+                    image_id=image_id
+                )
+
+                card.card_sets.append(new_set)
+                added_count += 1
+                modified = True
+                logger.info(f"Batch ensure: Added variant {set_code} to card {card_id}")
+
+        if modified:
+             await self.save_card_database(cards, language)
+
+        return added_count
+
     async def add_card_variant(self, card_id: int, set_name: str, set_code: str, set_rarity: str,
                                set_rarity_code: Optional[str] = None, set_price: Optional[str] = None,
                                image_id: Optional[int] = None, language: str = "en") -> Optional[ApiCardSet]:
