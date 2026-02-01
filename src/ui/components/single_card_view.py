@@ -35,6 +35,12 @@ class SingleCardView:
                 image_element.update()
                 return
 
+        # Check local standard-res (fallback for custom art that doesn't have remote high-res)
+        if not high_res_remote_url and image_manager.image_exists(img_id, high_res=False):
+                image_element.source = f"/images/{img_id}.jpg"
+                image_element.update()
+                return
+
         # Use remote high-res directly, fallback to low-res only if high-res is missing
         image_element.source = high_res_remote_url if high_res_remote_url else low_res_url
         image_element.update()
