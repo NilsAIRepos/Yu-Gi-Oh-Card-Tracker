@@ -1955,13 +1955,8 @@ class BulkAddPage:
 
                         ui.separator().props('vertical')
 
-                        async def on_col_search(e):
-                            if self.col_state['search_text'] == e.value:
-                                return
-                            await self.apply_collection_filters()
-
                         ui.input(placeholder='Search...',
-                                 on_change=on_col_search) \
+                                 on_change=lambda e: self.apply_collection_filters()) \
                             .bind_value(self.col_state, 'search_text') \
                             .props('dense borderless dark debounce=300') \
                             .classes('w-52 text-sm')
