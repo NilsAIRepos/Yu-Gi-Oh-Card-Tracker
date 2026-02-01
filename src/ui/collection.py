@@ -5,7 +5,7 @@ from src.core.models import Collection, CollectionCard, CollectionVariant, Colle
 from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
-from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, LANGUAGE_COUNTRY_MAP
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, LANGUAGE_COUNTRY_MAP, REGION_TO_LANGUAGE_MAP, is_set_code_compatible, extract_language_code
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
 from src.services.collection_editor import CollectionEditor
@@ -83,116 +83,158 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
         owned_variants = {v.variant_id: v for v in c_card.variants} if c_card else {}
         processed_variant_ids = set()
 
-        # Map: set_index (in card.card_sets) -> list of matched CollectionVariant
-        assignments = {}
-
         img_url = card.card_images[0].image_url_small if card.card_images else None
         default_image_id = card.card_images[0].id if card.card_images else None
 
-        # 1. Process API Sets
+        # 1. Group API sets by (normalized_code, rarity)
+        api_groups = {} # (norm_code, rarity) -> List[ApiCardSet]
         if card.card_sets:
-            # Pass 1: Exact Matches
-            for i, cset in enumerate(card.card_sets):
-                target_variant_id = cset.variant_id
-                exact_match = owned_variants.get(target_variant_id)
+            for cset in card.card_sets:
+                norm = normalize_set_code(cset.set_code)
+                key = (norm, cset.set_rarity)
+                if key not in api_groups: api_groups[key] = []
+                api_groups[key].append(cset)
 
-                if exact_match:
-                    if i not in assignments: assignments[i] = []
-                    assignments[i].append(exact_match)
-                    processed_variant_ids.add(exact_match.variant_id)
+        # 2. Process Groups
+        for (norm_code, rarity), group_sets in api_groups.items():
+            matched_owned = []
 
-            # Pass 2: Fuzzy Matches
-            for i, cset in enumerate(card.card_sets):
-                # Only if not fully claimed?
-                # A set can match multiple owned variants (regional codes).
-                # But a variant should only belong to one set (the best match).
+            # Find owned variants belonging to this group
+            for var_id, var in owned_variants.items():
+                if var_id in processed_variant_ids:
+                    continue
 
-                norm_api = normalize_set_code(cset.set_code)
+                # Check compatibility
+                # Exact variant ID match? (Ideally yes, if API variant ID matches)
+                # Or fuzzy match on normalized code + rarity
 
-                for var_id, var in owned_variants.items():
-                    # Skip if already processed (by Exact match in Pass 1, or previous Fuzzy match)
-                    if var_id in processed_variant_ids:
-                        continue
+                # Note: normalize_set_code is cheap
+                var_norm = normalize_set_code(var.set_code)
+                if var_norm == norm_code and var.rarity == rarity:
+                     matched_owned.append(var)
+                     processed_variant_ids.add(var_id)
 
-                    # Check normalization match
-                    if normalize_set_code(var.set_code) == norm_api and var.rarity == cset.set_rarity:
-                        if i not in assignments: assignments[i] = []
-                        assignments[i].append(var)
-                        processed_variant_ids.add(var_id)
+            if matched_owned:
+                # Create rows for owned variants
+                for cv in matched_owned:
+                    groups = {}
+                    for entry in cv.entries:
+                        k = (entry.language, entry.condition, entry.first_edition)
+                        groups[k] = groups.get(k, 0) + entry.quantity
 
-            # Generate Rows from Assignments
-            for i, cset in enumerate(card.card_sets):
-                set_name = cset.set_name
-                set_code = cset.set_code
-                rarity = cset.set_rarity
+                    # Resolve image
+                    row_img_url = img_url
+                    if cv.image_id:
+                         for img in card.card_images:
+                             if img.id == cv.image_id:
+                                 row_img_url = img.image_url_small
+                                 break
+
+                    # Get Set Name/Price from API group if possible (best effort match)
+                    # We can pick the API set that matches the owned set code best
+                    best_api_set = group_sets[0]
+                    for s in group_sets:
+                        if s.set_code == cv.set_code:
+                            best_api_set = s
+                            break
+
+                    set_name = best_api_set.set_name
+                    price = 0.0
+                    if best_api_set.set_price:
+                        try: price = float(best_api_set.set_price)
+                        except: pass
+
+                    for (lang, cond, first), qty in groups.items():
+                        group_entries = [e for e in cv.entries if e.language == lang and e.condition == cond and e.first_edition == first]
+                        rows.append(CollectorRow(
+                            api_card=card,
+                            set_code=cv.set_code,
+                            set_name=set_name,
+                            rarity=rarity,
+                            price=price,
+                            image_url=row_img_url,
+                            owned_count=qty,
+                            is_owned=True,
+                            language=lang,
+                            condition=cond,
+                            first_edition=first,
+                            image_id=cv.image_id,
+                            variant_id=cv.variant_id,
+                            entries=group_entries
+                        ))
+            else:
+                # Create ONE unowned row for this group
+                # Pick representative set
+                # Priority: Match 'language' arg, then 'EN', then first
+                representative = None
+
+                # Try exact language match (Explicit Region)
+                for s in group_sets:
+                    if extract_language_code(s.set_code) == language.upper():
+                        representative = s
+                        break
+
+                if not representative:
+                     # Try compatible match (e.g. Base codes for any language)
+                    for s in group_sets:
+                        if is_set_code_compatible(s.set_code, language):
+                            representative = s
+                            break
+
+                if not representative:
+                    # Try EN
+                    for s in group_sets:
+                        if is_set_code_compatible(s.set_code, "EN"):
+                            representative = s
+                            break
+
+                if not representative:
+                    representative = group_sets[0]
+
+                set_name = representative.set_name
+                set_code = representative.set_code
                 price = 0.0
-                if cset.set_price:
-                    try: price = float(cset.set_price)
+                if representative.set_price:
+                    try: price = float(representative.set_price)
                     except: pass
 
                 row_img_url = img_url
-                if cset.image_id:
+                if representative.image_id:
                      for img in card.card_images:
-                         if img.id == cset.image_id:
+                         if img.id == representative.image_id:
                              row_img_url = img.image_url_small
                              break
 
-                matched_variants = assignments.get(i, [])
+                # Determine base language for display
+                base_lang = "EN"
+                if "-" in set_code:
+                    parts = set_code.split('-')
+                    if len(parts) > 1:
+                        reg_match = re.match(r'^([A-Za-z]+)', parts[1])
+                        if reg_match:
+                            r = reg_match.group(1).upper()
+                            if r in REGION_TO_LANGUAGE_MAP:
+                                base_lang = REGION_TO_LANGUAGE_MAP[r]
+                            elif r in ['EN', 'DE', 'FR', 'IT', 'PT', 'ES', 'JP']: # Fallback
+                                base_lang = r
 
-                if matched_variants:
-                    for matched_cv in matched_variants:
-                        groups = {}
-                        for entry in matched_cv.entries:
-                            k = (entry.language, entry.condition, entry.first_edition)
-                            groups[k] = groups.get(k, 0) + entry.quantity
+                rows.append(CollectorRow(
+                    api_card=card,
+                    set_code=set_code,
+                    set_name=set_name,
+                    rarity=rarity,
+                    price=price,
+                    image_url=row_img_url,
+                    owned_count=0,
+                    is_owned=False,
+                    language=base_lang,
+                    condition="Near Mint",
+                    first_edition=False,
+                    image_id=representative.image_id,
+                    variant_id=representative.variant_id
+                ))
 
-                        for (lang, cond, first), qty in groups.items():
-                            group_entries = [e for e in matched_cv.entries if e.language == lang and e.condition == cond and e.first_edition == first]
-                            rows.append(CollectorRow(
-                                api_card=card,
-                                set_code=matched_cv.set_code, # Use owned set code
-                                set_name=set_name,
-                                rarity=rarity,
-                                price=price,
-                                image_url=row_img_url,
-                                owned_count=qty,
-                                is_owned=True,
-                                language=lang,
-                                condition=cond,
-                                first_edition=first,
-                                image_id=matched_cv.image_id,
-                                variant_id=matched_cv.variant_id,
-                                entries=group_entries
-                            ))
-                else:
-                    # Empty Row
-                    base_lang = "EN"
-                    if "-" in set_code:
-                        parts = set_code.split('-')
-                        if len(parts) > 1:
-                            reg_match = re.match(r'^([A-Za-z]+)', parts[1])
-                            if reg_match:
-                                r = reg_match.group(1).upper()
-                                if r in ['EN', 'DE', 'FR', 'IT', 'PT', 'ES', 'JP']:
-                                    base_lang = r
-
-                    rows.append(CollectorRow(
-                        api_card=card,
-                        set_code=set_code,
-                        set_name=set_name,
-                        rarity=rarity,
-                        price=price,
-                        image_url=row_img_url,
-                        owned_count=0,
-                        is_owned=False,
-                        language=base_lang,
-                        condition="Near Mint",
-                        first_edition=False,
-                        image_id=cset.image_id,
-                        variant_id=cset.variant_id
-                    ))
-
-        # 2. Handle Custom/Unknown Variants
+        # 3. Handle Custom/Unknown Variants
         for var_id, cv in owned_variants.items():
             if var_id not in processed_variant_ids:
                 groups = {}
@@ -226,7 +268,7 @@ def build_collector_rows(api_cards: List[ApiCard], owned_details: Dict[int, Coll
                         entries=group_entries
                     ))
 
-        # 3. Fallback if no sets in API and no owned variants
+        # 4. Fallback if no sets in API and no owned variants
         if not card.card_sets and not owned_variants:
              rows.append(CollectorRow(
                     api_card=card,
