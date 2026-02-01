@@ -349,6 +349,15 @@ class BulkAddPage:
             return False
 
         try:
+            # Ensure variant exists in global DB (using app language)
+            await ygo_service.ensure_card_variant(
+                card_id=api_card.id,
+                set_code=set_code,
+                set_rarity=rarity,
+                image_id=img_id,
+                language=config_manager.get_language().lower()
+            )
+
             modified = CollectionEditor.apply_change(
                 collection=self.current_collection_obj,
                 api_card=api_card,
@@ -803,6 +812,22 @@ class BulkAddPage:
         updated_count = 0
         collection = self.current_collection_obj
 
+        # Pre-process to ensure new variants exist if set code changes due to language
+        variants_to_ensure = []
+        for entry in entries:
+            new_lang = defaults['lang'] if apply_lang else entry.language
+            final_set_code = transform_set_code(entry.set_code, new_lang)
+            if final_set_code != entry.set_code:
+                 variants_to_ensure.append({
+                    'card_id': entry.api_card.id,
+                    'set_code': final_set_code,
+                    'set_rarity': entry.rarity,
+                    'image_id': entry.image_id
+                })
+
+        if variants_to_ensure:
+            await ygo_service.ensure_card_variants(variants_to_ensure, language=config_manager.get_language().lower())
+
         # We must use a copy of entries because we might be modifying the source list indirectly
         # (though entries here is usually a list from state, safely separate from the collection object structure)
         for entry in entries:
@@ -970,6 +995,20 @@ class BulkAddPage:
         processed_changes = []
         added_count = 0
         collection = self.current_collection_obj
+
+        # Pre-process to ensure variants exist
+        variants_to_ensure = []
+        for entry in entries:
+            final_set_code = transform_set_code(entry.set_code, lang)
+            variants_to_ensure.append({
+                'card_id': entry.api_card.id,
+                'set_code': final_set_code,
+                'set_rarity': entry.rarity,
+                'image_id': entry.image_id
+            })
+
+        if variants_to_ensure:
+            await ygo_service.ensure_card_variants(variants_to_ensure, language=config_manager.get_language().lower())
 
         for entry in entries:
             final_set_code = transform_set_code(entry.set_code, lang)

@@ -1005,6 +1005,15 @@ class CollectionPage:
                     self._update_in_memory(api_card, "", "", src_lang, -src_qty, src_cond, src_first, None, src_var_id, mode='ADD')
 
                     # 2. Add to Target
+                    # Ensure target variant exists
+                    await ygo_service.ensure_card_variant(
+                        card_id=api_card.id,
+                        set_code=set_code,
+                        set_rarity=rarity,
+                        image_id=image_id,
+                        language=config_manager.get_language().lower()
+                    )
+
                     CollectionEditor.apply_change(
                         col, api_card,
                         set_code=set_code, rarity=rarity,
@@ -1030,6 +1039,15 @@ class CollectionPage:
 
             else:
                 # Standard ADD/SET
+                # Ensure variant exists in global DB
+                await ygo_service.ensure_card_variant(
+                    card_id=api_card.id,
+                    set_code=set_code,
+                    set_rarity=rarity,
+                    image_id=image_id,
+                    language=config_manager.get_language().lower()
+                )
+
                 modified = CollectionEditor.apply_change(
                     collection=col,
                     api_card=api_card,
