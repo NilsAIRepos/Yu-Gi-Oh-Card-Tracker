@@ -842,8 +842,8 @@ class CardScanner:
         best_id, best_score, best_region = candidates[0]
 
         lang = "EN"
-        if best_region in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
-            lang = best_region
+        if best_region in REGION_TO_LANGUAGE_MAP:
+            lang = REGION_TO_LANGUAGE_MAP[best_region]
 
         return best_id, best_score, lang
 
@@ -868,11 +868,20 @@ class CardScanner:
     def detect_language(self, warped, set_id: Optional[str]) -> str:
         """Determines card language."""
         if set_id:
+            # Try to extract region from Set ID
+            m = re.match(r'^([A-Z0-9]+)-([A-Z]+)(\d+)$', set_id)
+            if m:
+                region = m.group(2)
+                if region in REGION_TO_LANGUAGE_MAP:
+                    return REGION_TO_LANGUAGE_MAP[region]
+
+            # Fallback for simple dash split if regex fails but structure is similar
             parts = set_id.split('-')
             if len(parts) > 1:
+                # Check for known 2-letter regions first
                 suffix = parts[1][:2]
-                if suffix in ['EN', 'DE', 'FR', 'IT', 'ES', 'PT', 'JP']:
-                    return suffix
+                if suffix in REGION_TO_LANGUAGE_MAP:
+                    return REGION_TO_LANGUAGE_MAP[suffix]
 
         try:
              x, y, w, h = self.roi_desc
