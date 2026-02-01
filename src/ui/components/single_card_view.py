@@ -1019,140 +1019,200 @@ class SingleCardView:
                             art_select.classes('w-full').props('dark')
 
                             def open_new_art_dialog():
-                                with ui.dialog() as new_art_d, ui.card().classes('w-96 bg-gray-900 border border-gray-700'):
+                                # State to hold image data (bytes)
+                                new_art_state = {
+                                    'low_res': None,
+                                    'high_res': None
+                                }
+
+                                # UI Elements references for updates
+                                previews = {
+                                    'low_res': None,
+                                    'high_res': None
+                                }
+
+                                with ui.dialog() as new_art_d, ui.card().classes('w-[90vw] max-w-5xl bg-gray-900 border border-gray-700'):
 
                                     def on_close():
-                                        # Reset selection if still NEW (i.e. cancelled)
+                                        # Reset selection if cancelled (if value is still NEW)
                                         if art_select.value == 'NEW':
                                            art_select.value = input_state['image_id']
 
                                     new_art_d.on('close', on_close)
 
-                                    ui.label('Add New Artstyle').classes('text-h6 text-white')
+                                    ui.label('Add New Artstyle').classes('text-h5 text-white q-mb-md')
+                                    ui.label('Both Low Resolution (Standard) and High Resolution images are required.').classes('text-gray-400 q-mb-lg')
 
-                                    # URL Input
-                                    url_input = ui.input('Image URL').props('dark').classes('w-full')
-
-                                    def save_new_image(content: bytes):
-                                        # Generate ID
-                                        while True:
-                                            new_id = random.randint(100000000, 999999999)
-                                            if not image_manager.image_exists(new_id):
-                                                break
-
-                                        path = image_manager.get_local_path(new_id)
-                                        # Ensure directory exists
-                                        os.makedirs(os.path.dirname(path), exist_ok=True)
-
+                                    def update_preview(key, content: bytes):
+                                        if not content: return
                                         try:
+                                            # Convert bytes to base64 for preview
+                                            b64 = base64.b64encode(content).decode('utf-8')
+                                            src = f"data:image/jpeg;base64,{b64}"
+                                            if previews[key]:
+                                                previews[key].source = src
+                                                previews[key].update()
+                                        except Exception as e:
+                                            logger.error(f"Error updating preview for {key}: {e}")
+
+                                    async def process_image_input(key, content: bytes):
+                                        try:
+                                            # Validate/Convert to JPEG
                                             img = Image.open(io.BytesIO(content))
                                             img = img.convert('RGB')
-                                            img.save(path, 'JPEG', quality=90)
+                                            out = io.BytesIO()
+                                            img.save(out, 'JPEG', quality=90)
+                                            final_content = out.getvalue()
+
+                                            new_art_state[key] = final_content
+                                            update_preview(key, final_content)
+                                            ui.notify(f"{'Low' if key == 'low_res' else 'High'} Res image updated!", type='positive')
                                         except Exception as e:
-                                             logger.error(f"Error saving image: {e}")
-                                             ui.notify(f"Error processing image: {e}", type='negative')
-                                             return
+                                            logger.error(f"Error processing image input: {e}")
+                                            ui.notify(f"Invalid image data: {e}", type='negative')
 
-                                        # Update UI
-                                        ui.notify('New artwork added!', type='positive')
-                                        art_options[new_id] = f"Custom Art (ID: {new_id})"
+                                    def render_input_column(key, title):
+                                        with ui.column().classes('w-full flex-1 p-4 bg-gray-800 rounded border border-gray-700'):
+                                            ui.label(title).classes('text-lg font-bold text-white mb-2')
 
-                                        # Update Dropdown
-                                        art_select.options = art_options
-                                        art_select.value = new_id
-                                        art_select.update()
+                                            # Preview Area
+                                            with ui.element('div').classes('w-full aspect-[2/3] bg-black mb-4 flex items-center justify-center overflow-hidden rounded relative'):
+                                                previews[key] = ui.image().classes('w-full h-full object-contain')
+                                                ui.label('No Image').classes('absolute text-gray-500 text-sm')
 
-                                        new_art_d.close()
+                                            # Inputs
+                                            ui.label('Input Method (New input overwrites existing)').classes('text-xs text-gray-400 mb-1')
 
-                                    async def download_from_url():
-                                        url = url_input.value
-                                        if not url: return
+                                            # 1. URL
+                                            url_input = ui.input('Image URL').props('dark dense').classes('w-full')
 
-                                        ui.notify('Downloading...', type='info')
-                                        try:
-                                            # Download
-                                            resp = await run.io_bound(requests.get, url)
-                                            if resp.status_code == 200:
-                                                content = resp.content
-                                                save_new_image(content)
-                                            else:
-                                                ui.notify(f"Download failed: {resp.status_code}", type='negative')
-                                        except Exception as e:
-                                            ui.notify(f"Error: {e}", type='negative')
+                                            async def download_url():
+                                                url = url_input.value
+                                                if not url: return
+                                                ui.notify('Downloading...', type='info')
+                                                try:
+                                                    resp = await run.io_bound(requests.get, url)
+                                                    if resp.status_code == 200:
+                                                        await process_image_input(key, resp.content)
+                                                    else:
+                                                        ui.notify(f"Download failed: {resp.status_code}", type='negative')
+                                                except Exception as e:
+                                                    ui.notify(f"Error: {e}", type='negative')
 
-                                    ui.button('Download URL', on_click=download_from_url).props('color=secondary icon=cloud_download').classes('w-full')
+                                            ui.button('Download URL', on_click=download_url).props('color=secondary icon=cloud_download dense').classes('w-full mb-2')
 
-                                    ui.separator().classes('my-2 bg-gray-600')
-                                    ui.label('OR Paste / Upload').classes('text-white text-sm')
-
-                                    async def paste_from_clipboard():
-                                        try:
-                                            # Execute client-side JS to read clipboard
-                                            # Requires secure context (localhost or https)
-                                            # We iterate through items to find an image type
-                                            js_code = """
-                                            (async () => {
-                                                try {
-                                                    const items = await navigator.clipboard.read();
-                                                    for (const item of items) {
-                                                        const imageType = item.types.find(type => type.startsWith('image/'));
-                                                        if (imageType) {
-                                                            const blob = await item.getType(imageType);
-                                                            return await new Promise((resolve) => {
-                                                                const reader = new FileReader();
-                                                                reader.onload = () => resolve(reader.result); // Returns data:image/png;base64,...
-                                                                reader.readAsDataURL(blob);
-                                                            });
+                                            # 2. Clipboard
+                                            async def paste_clipboard():
+                                                try:
+                                                    js_code = """
+                                                    (async () => {
+                                                        try {
+                                                            const items = await navigator.clipboard.read();
+                                                            for (const item of items) {
+                                                                const imageType = item.types.find(type => type.startsWith('image/'));
+                                                                if (imageType) {
+                                                                    const blob = await item.getType(imageType);
+                                                                    return await new Promise((resolve) => {
+                                                                        const reader = new FileReader();
+                                                                        reader.onload = () => resolve(reader.result);
+                                                                        reader.readAsDataURL(blob);
+                                                                    });
+                                                                }
+                                                            }
+                                                            return null;
+                                                        } catch (err) {
+                                                            return 'ERROR: ' + err.message;
                                                         }
-                                                    }
-                                                    return null;
-                                                } catch (err) {
-                                                    console.error('Clipboard read failed:', err);
-                                                    return 'ERROR: ' + err.message;
-                                                }
-                                            })()
-                                            """
-                                            data_url = await ui.run_javascript(js_code, timeout=5.0)
+                                                    })()
+                                                    """
+                                                    data_url = await ui.run_javascript(js_code, timeout=5.0)
 
-                                            if not data_url:
-                                                ui.notify('No image found in clipboard.', type='warning')
+                                                    if not data_url:
+                                                        ui.notify('No image found in clipboard.', type='warning')
+                                                        return
+
+                                                    if isinstance(data_url, str) and data_url.startswith('ERROR:'):
+                                                        ui.notify(f"Clipboard Error: {data_url[7:]}", type='negative')
+                                                        return
+
+                                                    if ',' in data_url:
+                                                        _, encoded = data_url.split(',', 1)
+                                                        content = base64.b64decode(encoded)
+                                                        await process_image_input(key, content)
+                                                    else:
+                                                        ui.notify('Invalid clipboard data.', type='negative')
+                                                except Exception as e:
+                                                    ui.notify(f"Paste failed: {e}", type='negative')
+
+                                            ui.button('Paste Clipboard', on_click=paste_clipboard).props('color=accent icon=content_paste dense').classes('w-full mb-2')
+
+                                            # 3. Upload
+                                            async def handle_upload(e):
+                                                try:
+                                                    file_obj = getattr(e, 'content', getattr(e, 'file', None))
+                                                    if not file_obj:
+                                                        ui.notify("No file content found", type='negative')
+                                                        return
+                                                    content = await file_obj.read()
+                                                    await process_image_input(key, content)
+                                                except Exception as err:
+                                                    logger.error(f"Upload error: {err}")
+                                                    ui.notify(f"Upload failed: {err}", type='negative')
+
+                                            ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=".jpg,.jpeg,.png,.webp" dark dense flat').classes('w-full')
+
+                                    # Layout
+                                    with ui.row().classes('w-full gap-4'):
+                                        render_input_column('low_res', 'Low Resolution (Standard)')
+                                        render_input_column('high_res', 'High Resolution')
+
+                                    ui.separator().classes('my-4 bg-gray-600')
+
+                                    # Footer Actions
+                                    with ui.row().classes('w-full justify-end gap-4'):
+                                        ui.button('Cancel', on_click=new_art_d.close).props('flat color=white')
+
+                                        async def save_final():
+                                            if not new_art_state['low_res'] or not new_art_state['high_res']:
+                                                ui.notify('Both Low and High resolution images are required.', type='warning')
                                                 return
 
-                                            if isinstance(data_url, str) and data_url.startswith('ERROR:'):
-                                                ui.notify(f"Clipboard Access Error: {data_url[7:]}", type='negative')
-                                                return
+                                            # Generate ID
+                                            while True:
+                                                new_id = random.randint(100000000, 999999999)
+                                                if not image_manager.image_exists(new_id):
+                                                    break
 
-                                            # Parse Base64 Data URL
-                                            # Format: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAU..."
-                                            if ',' in data_url:
-                                                header, encoded = data_url.split(',', 1)
-                                                content = base64.b64decode(encoded)
-                                                save_new_image(content)
-                                            else:
-                                                ui.notify('Invalid clipboard data format.', type='negative')
+                                            # Save Files
+                                            try:
+                                                # Ensure data dir exists
+                                                # get_local_path returns full path including filename
+                                                path_low = image_manager.get_local_path(new_id, high_res=False)
+                                                os.makedirs(os.path.dirname(path_low), exist_ok=True)
 
-                                        except Exception as e:
-                                            logger.error(f"Paste error: {e}")
-                                            ui.notify(f"Failed to paste: {e}", type='negative')
+                                                with open(path_low, 'wb') as f:
+                                                    f.write(new_art_state['low_res'])
 
-                                    ui.button('Paste from Clipboard', on_click=paste_from_clipboard).props('color=accent icon=content_paste').classes('w-full')
+                                                path_high = image_manager.get_local_path(new_id, high_res=True)
+                                                with open(path_high, 'wb') as f:
+                                                    f.write(new_art_state['high_res'])
 
-                                    # File Upload
-                                    async def handle_upload(e):
-                                        try:
-                                            file_obj = getattr(e, 'content', getattr(e, 'file', None))
-                                            if not file_obj:
-                                                ui.notify("No file content found", type='negative')
-                                                return
-                                            content = await file_obj.read()
-                                            save_new_image(content)
-                                        except Exception as err:
-                                            logger.error(f"Upload error: {err}")
-                                            ui.notify(f"Upload failed: {err}", type='negative')
+                                                # Success
+                                                ui.notify('New artwork saved!', type='positive')
+                                                art_options[new_id] = f"Custom Art (ID: {new_id})"
 
-                                    ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=".jpg,.jpeg,.png,.webp" dark').classes('w-full')
+                                                art_select.options = art_options
+                                                art_select.value = new_id
+                                                art_select.update()
 
-                                    ui.button('Cancel', on_click=new_art_d.close).props('flat color=white')
+                                                new_art_d.close()
+
+                                            except Exception as e:
+                                                logger.error(f"Error saving new artwork files: {e}")
+                                                ui.notify(f"Save failed: {e}", type='negative')
+
+                                        ui.button('Save Picture', on_click=save_final).props('color=positive icon=save')
+
                                 new_art_d.open()
 
                             def on_art_change(e):
