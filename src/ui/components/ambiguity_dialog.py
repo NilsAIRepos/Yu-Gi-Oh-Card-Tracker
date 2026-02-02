@@ -177,7 +177,7 @@ class AmbiguityDialog(ui.dialog):
             for s in self.full_card_data.card_sets:
                 # STRICT FILTERING: Only show codes compatible with the selected language
                 if is_set_code_compatible(s.set_code, target_lang):
-                    key = (s.set_code, s.set_rarity)
+                    key = (s.set_code, s.set_rarity, s.image_id)
                     variants.append({
                         'set_code': s.set_code,
                         'rarity': s.set_rarity,
@@ -199,7 +199,7 @@ class AmbiguityDialog(ui.dialog):
                  if not is_set_code_compatible(new_code, target_lang):
                      continue
 
-                 key = (new_code, s.set_rarity)
+                 key = (new_code, s.set_rarity, s.image_id)
 
                  # If we already have this exact variant from the DB, skip it (prefer DB source)
                  if key in seen_keys:
