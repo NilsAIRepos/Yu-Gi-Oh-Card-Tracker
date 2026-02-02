@@ -1148,6 +1148,11 @@ class DeckBuilderPage:
 
             if error_msg:
                 ui.notify(error_msg, type='negative')
+                # Immediately remove the invalid element from the DOM
+                if new_index is not None and to_zone:
+                    js_remove = f"var p = document.getElementById('deck-{to_zone}'); if(p && p.children[{new_index}]) p.children[{new_index}].remove();"
+                    await ui.run_javascript(js_remove)
+
                 # Revert UI by refreshing zones involved
                 if to_zone in valid_zones:
                     self.refresh_zone(to_zone)
