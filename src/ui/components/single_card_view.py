@@ -1314,7 +1314,7 @@ class SingleCardView:
         variants: List[Any],
         on_apply_art: Callable[[List[str], int], Any],
         on_add_variant: Callable[[List[Any], int], Any],
-        on_id_change: Callable[[int], Any] = None
+        on_copy_card: Callable[[int], Any] = None
     ):
         try:
             # Prepare initial state
@@ -1375,31 +1375,32 @@ class SingleCardView:
                         with ui.row().classes('items-center justify-between w-full'):
                             ui.label(f"Consolidated View: {card.name}").classes('text-3xl font-bold text-white')
 
-                        # ID Display and Edit
+                        # ID Display and Clone
                         with ui.row().classes('items-center gap-2 q-mb-md'):
                              ui.label(f"ID: {card.id}").classes('text-gray-400 font-mono text-sm')
-                             if on_id_change:
-                                 async def edit_id():
+                             if on_copy_card:
+                                 async def clone_id():
                                      with ui.dialog() as id_d, ui.card():
-                                         ui.label(f"Edit ID for {card.name}").classes('text-lg font-bold')
-                                         ui.label("Changing the ID will update all variants.").classes('text-sm text-gray-500')
+                                         ui.label(f"Clone {card.name} to New ID").classes('text-lg font-bold')
+                                         ui.label("This will create a copy of the card with the new ID. The current card remains unchanged.").classes('text-sm text-gray-500')
                                          new_id_input = ui.number('New ID', value=card.id, format='%d').props('autofocus')
 
-                                         async def save_id():
+                                         async def save_clone():
                                              new_val = int(new_id_input.value)
                                              if new_val == card.id:
-                                                 id_d.close()
+                                                 ui.notify("New ID must be different.", type='warning')
                                                  return
                                              id_d.close()
-                                             d.close() # Close main dialog as data will reload
-                                             await on_id_change(new_val)
+                                             d.close() # Close main dialog to refresh list
+                                             await on_copy_card(new_val)
 
                                          with ui.row().classes('w-full justify-end'):
                                              ui.button('Cancel', on_click=id_d.close).props('flat')
-                                             ui.button('Save', on_click=save_id).props('color=primary')
+                                             ui.button('Clone', on_click=save_clone).props('color=secondary icon=content_copy')
                                      id_d.open()
 
-                                 ui.button(icon='edit', on_click=edit_id).props('flat round dense color=white size=sm')
+                                 with ui.button(icon='content_copy', on_click=clone_id).props('flat round dense color=white size=sm'):
+                                     ui.tooltip('Clone as New ID')
 
                         ui.label(f"Total Variants: {len(sorted_variants)}").classes('text-gray-400 q-mb-lg')
 

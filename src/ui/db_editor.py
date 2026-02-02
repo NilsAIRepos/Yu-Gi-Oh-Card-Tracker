@@ -487,22 +487,22 @@ class DbEditorPage:
             ui.notify(f"Created {count} new variants.", type='positive')
             await self.load_data()
 
-        async def on_id_change(new_id: int):
-            logger.info(f"Changing ID for card {card.name} from {card.id} to {new_id}")
+        async def on_copy_card(new_id: int):
+            logger.info(f"Cloning card {card.name} ({card.id}) to new ID {new_id}")
             lang = self.state['language'].lower() if self.state['language'] else 'en'
-            success = await ygo_service.update_card_id(card.id, new_id, lang)
+            success = await ygo_service.copy_card_to_new_id(card.id, new_id, lang)
             if success:
-                ui.notify(f"Card ID updated to {new_id}", type='positive')
+                ui.notify(f"Card cloned successfully to ID {new_id}", type='positive')
                 await self.load_data()
             else:
-                ui.notify(f"Failed to update ID (Collision?)", type='negative')
+                ui.notify(f"Failed to clone card (ID {new_id} might exist)", type='negative')
 
         await self.single_card_view.open_db_consolidated_view(
             card=card,
             variants=variants,
             on_apply_art=on_apply_art,
             on_add_variant=on_add_variant,
-            on_id_change=on_id_change
+            on_copy_card=on_copy_card
         )
 
     def _setup_card_tooltip(self, card: ApiCard, specific_image_id: int = None):

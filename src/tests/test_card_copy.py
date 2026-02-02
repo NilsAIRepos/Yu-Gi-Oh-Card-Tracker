@@ -8,7 +8,7 @@ with patch.dict(sys.modules, {'nicegui': MagicMock(), 'nicegui.run': MagicMock()
     from src.core.models import ApiCard, ApiCardSet
 
 @pytest.mark.asyncio
-async def test_update_card_id():
+async def test_copy_card_to_new_id():
     service = YugiohService()
 
     # Mock data
@@ -41,18 +41,29 @@ async def test_update_card_id():
     service.load_card_database = AsyncMock(return_value=[card, existing_card])
     service.save_card_database = AsyncMock()
 
-    result = await service.update_card_id(original_id, new_id)
+    result = await service.copy_card_to_new_id(original_id, new_id)
     assert result is False
 
     # Test 2: Success
-    service.load_card_database = AsyncMock(return_value=[card])
+    mock_db = [card] # Mutable list to simulate DB
+    service.load_card_database = AsyncMock(return_value=mock_db)
     service.save_card_database = AsyncMock()
 
-    result = await service.update_card_id(original_id, new_id)
+    result = await service.copy_card_to_new_id(original_id, new_id)
 
     assert result is True
-    assert card.id == new_id
-    # Check that variant ID has been updated
-    assert card.card_sets[0].variant_id != variant_id
+
+    # Verify both cards exist
+    assert len(mock_db) == 2
+    assert mock_db[0].id == original_id
+
+    new_card = mock_db[1]
+    assert new_card.id == new_id
+    assert new_card.name == "Test Card"
+
+    # Check that variant ID has been updated for new card
+    assert new_card.card_sets[0].variant_id != variant_id
+    # Ensure original is untouched
+    assert mock_db[0].card_sets[0].variant_id == variant_id
 
     service.save_card_database.assert_called_once()

@@ -491,36 +491,38 @@ class YugiohService:
         logger.info(f"Deleted variant {variant_id} from card {card_id}")
         return True
 
-    async def update_card_id(self, old_id: int, new_id: int, language: str = "en") -> bool:
+    async def copy_card_to_new_id(self, old_id: int, new_id: int, language: str = "en") -> bool:
         """
-        Updates the ID of a card in the database.
-        Regenerates variant IDs for all its variants.
+        Creates a copy of a card with a new ID.
+        Regenerates variant IDs for the new copy.
         """
         cards = await self.load_card_database(language)
 
         # Check if new ID exists
         if any(c.id == new_id for c in cards):
-            logger.warning(f"Cannot update card ID: New ID {new_id} already exists.")
+            logger.warning(f"Cannot copy card: New ID {new_id} already exists.")
             return False
 
         card = next((c for c in cards if c.id == old_id), None)
         if not card:
-            logger.error(f"Card {old_id} not found for ID update.")
+            logger.error(f"Card {old_id} not found for copy.")
             return False
 
-        # Update ID
-        card.id = new_id
+        # Create Deep Copy
+        new_card = card.model_copy(deep=True) if hasattr(card, 'model_copy') else card.copy(deep=True)
+        new_card.id = new_id
 
-        # Regenerate Variant IDs
-        if card.card_sets:
-            for s in card.card_sets:
+        # Regenerate Variant IDs for the new card
+        if new_card.card_sets:
+            for s in new_card.card_sets:
                 # Use the new card ID to generate the variant ID
                 s.variant_id = generate_variant_id(
-                    card.id, s.set_code, s.set_rarity, s.image_id
+                    new_card.id, s.set_code, s.set_rarity, s.image_id
                 )
 
+        cards.append(new_card)
         await self.save_card_database(cards, language)
-        logger.info(f"Updated card ID from {old_id} to {new_id} and regenerated variants.")
+        logger.info(f"Copied card {old_id} to new ID {new_id}.")
         return True
 
     async def load_card_database(self, language: str = "en") -> List[ApiCard]:
