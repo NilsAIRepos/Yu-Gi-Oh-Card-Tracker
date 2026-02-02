@@ -132,6 +132,15 @@ class ApiCard(BaseModel):
     card_sets: List[ApiCardSet] = []
     card_prices: List[ApiCardPrice] = []
 
+    @property
+    def is_extra_deck(self) -> bool:
+        """
+        Determines if the card belongs in the Extra Deck.
+        Checks for Fusion, Synchro, XYZ, or Link in the card type.
+        """
+        extra_types = ["Fusion", "Synchro", "XYZ", "Link"]
+        return any(t in self.type for t in extra_types)
+
     def get_best_image_id(self) -> int:
         """
         Returns the best available image ID for the card.

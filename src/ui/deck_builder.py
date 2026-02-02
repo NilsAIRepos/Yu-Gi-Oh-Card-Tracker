@@ -1131,6 +1131,30 @@ class DeckBuilderPage:
         # Validate zones
         valid_zones = ['main', 'extra', 'side']
 
+        # Validate Card Type vs Zone
+        validation_card_id = None
+        if new_index is not None and new_index < len(to_ids):
+             validation_card_id = to_ids[new_index]
+
+        if validation_card_id and validation_card_id in self.api_card_map:
+            card = self.api_card_map[validation_card_id]
+            is_extra = card.is_extra_deck
+
+            error_msg = None
+            if to_zone == 'main' and is_extra:
+                error_msg = "Extra Deck cards cannot be placed in Main Deck."
+            elif to_zone == 'extra' and not is_extra:
+                error_msg = "Main Deck cards cannot be placed in Extra Deck."
+
+            if error_msg:
+                ui.notify(error_msg, type='negative')
+                # Revert UI by refreshing zones involved
+                if to_zone in valid_zones:
+                    self.refresh_zone(to_zone)
+                if from_zone in valid_zones:
+                    self.refresh_zone(from_zone)
+                return
+
         # Update 'to' zone
         if to_zone in valid_zones:
             setattr(deck, to_zone, to_ids)
