@@ -269,6 +269,62 @@ class DeckBuilderPage:
             lines.append(f"{item['quantity']} {item['name']}")
         return "\n".join(lines)
 
+    def deck_to_ydk_string(self, deck: Deck) -> str:
+        """Generates a .ydk file content string from a Deck object."""
+        lines = ["#created by OpenYugi", "#main"]
+        for card_id in deck.main:
+            lines.append(str(card_id))
+
+        lines.append("#extra")
+        for card_id in deck.extra:
+            lines.append(str(card_id))
+
+        lines.append("!side")
+        for card_id in deck.side:
+            lines.append(str(card_id))
+
+        return "\n".join(lines)
+
+    def calculate_missing_deck(self) -> Deck:
+        """
+        Creates a new Deck object containing only the cards missing from the reference collection,
+        preserving their original zones.
+        """
+        current_deck = self.state['current_deck']
+        if not current_deck:
+            return Deck(name="Empty")
+
+        ref_col = self.state['reference_collection']
+        owned_map = {}
+        if ref_col:
+            for c in ref_col.cards:
+                owned_map[c.card_id] = c.total_quantity
+
+        missing_deck = Deck(name=f"{current_deck.name}_Missing")
+
+        # Process Main
+        for card_id in current_deck.main:
+            if owned_map.get(card_id, 0) > 0:
+                owned_map[card_id] -= 1
+            else:
+                missing_deck.main.append(card_id)
+
+        # Process Extra
+        for card_id in current_deck.extra:
+            if owned_map.get(card_id, 0) > 0:
+                owned_map[card_id] -= 1
+            else:
+                missing_deck.extra.append(card_id)
+
+        # Process Side
+        for card_id in current_deck.side:
+            if owned_map.get(card_id, 0) > 0:
+                owned_map[card_id] -= 1
+            else:
+                missing_deck.side.append(card_id)
+
+        return missing_deck
+
     def refresh_zone(self, zone):
         self._refresh_zone_content(zone)
 
@@ -1247,10 +1303,20 @@ class DeckBuilderPage:
                                 content = self.generate_json_export(data)
                                 ui.download(content.encode('utf-8'), f"{self.state['current_deck_name']}_{mode}.json")
                                 d.close()
+                            elif format_type == 'ydk':
+                                if mode == 'missing':
+                                    deck_obj = self.calculate_missing_deck()
+                                else:
+                                    deck_obj = self.state['current_deck']
+
+                                content = self.deck_to_ydk_string(deck_obj)
+                                ui.download(content.encode('utf-8'), f"{self.state['current_deck_name']}_{mode}.ydk")
+                                d.close()
                             elif format_type == 'cardmarket':
                                 content = self.generate_cardmarket_export(data)
                                 render_cardmarket_view(content)
 
+                        ui.button('YDK', on_click=lambda: handle_export('ydk')).classes('flex-grow').props('color=accent')
                         ui.button('CSV', on_click=lambda: handle_export('csv')).classes('flex-grow')
                         ui.button('JSON', on_click=lambda: handle_export('json')).classes('flex-grow')
                         ui.button('Cardmarket', on_click=lambda: handle_export('cardmarket')).classes('flex-grow')
