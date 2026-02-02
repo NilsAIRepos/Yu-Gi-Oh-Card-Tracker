@@ -137,7 +137,10 @@ class YugiohService:
         local_map = {c.id: c for c in local_cards}
         merged_list = []
 
+        processed_card_ids = set()
+
         for api_card in api_cards:
+            processed_card_ids.add(api_card.id)
             local_card = local_map.get(api_card.id)
 
             # Determine default image ID for this card (fallback if specific mapping missing)
@@ -222,10 +225,11 @@ class YugiohService:
                     )
                 merged_list.append(api_card)
 
-        # We generally do not keep cards that are in Local but NOT in API,
-        # as that usually means they were removed/invalid.
-        # (Unless we support custom cards which have IDs not in API range?)
-        # For now, we stick to API as master list for existence of cards.
+        # Add any local cards that were NOT in the API (e.g. custom cards)
+        # We previously dropped them, but now we keep them to prevent data loss.
+        for l_card in local_cards:
+            if l_card.id not in processed_card_ids:
+                merged_list.append(l_card)
 
         return merged_list
 
