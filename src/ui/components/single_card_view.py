@@ -1200,6 +1200,7 @@ class SingleCardView:
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
                         # Header
                         ui.label(f"Edit Database Entry: {card.name}").classes('text-2xl font-bold text-accent q-mb-md')
+                        ui.label(f"Card ID: {card.id}").classes('text-xs text-gray-500 font-mono')
                         ui.label(f"Variant ID: {variant_id}").classes('text-xs text-gray-500 font-mono q-mb-xl')
 
                         # Form
@@ -1382,6 +1383,7 @@ class SingleCardView:
                     with ui.column().classes('col h-full bg-gray-900 text-white p-8 scroll-y-auto'):
                         # Header
                         ui.label(f"Consolidated View: {card.name}").classes('text-3xl font-bold text-white q-mb-md')
+                        ui.label(f"Card ID: {card.id}").classes('text-xs text-gray-500 font-mono q-mb-xs')
                         ui.label(f"Total Variants: {len(sorted_variants)}").classes('text-gray-400 q-mb-lg')
 
                         # --- Variant List ---
