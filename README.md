@@ -32,11 +32,12 @@ For detailed guides, tutorials, and help, please visit our **[Wiki](docs/Home.md
 ## ✨ Key Features at a Glance
 
 *   **Smart Inventory**: Track infinite cards with granular details (Set Code, Rarity, Condition, Language, Edition).
+*   **Storage Management**: Organize your collection into Binders and Boxes with visual feedback.
 *   **Dual-Mode Views**: Switch between "Player Mode" (consolidated copies) and "Collector Mode" (specific printings).
 *   **Pro Deck Builder**: Full `.ydk` support, integrated banlist validation, and collection cross-referencing.
 *   **Market Integration**: Automatic price fetching from Cardmarket and TCGPlayer.
-*   **Bulk Operations**: Add, move, or edit hundreds of cards at once.
-*   **Migration Tools**: Import from Cardmarket stock files or backup JSONs.
+*   **Bulk Operations**: Add, move, or edit hundreds of cards at once via Drag-and-Drop.
+*   **AI Scanner**: Webcam-based card recognition using OCR and Art Matching.
 
 ---
 
@@ -48,10 +49,12 @@ Follow this comprehensive guide to set up your environment.
 
 **Prerequisites**
 *   **Python 3.10 or newer**: [Download Here](https://www.python.org/downloads/). Verify with `python --version`.
-*   **(Optional) Tesseract OCR**: Only required for the experimental scanner.
-    *   **Windows**: [Download Installer](https://github.com/UB-Mannheim/tesseract/wiki). **Important**: During installation, ensure you check "Add to PATH".
-    *   **Linux**: `sudo apt-get install tesseract-ocr`
-    *   **macOS**: `brew install tesseract`
+*   **(Optional) Scanner Dependencies**:
+    *   **Tesseract OCR**: Required for text recognition.
+        *   **Windows**: [Download Installer](https://github.com/UB-Mannheim/tesseract/wiki). **Important**: Check "Add to PATH" during installation.
+        *   **Linux**: `sudo apt-get install tesseract-ocr`
+        *   **macOS**: `brew install tesseract`
+    *   **Python Libraries**: The scanner requires `opencv-python`, `torch`, and `easyocr`/`doctr`. These are included in `requirements.txt` but may require system-level dependencies on Linux.
 
 **Step-by-Step Installation**
 
@@ -77,7 +80,6 @@ Follow this comprehensive guide to set up your environment.
     ```bash
     pip install -r requirements.txt
     ```
-    *Troubleshooting*: If you see errors related to `opencv-python`, try upgrading pip: `pip install --upgrade pip`.
 
 4.  **Launch the Application**
     ```bash
@@ -105,12 +107,13 @@ Populate your database using one of these methods:
 
 *   **Method B: Bulk Add (Best for lists)**
     1.  Navigate to **Bulk Add**.
-    2.  Search your cards and edit your collection with right click. You can also add whole structure decks.
-    3.  Click **Process**.
+    2.  Use the **Library** pane (left) to search for cards.
+    3.  **Drag and Drop** cards into your **Collection** pane (right).
+    4.  Use the "Update" controls to batch-apply Language, Condition, or Storage Location to selected cards.
 
 *   **Method C: Import (Best for migration)**
     1.  Go to **Import Tools**.
-    2.  Upload a supported file (see *Import/Export* section below).
+    2.  Upload a supported file (Cardmarket Stock File or Backup JSON).
 
 ---
 
@@ -130,12 +133,23 @@ The **Collection View** is the heart of OpenYuGi. It is designed to handle thous
     *   *Behavior*: Displays a separate row for every distinct printing.
     *   *Info*: "MRD-047 (Ultra) - 1x", "MRL-047 (Common) - 3x".
 
-#### Filters & sorting
+#### Filters & Sorting
 The filter pane (accessible via the Filter icon) offers granular control:
 *   **Set Code**: Supports loose matching (`LOB`) or strict matching (`| LOB`).
 *   **Rarity**: Filter by specific rarities (e.g., "Quarter Century Secret Rare").
 *   **Stats**: Filter by ATK/DEF ranges, Level, or Scale.
 *   **Ownership**: Toggle "Owned Only" to hide database cards you don't have.
+
+### 🗃️ Storage Management
+
+Organize your physical inventory to match your digital one.
+
+*   **Binders & Boxes**: Create named storage locations (e.g., "Binder 1", "Bulk Box A").
+*   **Visual Gallery**: View all your storage containers with card counts.
+*   **Assignment**:
+    *   Assign cards to storage during **Scan** or **Bulk Add**.
+    *   Right-click cards in the **Storage** page to move them in or out of containers.
+    *   Filter your Collection view by specific Storage Locations.
 
 ### 🛠 Professional Deck Builder
 
@@ -145,7 +159,6 @@ The Deck Builder is fully compatible with the wider Yugioh ecosystem.
 *   **Banlist Integration**:
     *   The app automatically fetches **TCG**, **OCG**, and **Goat** lists.
     *   Illegal cards are visually highlighted with red borders.
-    *   *Note*: Edison format is not currently supported by the auto-fetcher.
 *   **Collection Sync**: The builder shows you exactly how many copies of a card you own while you build. No more proxying cards you thought you had!
 
 ### 🔄 Import / Export Tools
@@ -155,11 +168,6 @@ OpenYuGi removes the friction of moving data.
 #### Supported Import Formats
 1.  **Cardmarket Stock File (`.txt`, `.pdf`)**:
     *   Export your stock from Cardmarket and upload it here.
-    *   *Format Example*:
-        ```text
-        1x "Blue-Eyes White Dragon" (LOB-001) - Near Mint - English - 50,00 €
-        3x "Pot of Greed" (LOB-119) - Played - German - 1,50 €
-        ```
 2.  **OpenYuGi JSON Backup**:
     *   Restores a full collection snapshot.
 
@@ -177,18 +185,17 @@ Sometimes the official API is wrong, or you have a custom proxy.
 
 ---
 
-## 📸 AI-Powered Webcam Scanner (Experimental)
-![Status](https://img.shields.io/badge/Status-Not%20Working%20Yet-red)
+## 📸 AI-Powered Webcam Scanner (Beta)
+![Status](https://img.shields.io/badge/Status-Beta-yellow)
 
-> **⚠️ WARNING**: This feature is currently a **Work In Progress**. It is included in the codebase for developers but is **not functional** for end-users.
+The Scanner allows you to digitize your physical cards rapidly.
 
-**Current Status**:
-The scanner pipeline (OpenCV -> Contour Detection -> Perspective Transform -> Tesseract OCR) is implemented but requires significant tuning for lighting conditions and camera focus.
-
-**Planned Capabilities**:
-1.  **Auto-Detection**: Place a card under the camera; the app detects the border.
-2.  **Code Reading**: OCR extracts the Set Code (e.g., `LOB-EN001`).
-3.  **DB Lookup**: The code is matched against your local database to identify the card.
+**Features**:
+*   **Live Scan**: Point your webcam at a card. The app detects the card boundary, corrects perspective, and performs OCR.
+*   **Dual-Track Recognition**: Uses **EasyOCR** or **DocTR** for text reading, combined with **YOLO** for Art Style matching.
+*   **Ambiguity Resolution**: If multiple prints exist (e.g., same set code but different rarity), the app prompts you to select the correct one.
+*   **Batch Commit**: Scanned cards are added to a temporary "Recent Scans" list. Review them, apply bulk edits (Condition/Language), and commit them to your collection in one click.
+*   **Debug Lab**: Advanced users can visualize the pipeline steps (Edge Detection, Warp, ROI Extraction) to tune parameters.
 
 ---
 
@@ -199,12 +206,8 @@ For developers and power users who want to touch the metal.
 ### Data Sources & APIs
 OpenYuGi relies on powerful external APIs to provide accurate data without maintaining a massive centralized server.
 
-*   **YGOPRODeck API**:
-    *   **Role**: Primary source for Card Data, Card Images, and Set Information.
-    *   **Usage**: The app downloads a local database cache (`card_db.json`) from YGOPRODeck.
-*   **Yugipedia**:
-    *   **Role**: Source for **Structure Deck** import data.
-    *   **Usage**: The `YugipediaService` parses wiki pages to allow you to bulk-import entire Structure Decks (including bonus cards) with a single click.
+*   **YGOPRODeck API**: Primary source for Card Data and Images.
+*   **Yugipedia**: Source for Structure Deck import data.
 
 ### Directory Structure
 ```
@@ -239,7 +242,8 @@ Your collection is stored as a list of **CollectionCard** objects. Here is what 
           "condition": "Near Mint",
           "language": "EN",
           "first_edition": true,
-          "purchase_price": 50.00
+          "purchase_price": 50.00,
+          "storage_location": "Binder 1"
         }
       ]
     }
@@ -256,15 +260,12 @@ Your collection is stored as a list of **CollectionCard** objects. Here is what 
 *   **Fix**: Always run the application from the root directory using `python main.py`.
 
 ### "The Scanner is disabled"
-*   **Cause**: You did not install Tesseract or the `pytesseract` library could not find the executable.
-*   **Fix**: Install Tesseract (see Installation section) and restart the app. This feature is optional.
+*   **Cause**: You did not install Tesseract or `pytesseract` could not find the executable.
+*   **Fix**: Install Tesseract (see Installation section) and restart the app.
 
 ### "Images are missing"
 *   **Cause**: OpenYuGi uses **Lazy Loading**. Images are downloaded on-demand.
 *   **Fix**: Ensure you have an internet connection. If images still fail, check the `data/images` folder permissions.
-
-### "I can't find Edison Format"
-*   **Status**: The auto-fetcher only grabs TCG, OCG, and Goat lists. Edison support is planned but not yet implemented.
 
 ---
 
