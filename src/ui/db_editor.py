@@ -152,9 +152,9 @@ class DbEditorPage:
             elif ("Spell" in c.type or "Trap" in c.type) and c.race: st_races.add(c.race)
 
         self.state['available_sets'] = sorted(list(sets))
-        self.state['available_monster_races'] = sorted(list(m_races))
-        self.state['available_st_races'] = sorted(list(st_races))
-        self.state['available_archetypes'] = sorted(list(archetypes))
+        self.state['available_monster_races'] = sorted([r for r in list(m_races) if r])
+        self.state['available_st_races'] = sorted([r for r in list(st_races) if r])
+        self.state['available_archetypes'] = sorted([a for a in list(archetypes) if a])
 
         self.state['cards_rows'] = await run.io_bound(build_db_rows, api_cards)
         await self.apply_filters()
@@ -880,9 +880,37 @@ class DbEditorPage:
                     with ui.row().classes('w-full gap-4 items-start'):
                          with ui.column().classes('gap-1'):
                              ui.label(data['name']).classes('text-h5 font-bold text-white')
-                             ui.label(data['type']).classes('text-yellow-500 font-mono')
-                             ui.label(f"ATK: {data.get('atk')} / DEF: {data.get('def')}").classes('text-gray-300')
-                             ui.label(f"Level/Rank: {data.get('level')} | Attribute: {data.get('attribute')} | Race: {data.get('race')}").classes('text-gray-400 text-sm')
+
+                             type_str = data.get('type', 'Unknown Type')
+                             ui.label(type_str).classes('text-yellow-500 font-mono')
+
+                             # ID Display
+                             if data.get('database_id'):
+                                 ui.label(f"ID: {data['database_id']}").classes('text-xs text-gray-500 font-mono')
+
+                             # Conditional Stats Display
+                             is_monster = "Monster" in type_str or "Token" in type_str
+                             is_link = "Link" in type_str
+
+                             if is_monster:
+                                 atk = data.get('atk')
+                                 def_ = data.get('def')
+                                 if is_link:
+                                     ui.label(f"ATK: {atk} / Link-{data.get('linkval', '?')}").classes('text-gray-300 font-bold')
+                                     if data.get('linkmarkers'):
+                                         arrows = ", ".join(data['linkmarkers'])
+                                         ui.label(f"Arrows: {arrows}").classes('text-xs text-blue-400')
+                                 else:
+                                     ui.label(f"ATK: {atk} / DEF: {def_}").classes('text-gray-300 font-bold')
+                                     level = data.get('level')
+                                     if level:
+                                         lbl = "Rank" if "XYZ" in type_str else "Level"
+                                         ui.label(f"{lbl}: {level}").classes('text-gray-400 text-sm')
+
+                                 ui.label(f"Attribute: {data.get('attribute')} | Race: {data.get('race')}").classes('text-gray-400 text-sm')
+                             else:
+                                 # Spell/Trap
+                                 ui.label(f"Property: {data.get('race') or 'Normal'}").classes('text-gray-300')
 
                          with ui.column().classes('flex-grow'):
                              ui.markdown(f"**Description:**\n{data.get('desc')}").classes('text-gray-300 text-sm italic')

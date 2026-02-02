@@ -1065,6 +1065,8 @@ class YugiohService:
                     atk=card_data.get("atk"),
                     def_=card_data.get("def"), # Pydantic alias handling requires explicit field name often
                     level=card_data.get("level"),
+                    linkval=card_data.get("linkval"),
+                    linkmarkers=card_data.get("linkmarkers"),
                     attribute=card_data.get("attribute"),
                     card_sets=[],
                     card_images=[]
@@ -1095,6 +1097,8 @@ class YugiohService:
                 if target_card.level is None and card_data.get("level") is not None: target_card.level = card_data["level"]
                 if not target_card.attribute and card_data.get("attribute"): target_card.attribute = card_data["attribute"]
                 if not target_card.race and card_data.get("race"): target_card.race = card_data["race"]
+                if target_card.linkval is None and card_data.get("linkval") is not None: target_card.linkval = card_data["linkval"]
+                if not target_card.linkmarkers and card_data.get("linkmarkers"): target_card.linkmarkers = card_data["linkmarkers"]
 
             # 2. Add Selected Sets
             added_sets = 0

@@ -481,6 +481,9 @@ class YugipediaService:
 
         # Types
         types_raw = get_param("types") or get_param("type")
+        card_type = get_param("card_type")
+        property_ = get_param("property")
+
         if types_raw:
             # Parse types "Dragon / Synchro / Effect"
             parts = [t.strip() for t in types_raw.split('/')]
@@ -519,24 +522,61 @@ class YugipediaService:
                 if base == "Normal Monster" and "Tuner" in parts: base = "Normal Tuner Monster"
 
                 data["type"] = base
+        elif card_type:
+            # Fallback when 'types' is missing (e.g. Spells/Traps often have card_type=Spell)
+            if "Spell" in card_type:
+                data["type"] = "Spell Card"
+            elif "Trap" in card_type:
+                data["type"] = "Trap Card"
+            elif "Skill" in card_type:
+                data["type"] = "Skill Card"
+            elif "Token" in card_type:
+                data["type"] = "Token"
 
-        # ATK/DEF/Level
+        # Race handling for Spells/Traps (use Property)
+        if (not data["race"] or data["race"] == "None") and property_:
+            data["race"] = property_
+
+        # ATK/DEF/Level/Link
         atk = get_param("atk")
         if atk and atk.isdigit(): data["atk"] = int(atk)
 
         def_ = get_param("def")
         if def_ and def_.isdigit(): data["def"] = int(def_)
 
-        level = get_param("level") or get_param("rank") or get_param("link_rating")
+        level = get_param("level") or get_param("rank")
         if level and level.isdigit(): data["level"] = int(level)
+
+        link_rating = get_param("link_rating")
+        if link_rating and link_rating.isdigit():
+             data["linkval"] = int(link_rating)
+             # Map linkval to level for generic UI display if level is missing
+             if data["level"] is None:
+                 data["level"] = int(link_rating)
+
+        link_arrows_raw = get_param("link_arrows")
+        if link_arrows_raw:
+             # Split by comma
+             arrows = [a.strip() for a in link_arrows_raw.split(',')]
+             data["linkmarkers"] = arrows
+
+             # Fallback for linkval if explicitly missing
+             if data.get("linkval") is None:
+                  data["linkval"] = len(arrows)
+                  if data["level"] is None:
+                      data["level"] = len(arrows)
 
         # Desc
         text = get_param("text") or ""
         data["desc"] = self._clean_wikitext(text)
 
-        # ID
+        # ID: Prioritize Passcode (printed on card) over database_id (internal ID)
+        passcode = get_param("password") or get_param("passcode")
         db_id = get_param("database_id")
-        if db_id and db_id.isdigit():
+
+        if passcode and passcode.isdigit():
+            data["database_id"] = int(passcode)
+        elif db_id and db_id.isdigit():
              data["database_id"] = int(db_id)
 
         # Sets
