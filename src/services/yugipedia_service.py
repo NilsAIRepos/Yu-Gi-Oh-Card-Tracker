@@ -380,4 +380,202 @@ class YugipediaService:
         # Fallback: Return as is, or try simple lookup
         return r
 
+    async def get_card_details(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        Parses a Yugipedia card page URL and returns card details.
+        """
+        try:
+            # Extract title from URL
+            # Format: https://yugipedia.com/wiki/Stardust_Dragon
+            match = re.search(r'/wiki/([^/]+)$', url)
+            if not match:
+                logger.error(f"Invalid Yugipedia URL: {url}")
+                return None
+
+            title = match.group(1)
+            # Decode URL encoding (e.g. %20 -> space)
+            import urllib.parse
+            title = urllib.parse.unquote(title)
+
+            wikitext = await self._fetch_wikitext(title)
+            if not wikitext:
+                return None
+
+            return self._parse_card_table(wikitext, title)
+
+        except Exception as e:
+            logger.error(f"Error parsing card details from {url}: {e}")
+            return None
+
+    async def _fetch_wikitext(self, title: str) -> Optional[str]:
+        params = {
+            "action": "query",
+            "titles": title,
+            "prop": "revisions",
+            "rvprop": "content",
+            "format": "json"
+        }
+
+        try:
+            if hasattr(run, 'io_bound'):
+                response = await run.io_bound(requests.get, self.API_URL, params=params, headers=self.HEADERS)
+            else:
+                response = await asyncio.to_thread(requests.get, self.API_URL, params=params, headers=self.HEADERS)
+
+            if response.status_code == 200:
+                data = response.json()
+                pages = data.get("query", {}).get("pages", {})
+                for pid, page in pages.items():
+                    if pid == "-1": return None
+                    if "revisions" in page:
+                        return page["revisions"][0]["*"]
+        except Exception as e:
+            logger.error(f"Error fetching wikitext for {title}: {e}")
+        return None
+
+    def _parse_card_table(self, wikitext: str, page_title: str) -> Dict[str, Any]:
+        """Parses the {{CardTable2}} template."""
+        data = {
+            "name": page_title.replace('_', ' '),
+            "type": "Normal Monster", # Default
+            "desc": "",
+            "atk": None,
+            "def": None,
+            "level": None,
+            "race": None,
+            "attribute": None,
+            "sets": [],
+            "database_id": None,
+            "image_url": None
+        }
+
+        # Regex to find the content of CardTable2
+        table_match = re.search(r'\{\{CardTable2(.*)\}\}', wikitext, re.DOTALL)
+        if not table_match:
+             # Try fallback if it's not strictly enclosed or has trailing chars
+             table_match = re.search(r'\{\{CardTable2(.*)', wikitext, re.DOTALL)
+
+        if not table_match:
+            logger.warning("No CardTable2 found")
+            return data
+
+        content = table_match.group(1)
+        # Remove comments from content
+        content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
+
+        # Helper to extract param value
+        def get_param(key: str) -> Optional[str]:
+            # Matches | key = value (multiline safe)
+            pattern = r'\|\s*' + re.escape(key) + r'\s*=\s*(.*?)(?=\n\s*\||\}\}|$)'
+            m = re.search(pattern, content, re.DOTALL)
+            if m:
+                return m.group(1).strip()
+            return None
+
+        # Stats
+        data["name"] = get_param("en_name") or get_param("name") or data["name"]
+
+        # Attribute
+        attr = get_param("attribute")
+        if attr: data["attribute"] = attr.upper()
+
+        # Types
+        types_raw = get_param("types") or get_param("type")
+        if types_raw:
+            # Parse types "Dragon / Synchro / Effect"
+            parts = [t.strip() for t in types_raw.split('/')]
+            if parts:
+                data["race"] = parts[0] # First is usually race
+
+                # Construct Type string
+                is_effect = "Effect" in parts
+
+                base = ""
+                if "Link" in parts: base = "Link Monster"
+                elif "XYZ" in parts:
+                    base = "XYZ Monster"
+                    if "Pendulum" in parts: base = "XYZ Pendulum Effect Monster"
+                elif "Synchro" in parts:
+                    base = "Synchro Monster"
+                    if "Pendulum" in parts: base = "Synchro Pendulum Effect Monster"
+                    elif "Tuner" in parts: base = "Synchro Tuner Monster"
+                elif "Fusion" in parts:
+                    base = "Fusion Monster"
+                elif "Ritual" in parts:
+                    base = "Ritual Monster"
+                elif "Pendulum" in parts:
+                     base = "Pendulum Effect Monster" if is_effect else "Pendulum Normal Monster"
+                elif "Token" in parts:
+                    base = "Token"
+                elif "Skill" in parts:
+                    base = "Skill Card"
+                elif "Spell" in parts:
+                    base = "Spell Card"
+                elif "Trap" in parts:
+                    base = "Trap Card"
+                else:
+                    base = "Effect Monster" if is_effect else "Normal Monster"
+
+                if base == "Normal Monster" and "Tuner" in parts: base = "Normal Tuner Monster"
+
+                data["type"] = base
+
+        # ATK/DEF/Level
+        atk = get_param("atk")
+        if atk and atk.isdigit(): data["atk"] = int(atk)
+
+        def_ = get_param("def")
+        if def_ and def_.isdigit(): data["def"] = int(def_)
+
+        level = get_param("level") or get_param("rank") or get_param("link_rating")
+        if level and level.isdigit(): data["level"] = int(level)
+
+        # Desc
+        text = get_param("text") or ""
+        data["desc"] = self._clean_wikitext(text)
+
+        # ID
+        db_id = get_param("database_id")
+        if db_id and db_id.isdigit():
+             data["database_id"] = int(db_id)
+
+        # Sets
+        en_sets = get_param("en_sets")
+        if en_sets:
+            data["sets"] = self._parse_sets_data(en_sets)
+
+        return data
+
+    def _clean_wikitext(self, text: str) -> str:
+        # Remove [[Link|Text]] -> Text
+        text = re.sub(r'\[\[(?:[^|\]]*\|)?([^\]]+)\]\]', r'\1', text)
+        # Remove <br /> -> \n
+        text = text.replace('<br />', '\n').replace('<br>', '\n')
+        # Remove ''Italic'' -> Italic
+        text = text.replace("''", "")
+        # Remove HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        return text.strip()
+
+    def _parse_sets_data(self, en_sets_str: str) -> List[Dict[str, str]]:
+        sets = []
+        # Format: Code; Name; Rarity
+        lines = en_sets_str.strip().split('\n')
+        for line in lines:
+            parts = [p.strip() for p in line.split(';')]
+            if len(parts) >= 3:
+                code = parts[0]
+                name = parts[1]
+                rarity_raw = parts[2]
+
+                rarities = [r.strip() for r in rarity_raw.split(',')]
+                for r in rarities:
+                    mapped_r = self._map_rarity(r)
+                    sets.append({
+                        "set_code": code,
+                        "set_name": name,
+                        "set_rarity": mapped_r
+                    })
+        return sets
+
 yugipedia_service = YugipediaService()

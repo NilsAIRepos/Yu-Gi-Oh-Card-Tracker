@@ -813,6 +813,7 @@ class DbEditorPage:
                     with ui.button(icon='list', on_click=lambda: self.switch_view_mode('list')).props(f'flat={is_grid} color=accent'): pass
 
                 ui.space()
+                ui.button('+ New Card Info', on_click=self.show_yugipedia_import_dialog).props('color=green icon=add')
                 ui.button(icon='filter_list', on_click=self.filter_dialog.open).props('color=primary size=lg')
 
             else:
@@ -824,6 +825,117 @@ class DbEditorPage:
 
                     ui.input(placeholder='Search Sets...', on_change=on_set_search) \
                         .bind_value(self.state, 'sets_search_query').props('debounce=300 icon=search dark clearable').classes('w-64')
+
+    def show_yugipedia_import_dialog(self):
+        from src.services.yugipedia_service import yugipedia_service
+
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-4xl bg-gray-900 border border-gray-700'):
+            ui.label("Import Card from Yugipedia").classes('text-h6 text-white mb-4')
+
+            # Step 1: URL Input
+            url_input = ui.input("Yugipedia URL", placeholder="https://yugipedia.com/wiki/Stardust_Dragon") \
+                .classes('w-full mb-4').props('dark clearable')
+
+            # Preview Area
+            preview_container = ui.column().classes('w-full gap-4')
+            preview_container.set_visibility(False)
+
+            # State for preview
+            preview_data = {"card": None, "sets": []}
+
+            # Set Selection State: Set of indices (or codes)
+            selected_indices = set()
+
+            def toggle_set(index: int, value: bool):
+                if value:
+                    selected_indices.add(index)
+                else:
+                    selected_indices.discard(index)
+
+            async def fetch_preview():
+                url = url_input.value
+                if not url: return
+
+                ui.notify("Fetching data...", type='info')
+                data = await yugipedia_service.get_card_details(url)
+
+                if not data:
+                    ui.notify("Failed to fetch card details. Check URL.", type='negative')
+                    return
+
+                preview_data["card"] = data
+                preview_data["sets"] = data.get("sets", [])
+
+                # Render Preview
+                preview_container.clear()
+                preview_container.set_visibility(True)
+
+                with preview_container:
+                    # Card Stats
+                    with ui.row().classes('w-full gap-4 items-start'):
+                         with ui.column().classes('gap-1'):
+                             ui.label(data['name']).classes('text-h5 font-bold text-white')
+                             ui.label(data['type']).classes('text-yellow-500 font-mono')
+                             ui.label(f"ATK: {data.get('atk')} / DEF: {data.get('def')}").classes('text-gray-300')
+                             ui.label(f"Level/Rank: {data.get('level')} | Attribute: {data.get('attribute')} | Race: {data.get('race')}").classes('text-gray-400 text-sm')
+
+                         with ui.column().classes('flex-grow'):
+                             ui.markdown(f"**Description:**\n{data.get('desc')}").classes('text-gray-300 text-sm italic')
+
+                    ui.separator().classes('my-2')
+
+                    # Sets Table
+                    ui.label("English Sets found:").classes('text-lg font-bold mb-2')
+
+                    # Default all checked
+                    selected_indices.clear()
+                    for i in range(len(preview_data["sets"])): selected_indices.add(i)
+
+                    with ui.scroll_area().classes('h-64 w-full border border-gray-700 rounded p-2'):
+                         with ui.grid(columns='auto 1fr 1fr 1fr').classes('w-full items-center gap-2'):
+                             ui.label("Add")
+                             ui.label("Code")
+                             ui.label("Name")
+                             ui.label("Rarity")
+
+                             for i, s in enumerate(preview_data["sets"]):
+                                 ui.checkbox(value=True).on('change', lambda e, idx=i: toggle_set(idx, e.value))
+                                 ui.label(s['set_code']).classes('font-mono text-yellow-500')
+                                 ui.label(s['set_name']).classes('truncate')
+                                 ui.label(s['set_rarity']).classes('text-gray-400')
+
+            ui.button("Preview", on_click=fetch_preview).props('color=primary').classes('w-full')
+
+            with preview_container:
+                 pass # Placeholder for initial render
+
+            # Actions
+            with ui.row().classes('w-full justify-end gap-4 mt-4'):
+                ui.button("Cancel", on_click=dialog.close).props('flat')
+
+                async def confirm_add():
+                    if not preview_data["card"]: return
+
+                    selected_sets = [preview_data["sets"][i] for i in selected_indices]
+
+                    ui.notify("Importing...", type='info')
+                    lang = self.state['language'].lower() if self.state['language'] else 'en'
+                    success, msg = await ygo_service.import_from_yugipedia(
+                        preview_data["card"],
+                        selected_sets,
+                        language=lang
+                    )
+
+                    if success:
+                        ui.notify(msg, type='positive')
+                        dialog.close()
+                        await self.load_data()
+                    else:
+                         ui.notify(f"Error: {msg}", type='negative')
+
+                ui.button("Add Info", on_click=confirm_add).props('color=green')
+
+        dialog.open()
 
     def switch_view_mode(self, mode):
         self.state['view_mode'] = mode

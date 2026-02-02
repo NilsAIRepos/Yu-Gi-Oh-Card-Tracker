@@ -1017,4 +1017,129 @@ class YugiohService:
         logger.info(f"Bulk deleted set {target_prefix}. Removed {deleted_count} variants.")
         return deleted_count
 
+    async def import_from_yugipedia(self, card_data: Dict[str, Any], selected_sets: List[Dict[str, str]], language: str = "en") -> Tuple[bool, str]:
+        """
+        Imports card data scraped from Yugipedia.
+        Returns (success, message).
+        """
+        try:
+            cards = await self.load_card_database(language)
+
+            # 1. Identify Target Card
+            target_card = None
+
+            # Check ID
+            if card_data.get("database_id"):
+                target_card = next((c for c in cards if c.id == card_data["database_id"]), None)
+
+            # Check Name
+            if not target_card and card_data.get("name"):
+                 target_card = next((c for c in cards if c.name.lower() == card_data["name"].lower()), None)
+
+            is_new = False
+
+            if not target_card:
+                # Create New Card
+                is_new = True
+
+                # ID Generation
+                new_id = card_data.get("database_id")
+                if not new_id:
+                    # Generate random ID in 900xxxxxx range to avoid conflicts
+                    import random
+                    new_id = random.randint(900000000, 999999999)
+                    while any(c.id == new_id for c in cards):
+                         new_id = random.randint(900000000, 999999999)
+
+                target_card = ApiCard(
+                    id=new_id,
+                    name=card_data.get("name", "Unknown Card"),
+                    type=card_data.get("type", "Normal Monster"),
+                    frameType="normal", # Default, ideally mapped from type
+                    desc=card_data.get("desc", ""),
+                    race=card_data.get("race", ""),
+                    atk=card_data.get("atk"),
+                    def_=card_data.get("def"), # Pydantic alias handling requires explicit field name often
+                    level=card_data.get("level"),
+                    attribute=card_data.get("attribute"),
+                    card_sets=[],
+                    card_images=[]
+                )
+
+                # Attempt to set frameType based on type
+                t = target_card.type.lower()
+                if "synchro" in t: target_card.frameType = "synchro"
+                elif "fusion" in t: target_card.frameType = "fusion"
+                elif "xyz" in t: target_card.frameType = "xyz"
+                elif "link" in t: target_card.frameType = "link"
+                elif "ritual" in t: target_card.frameType = "ritual"
+                elif "token" in t: target_card.frameType = "token"
+                elif "spell" in t: target_card.frameType = "spell"
+                elif "trap" in t: target_card.frameType = "trap"
+                elif "effect" in t: target_card.frameType = "effect"
+
+                cards.append(target_card)
+                logger.info(f"Created new card: {target_card.name} ({target_card.id})")
+
+            else:
+                # Update Existing Card
+                logger.info(f"Updating existing card: {target_card.name}")
+                if not target_card.desc and card_data.get("desc"): target_card.desc = card_data["desc"]
+                if target_card.atk is None and card_data.get("atk") is not None: target_card.atk = card_data["atk"]
+                if getattr(target_card, 'def_', None) is None and card_data.get("def") is not None:
+                     target_card.def_ = card_data["def"]
+                if target_card.level is None and card_data.get("level") is not None: target_card.level = card_data["level"]
+                if not target_card.attribute and card_data.get("attribute"): target_card.attribute = card_data["attribute"]
+                if not target_card.race and card_data.get("race"): target_card.race = card_data["race"]
+
+            # 2. Add Selected Sets
+            added_sets = 0
+
+            # Default Image ID
+            image_id = target_card.card_images[0].id if target_card.card_images else None
+
+            for s in selected_sets:
+                 code = s.get("set_code")
+                 rarity = s.get("set_rarity")
+                 name = s.get("set_name") or await self.get_set_name_by_code(code) or "Unknown Set"
+
+                 # Check existence
+                 exists = False
+                 for existing in target_card.card_sets:
+                     if existing.set_code == code and existing.set_rarity == rarity:
+                         exists = True
+                         break
+
+                 if not exists:
+                     # Create new variant
+                     new_var_id = str(uuid.uuid4())
+                     rarity_code = None
+                     abbr = RARITY_ABBREVIATIONS.get(rarity)
+                     if abbr: rarity_code = f"({abbr})"
+
+                     new_set = ApiCardSet(
+                         variant_id=new_var_id,
+                         set_name=name,
+                         set_code=code,
+                         set_rarity=rarity,
+                         set_rarity_code=rarity_code,
+                         set_price="0.00",
+                         image_id=image_id
+                     )
+                     target_card.card_sets.append(new_set)
+                     added_sets += 1
+
+            # Save
+            await self.save_card_database(cards, language)
+
+            msg = f"{'Created' if is_new else 'Updated'} card '{target_card.name}'."
+            if added_sets > 0:
+                msg += f" Added {added_sets} new variants."
+
+            return True, msg
+
+        except Exception as e:
+            logger.error(f"Import failed: {e}", exc_info=True)
+            return False, str(e)
+
 ygo_service = YugiohService()

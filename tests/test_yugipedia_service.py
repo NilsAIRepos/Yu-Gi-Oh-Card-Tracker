@@ -77,5 +77,29 @@ TEST-EN002; Card 2;;; 3
          self.assertEqual(result['main'][0].quantity, 2)
          self.assertEqual(result['main'][1].quantity, 3)
 
+    def test_parse_card_table(self):
+        text = """{{CardTable2
+| name = Stardust Dragon
+| types = Dragon / Synchro / Effect
+| atk = 2500
+| def = 2000
+| level = 8
+| attribute = WIND
+| database_id = 12345
+| en_sets =
+CODE-EN001; Test Set; Ultra Rare
+CODE-EN002; Test Set 2; Common, Rare
+}}"""
+        result = self.service._parse_card_table(text, "Stardust_Dragon")
+        self.assertEqual(result['name'], "Stardust Dragon")
+        self.assertEqual(result['type'], "Synchro Monster")
+        self.assertEqual(result['atk'], 2500)
+        self.assertEqual(result['database_id'], 12345)
+        self.assertEqual(len(result['sets']), 3) # Ultra, Common, Rare
+        self.assertEqual(result['sets'][0]['set_code'], "CODE-EN001")
+        self.assertEqual(result['sets'][1]['set_code'], "CODE-EN002")
+        self.assertEqual(result['sets'][1]['set_rarity'], "Common")
+        self.assertEqual(result['sets'][2]['set_rarity'], "Rare")
+
 if __name__ == '__main__':
     unittest.main()
