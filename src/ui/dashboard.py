@@ -19,6 +19,9 @@ async def load_dashboard_data(filename=None):
         lang = config_manager.get_language()
         db_cards = await ygo_service.load_card_database(lang)
         total_db_unique = len(db_cards) if db_cards else 0
+        total_db_variants = 0
+        if db_cards:
+            total_db_variants = sum(len(c.card_sets) for c in db_cards)
 
         # 2. Determine Collection to load
         files = persistence.list_collections()
@@ -46,9 +49,13 @@ async def load_dashboard_data(filename=None):
         # 3. Calculate Stats
         stats = {
             'unique_owned': 0,
+            'unique_variants_owned': 0,
             'total_qty': 0,
             'total_value': 0.0,
-            'completion_pct': 0.0,
+            'completion_unique_pct': 0.0,
+            'completion_variants_pct': 0.0,
+            'total_db_unique': total_db_unique,
+            'total_db_variants': total_db_variants,
             'rarity_dist': {},
             'condition_dist': {}
         }
@@ -58,8 +65,19 @@ async def load_dashboard_data(filename=None):
             stats['total_qty'] = collection.total_cards
             stats['total_value'] = collection.total_value
 
+            # Count Unique Variants Owned
+            unique_vars = 0
+            for card in collection.cards:
+                for var in card.variants:
+                    if var.total_quantity > 0:
+                        unique_vars += 1
+            stats['unique_variants_owned'] = unique_vars
+
             if total_db_unique > 0:
-                stats['completion_pct'] = (len(collection.cards) / total_db_unique) * 100
+                stats['completion_unique_pct'] = (len(collection.cards) / total_db_unique) * 100
+
+            if total_db_variants > 0:
+                stats['completion_variants_pct'] = (unique_vars / total_db_variants) * 100
 
             # Distributions
             r_dist = {}
@@ -126,11 +144,17 @@ def render_metrics(stats):
     # Display Collection Name context inside metrics area or above?
     # User asked for dropdown in header, so maybe just metrics here.
 
-    with ui.row().classes('w-full gap-4'):
-        metric_card('Unique Cards', f"{stats['unique_owned']:,}", 'style', 'primary')
+    # Use grid for 2 rows of 3 columns
+    with ui.grid(columns=3).classes('w-full gap-4'):
+        # Row 1: Unique Focus
+        metric_card('Unique Cards (Owned)', f"{stats['unique_owned']:,}", 'style', 'primary')
+        metric_card('Total DB Cards', f"{stats['total_db_unique']:,}", 'dns', 'primary')
+        metric_card('Completion (Unique)', f"{stats['completion_unique_pct']:.1f}%", 'pie_chart', 'info')
+
+        # Row 2: Variant Focus
         metric_card('Total Quantity', f"{stats['total_qty']:,}", 'format_list_numbered', 'secondary')
-        # metric_card('Est. Value', f"${stats['total_value']:,.2f}", 'attach_money', 'positive')
-        metric_card('Completion (of total database)', f"{stats['completion_pct']:.1f}%", 'pie_chart', 'info')
+        metric_card('Total DB Variants', f"{stats['total_db_variants']:,}", 'layers', 'secondary')
+        metric_card('Completion (Variants)', f"{stats['completion_variants_pct']:.1f}%", 'donut_large', 'info')
 
 @ui.refreshable
 def render_charts_area(stats):
