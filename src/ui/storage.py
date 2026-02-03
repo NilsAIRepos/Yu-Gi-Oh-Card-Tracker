@@ -929,6 +929,80 @@ class StoragePage:
                 ui.label(row.api_card.name).classes('text-xs font-bold truncate w-full')
                 ui.label(row.rarity).classes('text-[10px] text-gray-400')
 
+    async def _update_view_model(self, card_id, variant_id, set_code, rarity, language, condition, first_edition, image_id, quantity_change, storage_location=None):
+        """Updates the in-memory rows and refreshes the grid without full reload."""
+        rows = self.state['rows']
+
+        # Determine if we should ignore this update based on current view filter (storage location)
+        # We display cards where row.storage_location matches the current view target.
+        # target_loc is the specific storage name, or None (if viewing Unassigned).
+        target_loc = self.state['current_storage']['name'] if self.state['in_storage_only'] else None
+
+        if storage_location != target_loc:
+            # This update is for a storage location not currently being viewed.
+            return
+
+        target_row = None
+        target_index = -1
+
+        # Find existing row
+        for i, row in enumerate(rows):
+            if (row.variant_id == variant_id and
+                row.language == language and
+                row.condition == condition and
+                row.first_edition == first_edition and
+                row.storage_location == storage_location):
+                target_row = row
+                target_index = i
+                break
+
+        if target_row:
+            target_row.quantity += quantity_change
+            if target_row.quantity <= 0:
+                rows.pop(target_index)
+        elif quantity_change > 0:
+            # Create new row if adding
+            lang = config_manager.get_language()
+            cards = ygo_service._cards_cache.get(lang, [])
+            api_card = next((c for c in cards if c.id == card_id), None)
+
+            if api_card:
+                # Resolve Set Name
+                set_name = "Unknown"
+                if api_card.card_sets:
+                    for s in api_card.card_sets:
+                         if s.set_code == set_code:
+                             set_name = s.set_name
+                             break
+
+                # Resolve Image URL
+                img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
+                if image_id and api_card.card_images:
+                     for img in api_card.card_images:
+                         if img.id == image_id:
+                             img_url = img.image_url_small
+                             break
+
+                new_row = StorageRow(
+                    api_card=api_card,
+                    set_code=set_code,
+                    set_name=set_name,
+                    rarity=rarity,
+                    image_url=img_url,
+                    quantity=quantity_change,
+                    language=language,
+                    condition=condition,
+                    first_edition=first_edition,
+                    image_id=image_id,
+                    variant_id=variant_id,
+                    storage_location=storage_location
+                )
+                rows.append(new_row)
+
+        await self.apply_filters(reset_page=False)
+        self.render_detail_grid.refresh()
+        if hasattr(self, 'render_undo_button'): self.render_undo_button.refresh()
+
     async def undo_last_action(self):
         col_name = self.state['selected_collection_file']
         if not col_name: return
@@ -954,6 +1028,7 @@ class StoragePage:
                 data = change['card_data']
                 revert_qty = -qty if action == 'ADD' else qty
 
+                # 1. Update Backend Collection
                 api_card = await get_api_card(data['card_id'])
                 if api_card:
                     CollectionEditor.apply_change(
@@ -971,6 +1046,25 @@ class StoragePage:
                         storage_location=data.get('storage_location')
                     )
 
+                # 2. Update Frontend View Model
+                # Check if this change entry corresponds to the current view
+                view_loc = self.state['current_storage']['name'] if self.state['in_storage_only'] else None
+                change_loc = data.get('storage_location')
+
+                if change_loc == view_loc:
+                    await self._update_view_model(
+                        card_id=data['card_id'],
+                        variant_id=data.get('variant_id'),
+                        set_code=data.get('set_code', ''),
+                        rarity=data.get('rarity', ''),
+                        language=data['language'],
+                        condition=data['condition'],
+                        first_edition=data['first_edition'],
+                        image_id=data.get('image_id'),
+                        quantity_change=revert_qty,
+                        storage_location=change_loc
+                    )
+
             if last_change.get('type') == 'batch':
                 changes = last_change.get('changes', [])
                 for c in changes:
@@ -980,10 +1074,8 @@ class StoragePage:
                 await apply_revert(last_change)
                 ui.notify(f"Undid: {last_change.get('action')}", type='positive')
 
-            await self.save_immediately()
-            await self.load_detail_rows(reset_page=False)
-            self.render_detail_grid.refresh()
-            if hasattr(self, 'render_undo_button'): self.render_undo_button.refresh()
+            # Schedule save instead of immediate blocking
+            self.schedule_save()
         else:
             ui.notify("Nothing to undo.", type='warning')
 
@@ -993,10 +1085,6 @@ class StoragePage:
         qty = 1
         success = False
         msg = ""
-
-        # Logic derived from View State
-        # In Storage View -> Remove (Move to None)
-        # Unassigned View -> Add (Move from None)
 
         from_loc = None
         to_loc = None
@@ -1051,11 +1139,27 @@ class StoragePage:
             msg = "Not enough copies available!" if not self.state['in_storage_only'] else "Not enough copies in storage!"
 
         if success:
+            # Update View Model
+            # Right Click in this view ALWAYS implies removing the card from the CURRENT view context
+            # (either moving it OUT of storage, or moving it INTO storage which removes it from Unassigned view)
+
+            view_loc = self.state['current_storage']['name'] if self.state['in_storage_only'] else None
+
+            await self._update_view_model(
+                card_id=row.api_card.id,
+                variant_id=row.variant_id,
+                set_code=row.set_code,
+                rarity=row.rarity,
+                language=row.language,
+                condition=row.condition,
+                first_edition=row.first_edition,
+                image_id=row.image_id,
+                quantity_change=-qty,
+                storage_location=view_loc
+            )
+
             self.schedule_save()
             ui.notify(msg, type='positive')
-            await self.load_detail_rows(reset_page=False)
-            self.render_detail_grid.refresh()
-            if hasattr(self, 'render_undo_button'): self.render_undo_button.refresh()
         else:
             ui.notify(msg, type='warning')
 
