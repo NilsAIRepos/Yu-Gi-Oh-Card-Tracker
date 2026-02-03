@@ -713,7 +713,8 @@ class ScanPage:
             current_collection=self.recent_collection,
             save_callback=on_save,
             variant_id=entry.variant_id,
-            hide_header_stats=False
+            hide_header_stats=False,
+            storage_options=self.target_storage_options
         )
 
     async def reduce_collection_card_qty(self, entry: BulkCollectionEntry):

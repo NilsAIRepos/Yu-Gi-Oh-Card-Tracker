@@ -73,7 +73,8 @@ class SingleCardView:
         rarity_map: Dict[str, Set[str]] = None,
         view_mode: str = 'consolidated',
         current_collection: Any = None,
-        original_quantity: int = 0
+        original_quantity: int = 0,
+        storage_options: Dict[str, str] = None
     ):
         """
         Renders the inventory management section (Language, Set, Rarity, etc.).
@@ -159,7 +160,9 @@ class SingleCardView:
 
                 # Storage Dropdown
                 storage_opts = {None: 'None'}
-                if current_collection and hasattr(current_collection, 'storage_definitions'):
+                if storage_options:
+                     storage_opts = storage_options
+                elif current_collection and hasattr(current_collection, 'storage_definitions'):
                      for s in current_collection.storage_definitions:
                          storage_opts[s.name] = s.name
 
@@ -345,7 +348,8 @@ class SingleCardView:
         total_owned: int,
         owned_breakdown: Dict[str, int],
         save_callback: Callable,
-        current_collection: Any = None
+        current_collection: Any = None,
+        storage_options: Dict[str, str] = None
     ):
         try:
             with ui.dialog().props('maximized transition-show=slide-up transition-hide=slide-down') as d, ui.card().classes('w-full h-full p-0 no-shadow'):
@@ -523,7 +527,8 @@ class SingleCardView:
                                 show_remove_button=False,
                                 rarity_map=rarity_map,
                                 view_mode='consolidated',
-                                current_collection=current_collection
+                                current_collection=current_collection,
+                                storage_options=storage_options
                             )
 
                         self._render_available_sets(card)
@@ -548,7 +553,8 @@ class SingleCardView:
         current_collection: Any = None,
         save_callback: Callable = None,
         variant_id: str = None,
-        hide_header_stats: bool = False
+        hide_header_stats: bool = False,
+        storage_options: Dict[str, str] = None
     ):
         try:
             set_options = {}
@@ -857,7 +863,8 @@ class SingleCardView:
                                 rarity_map=rarity_map,
                                 view_mode='collectors',
                                 current_collection=current_collection,
-                                original_quantity=owned_count
+                                original_quantity=owned_count,
+                                storage_options=storage_options
                             )
 
                         self._render_available_sets(card)
