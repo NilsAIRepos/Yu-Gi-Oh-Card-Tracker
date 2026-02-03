@@ -249,6 +249,9 @@ class StoragePage:
             'sort_by': 'Name',
             'sort_desc': False,
 
+            'storage_detail_sort_by': saved_state.get('storage_detail_sort_by', 'Name'),
+            'storage_detail_sort_desc': saved_state.get('storage_detail_sort_desc', False),
+
             'storage_sort_by': saved_state.get('storage_sort_by', 'Name'),
             'storage_sort_desc': saved_state.get('storage_sort_desc', False),
             'storage_counts': {},
@@ -550,17 +553,16 @@ class StoragePage:
             res = [r for r in res if min_v <= r.quantity <= max_v]
 
         # Price
+        def get_price(card):
+            if not card.card_prices: return 0.0
+            try:
+                p = card.card_prices[0].tcgplayer_price
+                return float(p) if p else 0.0
+            except: return 0.0
+
         if self.state['filter_price_min'] > 0 or self.state['filter_price_max'] < 1000:
             min_v = self.state['filter_price_min']
             max_v = self.state['filter_price_max']
-
-            def get_price(card):
-                if not card.card_prices: return 0.0
-                try:
-                    p = card.card_prices[0].tcgplayer_price
-                    return float(p) if p else 0.0
-                except: return 0.0
-
             res = [r for r in res if min_v <= get_price(r.api_card) <= max_v]
 
         # Owned Language
@@ -574,13 +576,23 @@ class StoragePage:
              if conds:
                 res = [r for r in res if r.condition in conds]
 
-        key = self.state['sort_by']
-        desc = self.state['sort_desc']
+        key = self.state['storage_detail_sort_by']
+        desc = self.state['storage_detail_sort_desc']
 
         if key == 'Name':
             res.sort(key=lambda x: x.api_card.name, reverse=desc)
+        elif key == 'ATK':
+            res.sort(key=lambda x: (x.api_card.atk or -1), reverse=desc)
+        elif key == 'DEF':
+            res.sort(key=lambda x: (getattr(x.api_card, 'def_', None) or -1), reverse=desc)
+        elif key == 'Level':
+            res.sort(key=lambda x: (x.api_card.level or -1), reverse=desc)
         elif key == 'Newest':
             res.sort(key=lambda x: x.api_card.id, reverse=desc)
+        elif key == 'Price':
+             res.sort(key=lambda x: get_price(x.api_card), reverse=desc)
+        elif key == 'Quantity':
+             res.sort(key=lambda x: x.quantity, reverse=desc)
         elif key == 'Set Code':
             res.sort(key=lambda x: x.set_code, reverse=desc)
 
@@ -745,6 +757,27 @@ class StoragePage:
                 self.state['search_text'] = e.value
                 await self.apply_filters()
             ui.input(placeholder='Search cards...', on_change=on_search).props('dark icon=search debounce=300').classes('w-64')
+
+            async def on_sort_change(e):
+                self.state['storage_detail_sort_by'] = e.value
+                persistence.save_ui_state({'storage_detail_sort_by': self.state['storage_detail_sort_by']})
+                self.render_content.refresh()
+                await self.apply_filters()
+
+            with ui.row().classes('items-center gap-1'):
+                with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Quantity', 'Set Code'], value=self.state['storage_detail_sort_by'], label='Sort',
+                        on_change=on_sort_change).classes('w-32'):
+                    ui.tooltip('Choose how to sort the displayed cards')
+
+                async def toggle_sort_dir():
+                    self.state['storage_detail_sort_desc'] = not self.state['storage_detail_sort_desc']
+                    persistence.save_ui_state({'storage_detail_sort_desc': self.state['storage_detail_sort_desc']})
+                    self.render_content.refresh()
+                    await self.apply_filters()
+
+                icon = 'arrow_downward' if self.state.get('storage_detail_sort_desc') else 'arrow_upward'
+                with ui.button(icon=icon, on_click=toggle_sort_dir).props('flat round dense color=white'):
+                    ui.tooltip('Toggle sort direction')
 
             ui.separator().props('vertical')
 
