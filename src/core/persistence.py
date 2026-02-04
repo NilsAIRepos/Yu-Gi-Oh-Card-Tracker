@@ -3,6 +3,7 @@ import yaml
 import os
 import time
 import logging
+import uuid
 from typing import List, Optional
 from src.core.models import Collection, Deck
 
@@ -50,7 +51,8 @@ class PersistenceManager:
         logger.info(f"Saving collection: {filename}")
         filepath = os.path.join(self.data_dir, filename)
         data = collection.model_dump(mode='json')
-        temp_filepath = filepath + ".tmp"
+        # Use UUID to prevent collisions if multiple saves run concurrently
+        temp_filepath = filepath + f".{uuid.uuid4()}.tmp"
 
         try:
             with open(temp_filepath, 'w', encoding='utf-8') as f:

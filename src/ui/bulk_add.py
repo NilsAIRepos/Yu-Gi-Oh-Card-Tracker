@@ -469,88 +469,97 @@ class BulkAddPage:
         if getattr(self, 'undoing', False): return
         self.undoing = True
 
+        # Cancel pending saves to avoid race conditions
+        if self.save_task:
+            self.save_task.cancel()
+            self.save_task = None
+
         try:
             col_name = self.state['selected_collection']
             if not col_name: return
 
-            last_change = changelog_manager.undo_last_change(col_name)
-            if last_change:
-                # Handle Batch Undo
-                if last_change.get('type') == 'batch':
-                    changes = last_change.get('changes', [])
-                    count = 0
-                    for c in changes:
-                        action = c['action']
-                        qty = c['quantity']
-                        data = c['card_data']
+            last_change = changelog_manager.get_last_change(col_name)
+            if not last_change:
+                try: ui.notify("Nothing to undo.", type='warning')
+                except RuntimeError: pass
+                return
 
-                        api_card = self.api_card_map.get(data['card_id'])
-                        if not api_card: continue
+            if last_change.get('type') == 'batch':
+                changes = last_change.get('changes', [])
+                count = 0
+                for c in changes:
+                    action = c['action']
+                    qty = c['quantity']
+                    data = c['card_data']
 
-                        if action == 'UPDATE':
-                            old_data = c.get('old_data')
-                            if not old_data: continue
+                    api_card = self.api_card_map.get(data['card_id'])
+                    if not api_card: continue
 
-                            # 1. Revert New State (Remove)
-                            await self._update_collection(
-                                api_card=api_card,
-                                set_code=data['set_code'],
-                                rarity=data['rarity'],
-                                lang=data['language'],
-                                qty=-qty,
-                                cond=data['condition'],
-                                first=data['first_edition'],
-                                img_id=data['image_id'],
-                                variant_id=data.get('variant_id'),
-                                storage_location=data.get('storage_location'),
-                                mode='ADD',
-                                save=False
-                            )
+                    if action == 'UPDATE':
+                        old_data = c.get('old_data')
+                        if not old_data: continue
 
-                            # 2. Restore Old State (Add)
-                            old_lang = old_data.get('language', data['language'])
+                        # 1. Revert New State (Remove)
+                        CollectionEditor.apply_change(
+                            collection=self.current_collection_obj,
+                            api_card=api_card,
+                            set_code=data['set_code'],
+                            rarity=data['rarity'],
+                            language=data['language'],
+                            quantity=-qty,
+                            condition=data['condition'],
+                            first_edition=data['first_edition'],
+                            image_id=data['image_id'],
+                            variant_id=data.get('variant_id'),
+                            storage_location=data.get('storage_location'),
+                            mode='ADD'
+                        )
 
-                            target_set_code = data['set_code']
-                            if old_lang != data['language']:
-                                 target_set_code = transform_set_code(data['set_code'], old_lang)
+                        # 2. Restore Old State (Add)
+                        old_lang = old_data.get('language', data['language'])
 
-                            await self._update_collection(
-                                api_card=api_card,
-                                set_code=target_set_code,
-                                rarity=data['rarity'],
-                                lang=old_lang,
-                                qty=qty,
-                                cond=old_data.get('condition', data['condition']),
-                                first=old_data.get('first_edition', data['first_edition']),
-                                img_id=data['image_id'],
-                                variant_id=None, # Let it resolve/generate
-                                storage_location=old_data.get('storage_location', data.get('storage_location')),
-                                mode='ADD',
-                                save=False
-                            )
-                        else:
-                            # ADD or REMOVE
-                            revert_qty = -qty if action == 'ADD' else qty
+                        target_set_code = data['set_code']
+                        if old_lang != data['language']:
+                                target_set_code = transform_set_code(data['set_code'], old_lang)
 
-                            await self._update_collection(
-                                api_card=api_card,
-                                set_code=data['set_code'],
-                                rarity=data['rarity'],
-                                lang=data['language'],
-                                qty=revert_qty,
-                                cond=data['condition'],
-                                first=data['first_edition'],
-                                img_id=data['image_id'],
-                                variant_id=data.get('variant_id'),
-                                storage_location=data.get('storage_location'),
-                                mode='ADD',
-                                save=False
-                            )
+                        CollectionEditor.apply_change(
+                            collection=self.current_collection_obj,
+                            api_card=api_card,
+                            set_code=target_set_code,
+                            rarity=data['rarity'],
+                            language=old_lang,
+                            quantity=qty,
+                            condition=old_data.get('condition', data['condition']),
+                            first_edition=old_data.get('first_edition', data['first_edition']),
+                            image_id=data['image_id'],
+                            variant_id=None, # Let it resolve/generate
+                            storage_location=old_data.get('storage_location', data.get('storage_location')),
+                            mode='ADD'
+                        )
+                    else:
+                        # ADD or REMOVE
+                        revert_qty = -qty if action == 'ADD' else qty
 
-                        count += 1
+                        CollectionEditor.apply_change(
+                            collection=self.current_collection_obj,
+                            api_card=api_card,
+                            set_code=data['set_code'],
+                            rarity=data['rarity'],
+                            language=data['language'],
+                            quantity=revert_qty,
+                            condition=data['condition'],
+                            first_edition=data['first_edition'],
+                            image_id=data['image_id'],
+                            variant_id=data.get('variant_id'),
+                            storage_location=data.get('storage_location'),
+                            mode='ADD'
+                        )
 
-                    if count > 0:
-                        await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
+                    count += 1
+
+                if count > 0:
+                    await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
+                    changelog_manager.undo_last_change(col_name)
 
                     try:
                         ui.notify(f"Undid batch: {last_change.get('description')} ({count} items)", type='positive')
@@ -558,48 +567,47 @@ class BulkAddPage:
                         pass
                     self.render_header.refresh()
                     await self.refresh_collection_view_from_memory()
-                    return
 
+            else:
                 # Revert single logic
                 action = last_change['action']
                 qty = last_change['quantity']
                 data = last_change['card_data']
 
-                # If action was ADD, we REMOVE (mode='ADD' with negative qty)
-                # If action was REMOVE, we ADD
                 revert_qty = -qty if action == 'ADD' else qty
 
-                # API Card retrieval
                 api_card = self.api_card_map.get(data['card_id'])
                 if not api_card:
                     try: ui.notify("Error: Card data missing from database.", type='negative')
                     except RuntimeError: pass
                     return
 
-                success = await self._update_collection(
+                modified = CollectionEditor.apply_change(
+                    collection=self.current_collection_obj,
                     api_card=api_card,
                     set_code=data['set_code'],
                     rarity=data['rarity'],
-                    lang=data['language'],
-                    qty=revert_qty,
-                    cond=data['condition'],
-                    first=data['first_edition'],
-                    img_id=data['image_id'],
+                    language=data['language'],
+                    quantity=revert_qty,
+                    condition=data['condition'],
+                    first_edition=data['first_edition'],
+                    image_id=data['image_id'],
                     variant_id=data.get('variant_id'),
                     storage_location=data.get('storage_location'),
                     mode='ADD'
                 )
 
-                if success:
+                if modified:
+                    await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
+                    changelog_manager.undo_last_change(col_name)
+
                     try: ui.notify(f"Undid: {action} {qty}x {data.get('name')}", type='positive')
                     except RuntimeError: pass
                     self.render_header.refresh()
+                    await self.refresh_collection_view_from_memory()
                 else:
                     try: ui.notify("Undo failed (no changes made).", type='warning')
                     except RuntimeError: pass
-            else:
-                try: ui.notify("Nothing to undo.", type='warning')
-                except RuntimeError: pass
         finally:
             self.undoing = False
 
