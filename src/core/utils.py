@@ -81,6 +81,49 @@ LANGUAGE_COUNTRY_MAP = {
     'AE': 'ae',
 }
 
+# Pre-calculate sorted region keys by length (descending) to match longest first
+_SORTED_REGION_KEYS = sorted(REGION_TO_LANGUAGE_MAP.keys(), key=len, reverse=True)
+
+def _parse_set_code(set_code: str):
+    """
+    Parses a set code into (Prefix, Region, Suffix)
+    Region is matched against known valid region codes.
+    Returns (prefix, region, suffix) or None if format doesn't match expected pattern.
+    """
+    if '-' not in set_code:
+        return None
+
+    parts = set_code.split('-', 1)
+    prefix = parts[0]
+    rest = parts[1]
+
+    # Try to match start of 'rest' with a known region
+    best_region = None
+
+    for r in _SORTED_REGION_KEYS:
+        if rest.startswith(r):
+            # Potential match. Check if what follows is likely the number/suffix.
+            # Usually suffix starts with a digit OR could be letter-digit mix.
+            # But the region must be the *prefix* of 'rest'.
+            # Also, we should prefer 'EN' over 'E' if rest is 'EN001'.
+            # Since _SORTED_REGION_KEYS is sorted by length descending, 'EN' comes first.
+            best_region = r
+            break
+
+    if best_region:
+        suffix = rest[len(best_region):]
+        # Only consider it a valid region match if there is a suffix
+        # (e.g. LOB-EN is weird, usually LOB-EN001. But even LOB-EN could imply suffix is empty?)
+        # Let's assume suffix must exist, but could be anything (digits, letters+digits)
+        # Note: Some codes might be just Prefix-Region? Unlikely for card codes.
+        if suffix:
+            return prefix, best_region, suffix
+
+    # If no region matched, check if it looks like Prefix-Number (No Region)
+    # e.g. SDY-006. rest="006". No region starts with '0'.
+    # So if no region matched, we treat region as None.
+    return prefix, None, rest
+
 def transform_set_code(set_code: str, language: str) -> str:
     """
     Transforms a set code based on the language.
@@ -90,37 +133,26 @@ def transform_set_code(set_code: str, language: str) -> str:
     If it does not have a region code (e.g. SDY-006), it remains unchanged.
     """
     lang_code = language.upper()
+    parsed = _parse_set_code(set_code)
 
-    # Case 1: Code-RegionNumber (e.g. RA01-EN054, LOB-E001)
-    # We look for a hyphen, 1 or more letters (region), then digits.
-    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
-    if match:
-        prefix = match.group(1)
-        region = match.group(2).upper()
-        number = match.group(3)
+    if parsed:
+        prefix, region, suffix = parsed
 
-        new_region_code = lang_code
+        if region:
+            new_region_code = lang_code
 
-        # Check if the existing region is a legacy 1-letter code
-        # But we only want to switch to 1-letter if the target language SUPPORTS it.
-        # And usually we only do this if the original was 1-letter?
-        # Requirement: "SDK-E001" (1-letter) -> DE -> "SDK-G001" (1-letter)
-        # Requirement: "SDK-EN001" (2-letter) -> DE -> "SDK-DE001" (2-letter)
+            # Check if original was 1-letter and in our map
+            if len(region) == 1:
+                 # Try to find legacy code for target language
+                 if lang_code in LANGUAGE_TO_LEGACY_REGION_MAP:
+                     new_region_code = LANGUAGE_TO_LEGACY_REGION_MAP[lang_code]
 
-        # Check if original was 1-letter and in our map (to avoid treating random 1-letter typos as legacy)
-        if len(region) == 1 and region in REGION_TO_LANGUAGE_MAP:
-             # Try to find legacy code for target language
-             if lang_code in LANGUAGE_TO_LEGACY_REGION_MAP:
-                 new_region_code = LANGUAGE_TO_LEGACY_REGION_MAP[lang_code]
+            return f"{prefix}-{new_region_code}{suffix}"
 
-        return f"{prefix}-{new_region_code}{number}"
-
-    # Case 2: Code-Number (e.g. SDY-006) - No region code
-    # As per requirements, codes without region identifiers should remain unchanged.
-    match = re.match(r'^([A-Za-z0-9]+)-(\d+)$', set_code)
-    if match:
+        # No region found (e.g. SDY-006), return as is
         return set_code
 
+    # Fallback to original if parsing completely failed (no hyphen?)
     return set_code
 
 def normalize_set_code(set_code: str) -> str:
@@ -129,17 +161,14 @@ def normalize_set_code(set_code: str) -> str:
     e.g. SDY-G006 -> SDY-006
          LOB-EN005 -> LOB-005
          SDY-006 -> SDY-006
+         SGX2-END16 -> SGX2-D16 (Strips EN, keeps D16)
     """
-    # Case 1: Code-RegionNumber
-    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
-    if match:
-        return f"{match.group(1)}-{match.group(3)}"
-
-    # Case 2: Code-Number (Already normalized)
-    match = re.match(r'^([A-Za-z0-9]+)-(\d+)$', set_code)
-    if match:
-        return set_code
-
+    parsed = _parse_set_code(set_code)
+    if parsed:
+        prefix, region, suffix = parsed
+        if region:
+            return f"{prefix}-{suffix}"
+        return set_code # No region, so Prefix-Suffix is just set_code
     return set_code
 
 def extract_language_code(set_code: str) -> str:
@@ -148,11 +177,11 @@ def extract_language_code(set_code: str) -> str:
     Returns a standard language code (e.g., 'EN', 'DE').
     Defaults to 'EN' if no specific region is found or if it maps to English.
     """
-    # Regex to find region code: Code-RegionNumber (e.g. MRD-DE001, LOB-E001)
-    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
-    if match:
-        region = match.group(2).upper()
-        return REGION_TO_LANGUAGE_MAP.get(region, 'EN') # Default to EN if unknown region or unmapped
+    parsed = _parse_set_code(set_code)
+    if parsed:
+        prefix, region, suffix = parsed
+        if region:
+             return REGION_TO_LANGUAGE_MAP.get(region, 'EN')
 
     # Case 2: No region code (e.g. SDY-006) -> Usually EN (NA print)
     return 'EN'
@@ -169,27 +198,21 @@ def is_set_code_compatible(set_code: str, language: str) -> bool:
     - The code has a region identifier for a DIFFERENT language (e.g. LOB-EN001 for DE).
     """
     target_lang = language.upper()
+    parsed = _parse_set_code(set_code)
 
-    # Extract Region
-    match = re.match(r'^([A-Za-z0-9]+)-([A-Za-z]+)(\d+)$', set_code)
-    if match:
-        region = match.group(2).upper()
+    if parsed:
+        prefix, region, suffix = parsed
+        if region:
+            mapped_lang = REGION_TO_LANGUAGE_MAP.get(region)
+            if mapped_lang:
+                return mapped_lang == target_lang
+            else:
+                return False # Unknown region
 
-        # Resolve to standard language code
-        # If region is not in map, assume it's some specific code we don't know, treat as mismatch unless equal?
-        # But our map covers standard ones.
-        mapped_lang = REGION_TO_LANGUAGE_MAP.get(region)
+        # No region -> Compatible
+        return True
 
-        if mapped_lang:
-            return mapped_lang == target_lang
-        else:
-            # Unknown region code. Safe to assume incompatible?
-            # Or maybe compatible if we don't know it?
-            # Safest is strict check.
-            return False
-
-    # No region code (e.g. LOB-001) -> Compatible (Neutral/Base)
-    return True
+    return True # Unparsable -> assume compatible or ignore
 
 def get_legacy_code(prefix: str, number: str, language: str) -> Optional[str]:
     """
