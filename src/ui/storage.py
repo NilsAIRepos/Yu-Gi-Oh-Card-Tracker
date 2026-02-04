@@ -4,6 +4,7 @@ from src.services.ygo_api import ygo_service, ApiCard
 from src.services.image_manager import image_manager
 from src.services.collection_editor import CollectionEditor
 from src.core.persistence import persistence
+from src.core.changelog_manager import changelog_manager
 from src.core.config import config_manager
 from src.ui.components.filter_pane import FilterPane
 from src.ui.components.single_card_view import SingleCardView
@@ -809,6 +810,7 @@ class StoragePage:
             ui.space()
 
             self.render_pagination_controls()
+            self.render_undo_button()
             ui.button('Filters', icon='filter_list', on_click=self.filter_dialog.open).props('color=primary')
 
         self.render_detail_grid()
@@ -827,6 +829,69 @@ class StoragePage:
             for row in visible_rows:
                 self.render_card(row)
 
+    def _setup_card_tooltip(self, card: ApiCard, specific_image_id: int = None):
+        if not card: return
+
+        # Determine target ID
+        if specific_image_id:
+            img_id = specific_image_id
+        else:
+            img_id = card.get_best_image_id()
+
+        high_res_url = None
+        low_res_url = None
+
+        # Try to find URL for this ID
+        if card.card_images:
+            target_img = next((img for img in card.card_images if img.id == img_id), None)
+            if target_img:
+                high_res_url = target_img.image_url
+                low_res_url = target_img.image_url_small
+            else:
+                 # Fallback to default if specific/best ID has no URL (e.g. custom) but we need a fallback for non-local
+                 high_res_url = card.card_images[0].image_url
+                 low_res_url = card.card_images[0].image_url_small
+
+        # Check local high-res existence immediately
+        is_local = image_manager.image_exists(img_id, high_res=True)
+        initial_src = f"/images/{img_id}_high.jpg" if is_local else (high_res_url or low_res_url)
+
+        if not initial_src:
+             return
+
+        # Create tooltip with transparent background and no padding
+        with ui.tooltip().classes('bg-transparent shadow-none border-none p-0 overflow-visible z-[9999] max-w-none') \
+                         .props('style="max-width: none" delay=1050') as tooltip:
+            # Image at 65vh height and 1000px min width for readability
+            if initial_src:
+                ui.image(initial_src).classes('w-auto h-[65vh] min-w-[1000px] object-contain rounded-lg shadow-2xl') \
+                                     .props('fit=contain')
+
+            # Trigger download on show if needed
+            if not is_local and high_res_url:
+                async def ensure_high():
+                    # Check again to avoid redundant downloads
+                    # Only download if we are not using a fallback URL for a custom ID
+
+                    real_target_id = img_id
+
+                    # Check if img_id corresponds to the URL
+                    is_exact_match = False
+                    if card.card_images:
+                        for img in card.card_images:
+                            if img.id == img_id:
+                                is_exact_match = True
+                                break
+
+                    if not is_exact_match and card.card_images:
+                        # We are using fallback. Download to default ID instead.
+                        real_target_id = card.card_images[0].id
+
+                    if not image_manager.image_exists(real_target_id, high_res=True):
+                         await image_manager.ensure_image(real_target_id, high_res_url, high_res=True)
+
+                tooltip.on('show', ensure_high)
+
     def render_card(self, row: StorageRow):
         opacity = "opacity-100"
         border_color = "border-gray-700"
@@ -839,6 +904,8 @@ class StoragePage:
             with ui.element('div').classes('relative w-full aspect-[2/3] bg-black'):
                 if row.image_url:
                     ui.image(row.image_url).classes('w-full h-full object-cover')
+
+                self._setup_card_tooltip(row.api_card, specific_image_id=row.image_id)
 
                 lang_code = row.language.strip().upper()
                 country_code = LANGUAGE_COUNTRY_MAP.get(lang_code)
@@ -862,6 +929,156 @@ class StoragePage:
                 ui.label(row.api_card.name).classes('text-xs font-bold truncate w-full')
                 ui.label(row.rarity).classes('text-[10px] text-gray-400')
 
+    async def _update_view_model(self, card_id, variant_id, set_code, rarity, language, condition, first_edition, image_id, quantity_change, storage_location=None):
+        """Updates the in-memory rows and refreshes the grid without full reload."""
+        rows = self.state['rows']
+
+        # Determine if we should ignore this update based on current view filter (storage location)
+        # We display cards where row.storage_location matches the current view target.
+        # target_loc is the specific storage name, or None (if viewing Unassigned).
+        target_loc = self.state['current_storage']['name'] if self.state['in_storage_only'] else None
+
+        if storage_location != target_loc:
+            # This update is for a storage location not currently being viewed.
+            return
+
+        target_row = None
+        target_index = -1
+
+        # Find existing row
+        for i, row in enumerate(rows):
+            if (row.variant_id == variant_id and
+                row.language == language and
+                row.condition == condition and
+                row.first_edition == first_edition and
+                row.storage_location == storage_location):
+                target_row = row
+                target_index = i
+                break
+
+        if target_row:
+            target_row.quantity += quantity_change
+            if target_row.quantity <= 0:
+                rows.pop(target_index)
+        elif quantity_change > 0:
+            # Create new row if adding
+            lang = config_manager.get_language()
+            cards = ygo_service._cards_cache.get(lang, [])
+            api_card = next((c for c in cards if c.id == card_id), None)
+
+            if api_card:
+                # Resolve Set Name
+                set_name = "Unknown"
+                if api_card.card_sets:
+                    for s in api_card.card_sets:
+                         if s.set_code == set_code:
+                             set_name = s.set_name
+                             break
+
+                # Resolve Image URL
+                img_url = api_card.card_images[0].image_url_small if api_card.card_images else None
+                if image_id and api_card.card_images:
+                     for img in api_card.card_images:
+                         if img.id == image_id:
+                             img_url = img.image_url_small
+                             break
+
+                new_row = StorageRow(
+                    api_card=api_card,
+                    set_code=set_code,
+                    set_name=set_name,
+                    rarity=rarity,
+                    image_url=img_url,
+                    quantity=quantity_change,
+                    language=language,
+                    condition=condition,
+                    first_edition=first_edition,
+                    image_id=image_id,
+                    variant_id=variant_id,
+                    storage_location=storage_location
+                )
+                rows.append(new_row)
+
+        await self.apply_filters(reset_page=False)
+        self.render_detail_grid.refresh()
+        if hasattr(self, 'render_undo_button'): self.render_undo_button.refresh()
+
+    async def undo_last_action(self):
+        col_name = self.state['selected_collection_file']
+        if not col_name: return
+
+        last_change = changelog_manager.undo_last_change(col_name)
+        if last_change:
+            col = self.state['current_collection']
+            if not col: return
+
+            async def get_api_card(card_id):
+                lang = config_manager.get_language()
+                if not ygo_service._cards_cache.get(lang):
+                     await ygo_service.load_card_database(lang)
+                cards = ygo_service._cards_cache.get(lang, [])
+                for c in cards:
+                    if c.id == card_id:
+                        return c
+                return None
+
+            async def apply_revert(change):
+                action = change['action']
+                qty = change['quantity']
+                data = change['card_data']
+                revert_qty = -qty if action == 'ADD' else qty
+
+                # 1. Update Backend Collection
+                api_card = await get_api_card(data['card_id'])
+                if api_card:
+                    CollectionEditor.apply_change(
+                        collection=col,
+                        api_card=api_card,
+                        set_code=data.get('set_code', ''),
+                        rarity=data.get('rarity', ''),
+                        language=data['language'],
+                        quantity=revert_qty,
+                        condition=data['condition'],
+                        first_edition=data['first_edition'],
+                        image_id=data.get('image_id'),
+                        variant_id=data.get('variant_id'),
+                        mode='ADD',
+                        storage_location=data.get('storage_location')
+                    )
+
+                # 2. Update Frontend View Model
+                # Check if this change entry corresponds to the current view
+                view_loc = self.state['current_storage']['name'] if self.state['in_storage_only'] else None
+                change_loc = data.get('storage_location')
+
+                if change_loc == view_loc:
+                    await self._update_view_model(
+                        card_id=data['card_id'],
+                        variant_id=data.get('variant_id'),
+                        set_code=data.get('set_code', ''),
+                        rarity=data.get('rarity', ''),
+                        language=data['language'],
+                        condition=data['condition'],
+                        first_edition=data['first_edition'],
+                        image_id=data.get('image_id'),
+                        quantity_change=revert_qty,
+                        storage_location=change_loc
+                    )
+
+            if last_change.get('type') == 'batch':
+                changes = last_change.get('changes', [])
+                for c in changes:
+                    await apply_revert(c)
+                ui.notify(f"Undid: {last_change.get('description')}", type='positive')
+            else:
+                await apply_revert(last_change)
+                ui.notify(f"Undid: {last_change.get('action')}", type='positive')
+
+            # Schedule save instead of immediate blocking
+            self.schedule_save()
+        else:
+            ui.notify("Nothing to undo.", type='warning')
+
     async def handle_right_click(self, e, row: StorageRow):
         col = self.state['current_collection']
         storage_name = self.state['current_storage']['name']
@@ -869,50 +1086,96 @@ class StoragePage:
         success = False
         msg = ""
 
-        # Logic derived from View State
-        # In Storage View -> Remove (Move to None)
-        # Unassigned View -> Add (Move from None)
+        from_loc = None
+        to_loc = None
 
         if not self.state['in_storage_only']:
             # ADD Logic (None -> Storage)
-            avail = CollectionEditor.get_quantity(
-                col, row.api_card.id, row.variant_id, row.set_code, row.rarity, row.image_id,
-                row.language, row.condition, row.first_edition, storage_location=None
-            )
-            if avail >= qty:
-                CollectionEditor.move_card(
-                    col, row.api_card, row.set_code, row.rarity, row.language,
-                    row.condition, row.first_edition, from_storage=None, to_storage=storage_name,
-                    quantity=qty, image_id=row.image_id, variant_id=row.variant_id
-                )
-                success = True
-                msg = f"Added 1 {row.api_card.name} to {storage_name}"
-            else:
-                msg = "No unassigned copies available!"
+            from_loc = None
+            to_loc = storage_name
+            msg = f"Added 1 {row.api_card.name} to {storage_name}"
         else:
             # SUBTRACT Logic (Storage -> None)
-            avail = CollectionEditor.get_quantity(
-                col, row.api_card.id, row.variant_id, row.set_code, row.rarity, row.image_id,
-                row.language, row.condition, row.first_edition, storage_location=storage_name
+            from_loc = storage_name
+            to_loc = None
+            msg = f"Removed 1 {row.api_card.name} from {storage_name}"
+
+        avail = CollectionEditor.get_quantity(
+            col, row.api_card.id, row.variant_id, row.set_code, row.rarity, row.image_id,
+            row.language, row.condition, row.first_edition, storage_location=from_loc
+        )
+
+        if avail >= qty:
+            CollectionEditor.move_card(
+                col, row.api_card, row.set_code, row.rarity, row.language,
+                row.condition, row.first_edition, from_storage=from_loc, to_storage=to_loc,
+                quantity=qty, image_id=row.image_id, variant_id=row.variant_id
             )
-            if avail >= qty:
-                CollectionEditor.move_card(
-                    col, row.api_card, row.set_code, row.rarity, row.language,
-                    row.condition, row.first_edition, from_storage=storage_name, to_storage=None,
-                    quantity=qty, image_id=row.image_id, variant_id=row.variant_id
-                )
-                success = True
-                msg = f"Removed 1 {row.api_card.name} from {storage_name}"
-            else:
-                msg = "Not enough copies in storage!"
+            success = True
+
+            # Log Change
+            col_file = self.state['selected_collection_file']
+            changes = [
+                {'action': 'REMOVE', 'quantity': qty, 'card_data': {
+                    'card_id': row.api_card.id,
+                    'variant_id': row.variant_id,
+                    'set_code': row.set_code, 'rarity': row.rarity,
+                    'language': row.language, 'condition': row.condition, 'first_edition': row.first_edition,
+                    'image_id': row.image_id,
+                    'storage_location': from_loc
+                }},
+                {'action': 'ADD', 'quantity': qty, 'card_data': {
+                    'card_id': row.api_card.id,
+                    'variant_id': row.variant_id,
+                    'set_code': row.set_code, 'rarity': row.rarity,
+                    'language': row.language, 'condition': row.condition, 'first_edition': row.first_edition,
+                    'image_id': row.image_id,
+                    'storage_location': to_loc
+                }}
+            ]
+            changelog_manager.log_batch_change(col_file, f"Moved {row.api_card.name}", changes)
+
+        else:
+            msg = "Not enough copies available!" if not self.state['in_storage_only'] else "Not enough copies in storage!"
 
         if success:
+            # Update View Model
+            # Right Click in this view ALWAYS implies removing the card from the CURRENT view context
+            # (either moving it OUT of storage, or moving it INTO storage which removes it from Unassigned view)
+
+            view_loc = self.state['current_storage']['name'] if self.state['in_storage_only'] else None
+
+            await self._update_view_model(
+                card_id=row.api_card.id,
+                variant_id=row.variant_id,
+                set_code=row.set_code,
+                rarity=row.rarity,
+                language=row.language,
+                condition=row.condition,
+                first_edition=row.first_edition,
+                image_id=row.image_id,
+                quantity_change=-qty,
+                storage_location=view_loc
+            )
+
             self.schedule_save()
             ui.notify(msg, type='positive')
-            await self.load_detail_rows(reset_page=False)
-            self.render_detail_grid.refresh()
         else:
             ui.notify(msg, type='warning')
+
+    @ui.refreshable
+    def render_undo_button(self):
+         has_history = False
+         if self.state['selected_collection_file']:
+              last = changelog_manager.get_last_change(self.state['selected_collection_file'])
+              has_history = last is not None
+
+         btn = ui.button('Undo', icon='undo', on_click=self.undo_last_action).props('flat color=white')
+         if not has_history:
+              btn.disable()
+              btn.classes('opacity-50')
+         else:
+              with btn: ui.tooltip('Undo last action')
 
     @ui.refreshable
     def render_pagination_controls(self):
