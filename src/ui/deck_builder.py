@@ -1018,12 +1018,14 @@ class DeckBuilderPage:
 
         # Ownership
         is_owned_copy = True
+        used_so_far = usage_counter.get(card_id, 0)
+
         if self.state['reference_collection']:
             owned_total = owned_map.get(card_id, 0)
-            used_so_far = usage_counter.get(card_id, 0)
             if used_so_far >= owned_total:
                 is_owned_copy = False
-            usage_counter[card_id] = used_so_far + 1
+
+        usage_counter[card_id] = used_so_far + 1
 
         classes = 'p-0 cursor-pointer w-full aspect-[2/3] border-transparent hover:scale-105 transition-transform relative group border border-gray-800 select-none'
         if not is_owned_copy:
@@ -1039,6 +1041,25 @@ class DeckBuilderPage:
                 ui.icon('remove', color='white').classes('text-lg')
 
             self._render_ban_icon(card.id)
+
+            # Warning Logic
+            warnings = []
+
+            # Zone Check (Main/Extra only)
+            if target == 'main' and card.is_extra_deck:
+                warnings.append("Invalid Zone: Extra Deck card in Main Deck")
+            elif target == 'extra' and not card.is_extra_deck:
+                warnings.append("Invalid Zone: Main Deck card in Extra Deck")
+
+            # Quantity Check (Global count)
+            if used_so_far >= 3:
+                warnings.append("Limit Exceeded: Max 3 copies allowed")
+
+            if warnings:
+                with ui.element('div').classes('absolute top-1 right-1 z-10'):
+                    with ui.icon('warning', color='red').classes('text-xl bg-white rounded-full shadow-sm cursor-help'):
+                        ui.tooltip("\n".join(warnings))
+
             self._setup_card_tooltip(card)
 
         card_el.on('click', lambda: self.open_deck_builder_wrapper(card))
