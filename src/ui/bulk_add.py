@@ -479,10 +479,54 @@ class BulkAddPage:
                     qty = c['quantity']
                     data = c['card_data']
 
-                    revert_qty = -qty if action == 'ADD' else qty
-
                     api_card = self.api_card_map.get(data['card_id'])
-                    if api_card:
+                    if not api_card: continue
+
+                    if action == 'UPDATE':
+                        old_data = c.get('old_data')
+                        if not old_data: continue
+
+                        # 1. Revert New State (Remove)
+                        await self._update_collection(
+                            api_card=api_card,
+                            set_code=data['set_code'],
+                            rarity=data['rarity'],
+                            lang=data['language'],
+                            qty=-qty,
+                            cond=data['condition'],
+                            first=data['first_edition'],
+                            img_id=data['image_id'],
+                            variant_id=data.get('variant_id'),
+                            storage_location=data.get('storage_location'),
+                            mode='ADD',
+                            save=False
+                        )
+
+                        # 2. Restore Old State (Add)
+                        old_lang = old_data.get('language', data['language'])
+
+                        target_set_code = data['set_code']
+                        if old_lang != data['language']:
+                             target_set_code = transform_set_code(data['set_code'], old_lang)
+
+                        await self._update_collection(
+                            api_card=api_card,
+                            set_code=target_set_code,
+                            rarity=data['rarity'],
+                            lang=old_lang,
+                            qty=qty,
+                            cond=old_data.get('condition', data['condition']),
+                            first=old_data.get('first_edition', data['first_edition']),
+                            img_id=data['image_id'],
+                            variant_id=None, # Let it resolve/generate
+                            storage_location=old_data.get('storage_location', data.get('storage_location')),
+                            mode='ADD',
+                            save=False
+                        )
+                    else:
+                        # ADD or REMOVE
+                        revert_qty = -qty if action == 'ADD' else qty
+
                         await self._update_collection(
                             api_card=api_card,
                             set_code=data['set_code'],
@@ -493,10 +537,12 @@ class BulkAddPage:
                             first=data['first_edition'],
                             img_id=data['image_id'],
                             variant_id=data.get('variant_id'),
+                            storage_location=data.get('storage_location'),
                             mode='ADD',
                             save=False
                         )
-                        count += 1
+
+                    count += 1
 
                 if count > 0:
                     await run.io_bound(persistence.save_collection, self.current_collection_obj, self.state['selected_collection'])
@@ -531,6 +577,7 @@ class BulkAddPage:
                 first=data['first_edition'],
                 img_id=data['image_id'],
                 variant_id=data.get('variant_id'),
+                storage_location=data.get('storage_location'),
                 mode='ADD'
             )
 
@@ -636,7 +683,8 @@ class BulkAddPage:
                     'language': defaults['lang'],
                     'condition': defaults['cond'],
                     'first_edition': defaults['first'],
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'storage_location': defaults['storage']
                 }
             })
             added_count += qty
@@ -686,7 +734,8 @@ class BulkAddPage:
                 'language': lang,
                 'condition': cond,
                 'first_edition': first,
-                'variant_id': var_id
+                'variant_id': var_id,
+                'storage_location': self.state['default_storage']
              }
              changelog_manager.log_change(self.state['selected_collection'], 'ADD', card_data, qty)
              ui.notify(f"Added {entry.api_card.name}", type='positive')
@@ -720,7 +769,8 @@ class BulkAddPage:
                 'language': entry.language,
                 'condition': entry.condition,
                 'first_edition': entry.first_edition,
-                'variant_id': entry.variant_id
+                'variant_id': entry.variant_id,
+                'storage_location': entry.storage_location
              }
              changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', card_data, qty_to_remove)
              ui.notify(f"Removed {entry.api_card.name}", type='info')
@@ -752,7 +802,8 @@ class BulkAddPage:
                 'language': entry.language,
                 'condition': entry.condition,
                 'first_edition': entry.first_edition,
-                'variant_id': entry.variant_id
+                'variant_id': entry.variant_id,
+                'storage_location': entry.storage_location
              }
              changelog_manager.log_change(self.state['selected_collection'], 'REMOVE', card_data, 1)
              ui.notify(f"Removed 1x {entry.api_card.name}", type='info')
@@ -1048,7 +1099,8 @@ class BulkAddPage:
                     'language': lang,
                     'condition': cond,
                     'first_edition': first,
-                    'variant_id': variant_id
+                    'variant_id': variant_id,
+                    'storage_location': storage
                 }
             })
             added_count += 1
@@ -1106,7 +1158,8 @@ class BulkAddPage:
                     'language': entry.language,
                     'condition': entry.condition,
                     'first_edition': entry.first_edition,
-                    'variant_id': entry.variant_id
+                    'variant_id': entry.variant_id,
+                    'storage_location': entry.storage_location
                 }
             })
             removed_count += qty_to_remove
