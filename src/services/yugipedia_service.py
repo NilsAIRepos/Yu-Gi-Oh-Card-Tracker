@@ -121,15 +121,26 @@ class YugipediaService:
                     break
             return decks
 
-        # Fetch both categories concurrently
+        # Fetch all three categories concurrently
         results = await asyncio.gather(
             fetch_category_smw("Category:TCG_Structure_Decks", 'STRUCTURE'),
-            fetch_category_smw("Category:TCG_Starter_Decks", 'STARTER')
+            fetch_category_smw("Category:TCG_Starter_Decks", 'STARTER'),
+            fetch_category_smw("Category:Preconstructed_Decks", 'STRUCTURE') # Treat Preconstructed as Structure
         )
 
         # Merge and Deduplicate (by title)
         # Prefer SPEED type if duplicate exists
         deck_map = {}
+        # Iterate in order: Structure, Starter, Precon
+        # Logic:
+        # 1. Structure
+        # 2. Starter
+        # 3. Precon
+        # If exists, we keep existing unless new one is SPEED and old one isn't.
+        # Wait, if Precon is treated as Structure, it behaves same as Structure.
+        # User requested: "If a deck exists in multiple categories (e.g., Starter and Preconstructed), which classification should take precedence? (Currently, Speed Duel > Structure/Starter). -> Similar to Structure deck"
+        # This implies Precon/Structure have similar priority.
+
         for deck_list in results:
             for d in deck_list:
                 if d.title in deck_map:
