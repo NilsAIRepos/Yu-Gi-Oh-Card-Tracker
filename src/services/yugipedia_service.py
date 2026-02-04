@@ -83,11 +83,12 @@ class YugipediaService:
         # Fetch both categories concurrently
         results = await asyncio.gather(
             fetch_category("Category:TCG_Structure_Decks", 'STRUCTURE'),
-            fetch_category("Category:TCG_Starter_Decks", 'STARTER')
+            fetch_category("Category:TCG_Starter_Decks", 'STARTER'),
+            fetch_category("Category:Preconstructed Decks", 'STRUCTURE')
         )
 
         # Flatten list
-        all_decks = results[0] + results[1]
+        all_decks = results[0] + results[1] + results[2]
 
         # Sort by title
         return sorted(all_decks, key=lambda x: x.title)
