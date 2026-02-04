@@ -1478,8 +1478,14 @@ class BulkAddPage:
         if s['filter_st_race']: res = [e for e in res if ("Spell" in e.api_card.type or "Trap" in e.api_card.type) and e.api_card.race == s['filter_st_race']]
         if s['filter_archetype']: res = [e for e in res if e.api_card.archetype == s['filter_archetype']]
         if s['filter_set']:
-             target = s['filter_set'].split('|')[0].strip().lower()
-             res = [e for e in res if target in e.set_name.lower() or target in e.set_code.lower()]
+             parts = s['filter_set'].split('|')
+             name_target = parts[0].strip().lower()
+             code_target = parts[1].strip().lower() if len(parts) > 1 else None
+
+             if code_target:
+                 res = [e for e in res if code_target in e.set_code.lower()]
+             else:
+                 res = [e for e in res if name_target in e.set_name.lower() or name_target in e.set_code.lower()]
         if s['filter_rarity']:
              target = s['filter_rarity'].lower()
              res = [e for e in res if e.rarity.lower() == target]
@@ -1562,8 +1568,14 @@ class BulkAddPage:
         if s['filter_st_race']: res = [e for e in res if ("Spell" in e.api_card.type or "Trap" in e.api_card.type) and e.api_card.race == s['filter_st_race']]
         if s['filter_archetype']: res = [e for e in res if e.api_card.archetype == s['filter_archetype']]
         if s['filter_set']:
-             target = s['filter_set'].split('|')[0].strip().lower()
-             res = [e for e in res if target in e.set_name.lower() or target in e.set_code.lower()]
+             parts = s['filter_set'].split('|')
+             name_target = parts[0].strip().lower()
+             code_target = parts[1].strip().lower() if len(parts) > 1 else None
+
+             if code_target:
+                 res = [e for e in res if code_target in e.set_code.lower()]
+             else:
+                 res = [e for e in res if name_target in e.set_name.lower() or name_target in e.set_code.lower()]
         if s['filter_rarity']:
              target = s['filter_rarity'].lower()
              res = [e for e in res if e.rarity.lower() == target]
