@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class StructureDeck:
     page_id: int
     title: str
-    deck_type: str = 'STRUCTURE' # 'STRUCTURE' or 'STARTER'
+    deck_type: str = 'STRUCTURE' # 'STRUCTURE', 'STARTER', or 'PRECON'
 
 @dataclass
 class DeckCard:
@@ -80,17 +80,26 @@ class YugipediaService:
                 logger.error(f"Failed to fetch {category}: {e}")
                 return []
 
-        # Fetch both categories concurrently
+        # Fetch categories concurrently
         results = await asyncio.gather(
             fetch_category("Category:TCG_Structure_Decks", 'STRUCTURE'),
-            fetch_category("Category:TCG_Starter_Decks", 'STARTER')
+            fetch_category("Category:TCG_Starter_Decks", 'STARTER'),
+            fetch_category("Category:Preconstructed_Decks", 'PRECON')
         )
 
         # Flatten list
-        all_decks = results[0] + results[1]
+        all_decks = results[0] + results[1] + results[2]
+
+        # Deduplicate by page_id (keep first occurrence)
+        seen_ids = set()
+        unique_decks = []
+        for d in all_decks:
+            if d.page_id not in seen_ids:
+                seen_ids.add(d.page_id)
+                unique_decks.append(d)
 
         # Sort by title
-        return sorted(all_decks, key=lambda x: x.title)
+        return sorted(unique_decks, key=lambda x: x.title)
 
     # Legacy alias for compatibility
     async def get_structure_decks(self) -> List[StructureDeck]:

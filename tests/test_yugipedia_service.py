@@ -2,7 +2,7 @@
 import unittest
 import asyncio
 from unittest.mock import MagicMock, patch
-from src.services.yugipedia_service import YugipediaService, DeckCard
+from src.services.yugipedia_service import YugipediaService, DeckCard, StructureDeck
 
 class TestYugipediaService(unittest.TestCase):
     def setUp(self):
@@ -100,6 +100,92 @@ CODE-EN002; Test Set 2; Common, Rare
         self.assertEqual(result['sets'][1]['set_code'], "CODE-EN002")
         self.assertEqual(result['sets'][1]['set_rarity'], "Common")
         self.assertEqual(result['sets'][2]['set_rarity'], "Rare")
+
+    @patch('src.services.yugipedia_service.requests.get')
+    def test_get_all_decks_deduplication(self, mock_get):
+        # Setup mock responses
+        # We expect 3 calls for the 3 categories
+
+        # Helper to create mock response
+        def create_mock_response(members):
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {
+                "query": {
+                    "categorymembers": members
+                }
+            }
+            return mock_resp
+
+        # Category 1: Structure Decks
+        # Contains Deck A and Deck B
+        cat1_members = [
+            {'pageid': 101, 'title': 'Structure Deck: A', 'ns': 0},
+            {'pageid': 102, 'title': 'Structure Deck: B', 'ns': 0}
+        ]
+
+        # Category 2: Starter Decks
+        # Contains Deck C
+        cat2_members = [
+            {'pageid': 103, 'title': 'Starter Deck: C', 'ns': 0}
+        ]
+
+        # Category 3: Preconstructed Decks
+        # Contains Deck B (duplicate) and Deck D (new)
+        cat3_members = [
+            {'pageid': 102, 'title': 'Structure Deck: B', 'ns': 0}, # Duplicate of 102
+            {'pageid': 104, 'title': 'Speed Duel: D', 'ns': 0}
+        ]
+
+        # Configure side_effect for requests.get
+        # The service calls them concurrently, but we can inspect the params to return correct data
+        # However, asyncio.gather runs them.
+
+        def side_effect(url, params=None, headers=None):
+            if params['cmtitle'] == "Category:TCG_Structure_Decks":
+                return create_mock_response(cat1_members)
+            elif params['cmtitle'] == "Category:TCG_Starter_Decks":
+                return create_mock_response(cat2_members)
+            elif params['cmtitle'] == "Category:Preconstructed_Decks":
+                return create_mock_response(cat3_members)
+            return MagicMock(status_code=404)
+
+        mock_get.side_effect = side_effect
+
+        # Run the async method
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        results = loop.run_until_complete(self.service.get_all_decks())
+        loop.close()
+
+        # Verification
+        # Total unique decks should be 4: A, B, C, D
+        self.assertEqual(len(results), 4)
+
+        # Check titles and types
+        # Sort order is by title.
+        # "Speed Duel: D", "Starter Deck: C", "Structure Deck: A", "Structure Deck: B"
+        # Alphabetical:
+        # 1. Speed Duel: D
+        # 2. Starter Deck: C
+        # 3. Structure Deck: A
+        # 4. Structure Deck: B
+
+        titles = [d.title for d in results]
+        self.assertEqual(titles, sorted(["Structure Deck: A", "Structure Deck: B", "Starter Deck: C", "Speed Duel: D"]))
+
+        # Check types
+        deck_map = {d.title: d for d in results}
+        self.assertEqual(deck_map["Structure Deck: A"].deck_type, 'STRUCTURE')
+        self.assertEqual(deck_map["Starter Deck: C"].deck_type, 'STARTER')
+        self.assertEqual(deck_map["Speed Duel: D"].deck_type, 'PRECON')
+
+        # Deck B could be STRUCTURE or PRECON depending on which one was processed first/kept.
+        # Logic says: results = results[0] + results[1] + results[2]
+        # results[0] is STRUCTURE. results[2] is PRECON.
+        # Deduplication keeps first occurrence.
+        # So Deck B should be STRUCTURE.
+        self.assertEqual(deck_map["Structure Deck: B"].deck_type, 'STRUCTURE')
 
 if __name__ == '__main__':
     unittest.main()

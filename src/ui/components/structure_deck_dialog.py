@@ -68,8 +68,14 @@ class StructureDeckDialog:
             # Determine prefix based on type
             # Safe defaults if deck_type missing (legacy/fallback)
             d_type = getattr(d, 'deck_type', 'STRUCTURE')
-            prefix = "Structure Deck: " if d_type == 'STRUCTURE' else "Starter Deck: "
-            phrase = "Structure Deck" if d_type == 'STRUCTURE' else "Starter Deck"
+
+            if d_type == 'STARTER':
+                prefix = "Starter Deck: "
+                phrase = "Starter Deck"
+            else:
+                # STRUCTURE or PRECON (or fallback)
+                prefix = "Structure Deck: "
+                phrase = "Structure Deck"
 
             # Remove existing phrase (case insensitive) to avoid duplication
             cleaned = re.sub(re.escape(phrase), '', display, flags=re.IGNORECASE).strip()
