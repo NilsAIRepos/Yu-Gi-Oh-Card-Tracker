@@ -1436,7 +1436,21 @@ class ScanPage:
 
             self.save_recent_scans()
             await self.load_data()
-            ui.notify("Undid last action.", type='positive')
+
+            # Construct Undo Message
+            msg = "Undid last action."
+            if last_change.get('type') == 'batch':
+                msg = f"Undid: {last_change.get('description', 'Batch Action')}"
+            else:
+                action = last_change.get('action', 'Unknown').title()
+                qty = last_change.get('quantity', 1)
+                cd = last_change.get('card_data', {})
+                name = cd.get('name', 'Unknown Card')
+                set_code = cd.get('set_code', '???')
+                rarity = cd.get('rarity', '???')
+                msg = f"Undid {action}: {qty}x {name} ({set_code} - {rarity})"
+
+            ui.notify(msg, type='positive')
         except Exception as e:
             logger.error(f"Undo failed: {e}")
             ui.notify("Undo failed.", type='negative')
