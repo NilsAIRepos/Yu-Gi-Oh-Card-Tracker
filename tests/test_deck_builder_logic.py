@@ -149,5 +149,34 @@ class TestDeckBuilderLogic(unittest.TestCase):
         self.assertFalse(self.page._is_duplicate_deck("NewDeck"))
         self.assertFalse(self.page._is_duplicate_deck("MyDeck2"))
 
+    def test_calculate_total_points(self):
+        # Setup Deck
+        deck = MagicMock()
+        deck.main = [1, 2]
+        deck.extra = [3]
+        deck.side = [4]
+        self.page.state['current_deck'] = deck
+
+        # Setup Banlist Map
+        # 1: 10 pts, 2: 5 pts, 3: 20 pts, 4: 0 pts (not in map or 0)
+        self.page.state['current_banlist_map'] = {
+            '1': 10,
+            '2': 5,
+            '3': '20' # Test string handling
+        }
+
+        # Test Case 1: Not in points mode
+        self.page.state['current_banlist_type'] = 'classic'
+        self.assertEqual(self.page.calculate_total_points(), 0)
+
+        # Test Case 2: Points mode
+        self.page.state['current_banlist_type'] = 'points'
+        # Total = 10 + 5 + 20 + 0 = 35
+        self.assertEqual(self.page.calculate_total_points(), 35)
+
+        # Test Case 3: Empty deck
+        self.page.state['current_deck'] = None
+        self.assertEqual(self.page.calculate_total_points(), 0)
+
 if __name__ == '__main__':
     unittest.main()

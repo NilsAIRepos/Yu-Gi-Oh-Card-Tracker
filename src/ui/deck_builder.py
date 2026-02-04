@@ -131,7 +131,10 @@ class DeckBuilderPage:
 
             'available_banlists': [],
             'current_banlist_name': last_banlist,
-            'current_banlist_map': {}, # id -> status
+            'current_banlist_data': {}, # Full object
+            'current_banlist_map': {}, # id -> status/points
+            'current_banlist_type': 'classic',
+            'current_banlist_max_points': None,
 
             'all_api_cards': [], # List[ApiCard]
             'filtered_items': [], # List[ApiCard] for search results
@@ -201,6 +204,25 @@ class DeckBuilderPage:
             for cid in getattr(deck, zone, []):
                 counts[cid] = counts.get(cid, 0) + 1
         return counts
+
+    def calculate_total_points(self) -> int:
+        """Calculates total points used in the deck (Main + Extra + Side)."""
+        if self.state['current_banlist_type'] != 'points':
+            return 0
+
+        deck = self.state['current_deck']
+        if not deck: return 0
+
+        points_map = self.state['current_banlist_map']
+        total = 0
+
+        for zone in ['main', 'extra', 'side']:
+            for cid in getattr(deck, zone, []):
+                val = points_map.get(str(cid), 0)
+                try:
+                    total += int(val)
+                except: pass
+        return total
 
     def calculate_missing_counts(self, deck_counts: Dict[int, int]) -> Dict[int, int]:
         """Compares deck counts against the reference collection and returns the difference."""
@@ -349,9 +371,16 @@ class DeckBuilderPage:
 
             # Load the actual map if a banlist is selected
             if self.state['current_banlist_name']:
-                 self.state['current_banlist_map'] = await banlist_service.load_banlist(self.state['current_banlist_name'])
+                 data = await banlist_service.load_banlist(self.state['current_banlist_name'])
+                 self.state['current_banlist_data'] = data
+                 self.state['current_banlist_map'] = data.get('cards', {})
+                 self.state['current_banlist_type'] = data.get('type', 'classic')
+                 self.state['current_banlist_max_points'] = data.get('max_points')
             else:
+                 self.state['current_banlist_data'] = {}
                  self.state['current_banlist_map'] = {}
+                 self.state['current_banlist_type'] = 'classic'
+                 self.state['current_banlist_max_points'] = None
 
             # Setup Filters Metadata
             sets = set()
@@ -833,12 +862,21 @@ class DeckBuilderPage:
             ui.space()
 
             # Banlist Selection
+            banlist_details = banlist_service.get_banlists_details()
+            # Map for UI
             banlist_options = {None: 'No Banlist'}
-            for b in sorted(self.state['available_banlists']):
-                banlist_options[b] = b
+
+            # Map for internal lookup
+            filename_to_detail = {None: None}
+
+            for details in banlist_details:
+                fname = details['filename']
+                btype = details['type']
+                icon = "🚫" if btype == "classic" else "⭐"
+                banlist_options[fname] = f"{icon} {details['name']}"
+                filename_to_detail[fname] = details
 
             # Ensure current value is in options to prevent 'Invalid value' error
-            # This handles the initial load state where available_banlists might be empty
             curr_ban = self.state['current_banlist_name']
             if curr_ban is not None and curr_ban not in banlist_options:
                 banlist_options[curr_ban] = curr_ban
@@ -848,14 +886,33 @@ class DeckBuilderPage:
                 persistence.save_ui_state({'deck_builder_last_banlist': val})
                 self.state['current_banlist_name'] = val
                 if val:
-                     self.state['current_banlist_map'] = await banlist_service.load_banlist(val)
+                     data = await banlist_service.load_banlist(val)
+                     self.state['current_banlist_data'] = data
+                     self.state['current_banlist_map'] = data.get('cards', {})
+                     self.state['current_banlist_type'] = data.get('type', 'classic')
+                     self.state['current_banlist_max_points'] = data.get('max_points')
                 else:
+                     self.state['current_banlist_data'] = {}
                      self.state['current_banlist_map'] = {}
+                     self.state['current_banlist_type'] = 'classic'
+                     self.state['current_banlist_max_points'] = None
 
                 self.refresh_deck_area()
                 self.refresh_search_results()
 
             ui.select(banlist_options, value=curr_ban, label='Banlist', on_change=on_banlist_change).classes('min-w-[150px]')
+
+            async def fetch_banlists():
+                ui.notify("Fetching banlists... please wait.", type='info')
+                try:
+                    await banlist_service.fetch_default_banlists(force=True)
+                    self.state['available_banlists'] = banlist_service.get_banlists()
+                    self.render_header.refresh()
+                    ui.notify("Banlists updated.", type='positive')
+                except Exception as e:
+                    ui.notify(f"Fetch failed: {e}", type='negative')
+
+            ui.button(icon='cloud_download', on_click=fetch_banlists).props('flat round color=white').tooltip('Fetch Banlists')
 
             async def save_banlist_as():
                 with ui.dialog() as d, ui.card():
@@ -863,7 +920,17 @@ class DeckBuilderPage:
                     name_input = ui.input('New Name')
                     async def save():
                         if not name_input.value: return
-                        await banlist_service.save_banlist(name_input.value, self.state['current_banlist_map'])
+
+                        current_data = self.state.get('current_banlist_data', {})
+                        metadata = {
+                            "type": current_data.get("type", "classic"),
+                            "max_points": current_data.get("max_points"),
+                            "date": current_data.get("date")
+                        }
+
+                        await banlist_service.save_banlist(name_input.value, self.state['current_banlist_map'], metadata=metadata)
+
+                        # Refresh list
                         self.state['available_banlists'] = banlist_service.get_banlists()
                         self.state['current_banlist_name'] = name_input.value
                         self.render_header.refresh()
@@ -895,15 +962,27 @@ class DeckBuilderPage:
         status = self.state['current_banlist_map'].get(str(card_id))
         if not status: return
 
+        btype = self.state.get('current_banlist_type', 'classic')
+
         with ui.element('div').classes('absolute top-1 left-1 z-10 pointer-events-none'):
-             if status in ["Forbidden", "Banned"]:
-                 ui.icon('block', color='red').classes('text-xl bg-white rounded-full shadow-sm')
-             elif status == "Limited":
-                 with ui.element('div').classes('w-5 h-5 rounded-full bg-orange-600 text-white flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
-                     ui.label('1')
-             elif status == "Semi-Limited":
-                 with ui.element('div').classes('w-5 h-5 rounded-full bg-yellow-500 text-black flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
-                     ui.label('2')
+             if btype == 'points':
+                 # Render Point Badge (Star)
+                 try:
+                     pts = int(status)
+                     with ui.element('div').classes('w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
+                         ui.label(str(pts))
+                 except:
+                     pass
+             else:
+                 # Classic
+                 if status in ["Forbidden", "Banned"]:
+                     ui.icon('block', color='red').classes('text-xl bg-white rounded-full shadow-sm')
+                 elif status == "Limited":
+                     with ui.element('div').classes('w-5 h-5 rounded-full bg-orange-600 text-white flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
+                         ui.label('1')
+                 elif status == "Semi-Limited":
+                     with ui.element('div').classes('w-5 h-5 rounded-full bg-yellow-500 text-black flex items-center justify-center font-bold text-xs border border-white shadow-sm'):
+                         ui.label('2')
 
     def _setup_card_tooltip(self, card: ApiCard):
         if not card: return
@@ -1084,18 +1163,33 @@ class DeckBuilderPage:
         with ui.row().classes('w-full items-center justify-between q-mb-sm'):
             with ui.row().classes('gap-1 items-center'):
                 ui.label(title).classes('font-bold text-white text-xs uppercase tracking-wider')
-                # Initialize label with placeholder
+
+                # Header Count / Points Label
                 lbl = ui.label('(0)').classes('font-bold text-white text-xs uppercase tracking-wider')
                 if not hasattr(self, 'header_count_labels'): self.header_count_labels = {}
                 self.header_count_labels[target] = lbl
 
+            # Show total points if in points mode and this is Main Deck header?
+            # Or show Points summary elsewhere?
+            # User requirement: "show total available + spend points"
+            # I will add a global points label or modify the zone headers.
+            # But points are global for Genesys (Main + Extra + Side).
+            # So I should probably add a dedicated Points Display in the Header area or near the top of the deck area.
+
+
             with ui.button(icon='sort', on_click=lambda t=target: self.sort_deck(t)).props('flat dense size=sm color=white'):
                  ui.tooltip(f'Sort {title}')
+
+    # I need to update setup_header and update_zone_headers.
+    # I'll create a dedicated points display instead of squeezing it into zone headers,
+    # because points are global.
 
     def update_zone_headers(self):
         if not hasattr(self, 'header_count_labels'): return
 
         deck = self.state['current_deck']
+
+        # Update Counts
         for target in ['main', 'extra', 'side']:
             if target not in self.header_count_labels: continue
 
@@ -1114,6 +1208,21 @@ class DeckBuilderPage:
                 lbl.classes(remove='text-white', add='text-red-400')
             else:
                 lbl.classes(remove='text-red-400', add='text-white')
+
+        # Update Points Display
+        if hasattr(self, 'points_label'):
+            if self.state.get('current_banlist_type') == 'points':
+                total = self.calculate_total_points()
+                max_p = self.state.get('current_banlist_max_points', 100)
+                self.points_label.text = f"POINTS: {total} / {max_p}"
+                self.points_label.set_visibility(True)
+
+                if total > max_p:
+                    self.points_label.classes(remove='text-green-400', add='text-red-500')
+                else:
+                    self.points_label.classes(remove='text-red-500', add='text-green-400')
+            else:
+                self.points_label.set_visibility(False)
 
     def setup_zone(self, title, target):
         # Zones expand dynamically based on content
@@ -1513,6 +1622,10 @@ class DeckBuilderPage:
 
             # Deck area grows with content
             with ui.column().classes('flex-grow relative deck-builder-deck-area gap-2'):
+                 # POINTS DISPLAY
+                 self.points_label = ui.label('POINTS: 0 / 100').classes('text-h6 font-bold text-center w-full mb-2')
+                 self.points_label.set_visibility(False)
+
                  self.setup_zone('Main Deck', 'main')
                  self.setup_zone('Extra Deck', 'extra')
                  self.setup_zone('Side Deck', 'side')
