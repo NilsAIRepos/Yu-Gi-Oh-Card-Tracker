@@ -1060,6 +1060,16 @@ class YugiohService:
         elif "trap" in t: new_card.frameType = "trap"
         elif "effect" in t: new_card.frameType = "effect"
 
+        # Image Handling
+        if card_data.get("image_url") or card_data.get("image_url_small"):
+            from src.core.models import ApiCardImage
+            img = ApiCardImage(
+                id=new_card.id,
+                image_url=card_data.get("image_url") or "",
+                image_url_small=card_data.get("image_url_small") or ""
+            )
+            new_card.card_images.append(img)
+
         return new_card
 
     async def import_set_from_yugipedia(self, set_data: Dict[str, Any], language: str = "en") -> Tuple[bool, str]:
@@ -1098,6 +1108,8 @@ class YugiohService:
                     missing_cards_names.add(name)
 
             # 2. Concurrently fetch missing cards
+            new_cards_with_images = [] # List of ApiCards that need image download
+
             if missing_cards_names:
                 logger.info(f"Fetching details for {len(missing_cards_names)} missing cards...")
 
@@ -1122,7 +1134,27 @@ class YugiohService:
                         name_map[new_card.name.lower()] = new_card
                         created_count += 1
 
+                        if new_card.card_images:
+                            new_cards_with_images.append(new_card)
+
                 logger.info(f"Created {created_count} new cards from Yugipedia.")
+
+            # Trigger downloads for new cards
+            if new_cards_with_images:
+                high_res_map = {}
+                low_res_map = {}
+                for c in new_cards_with_images:
+                    img = c.card_images[0]
+                    if img.image_url: high_res_map[c.id] = img.image_url
+                    if img.image_url_small: low_res_map[c.id] = img.image_url_small
+
+                # Fire and forget (or await if critical) - sticking to await to ensure completion before UI update if desired
+                # But to avoid holding up the UI too long, we can do it in background or sequentially
+                # download_batch handles existing checks
+                if low_res_map:
+                    asyncio.create_task(image_manager.download_batch(low_res_map, high_res=False))
+                if high_res_map:
+                    asyncio.create_task(image_manager.download_batch(high_res_map, high_res=True))
 
             # 3. Add variants
             for c_data in cards_list:
@@ -1219,6 +1251,14 @@ class YugiohService:
                 target_card = self._create_card_from_yugipedia_data(card_data, cards)
                 cards.append(target_card)
                 logger.info(f"Created new card: {target_card.name} ({target_card.id})")
+
+                # Download Images for new card
+                if target_card.card_images:
+                    img = target_card.card_images[0]
+                    if img.image_url:
+                        asyncio.create_task(image_manager.ensure_image(target_card.id, img.image_url, high_res=True))
+                    if img.image_url_small:
+                        asyncio.create_task(image_manager.ensure_image(target_card.id, img.image_url_small, high_res=False))
 
             else:
                 # Update Existing Card
