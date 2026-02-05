@@ -960,6 +960,19 @@ class ScannerManager:
 
         scored_variants.sort(key=lambda x: x['score'], reverse=True)
 
+        # Deduplicate variants by (set_code, rarity) to avoid showing same rarity twice
+        # We keep the highest scoring one (first one since list is sorted)
+        unique_variants = {}
+        deduped_list = []
+        for v in scored_variants:
+            # Use tuple of immutable properties for key
+            key = (v['set_code'], v['rarity'])
+            if key not in unique_variants:
+                unique_variants[key] = v
+                deduped_list.append(v)
+
+        scored_variants = deduped_list
+
         if not scored_variants:
             return {"ambiguity": False, "candidates": []}
 
@@ -986,9 +999,7 @@ class ScannerManager:
         if len(scored_variants) > 1:
             second = scored_variants[1]
             if top['score'] - second['score'] < threshold: # Use Configured Threshold
-                 # Check if they are actually different cards/variants (not just same card diff rarity which is covered above)
-                 if top['set_code'] != second['set_code']:
-                     ambiguous = True
+                 ambiguous = True
 
         return {
             "ambiguity": ambiguous,
