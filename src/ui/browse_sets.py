@@ -909,9 +909,91 @@ class BrowseSetsPage:
                     .bind_icon_from(self.state, 'sort_desc', lambda x: 'arrow_downward' if x else 'arrow_upward') \
                     .props('flat round dense color=white')
 
+                ui.space()
+                ui.button('+ Import Set', on_click=self.show_import_set_dialog).props('color=green icon=cloud_download')
+
             self.render_filter_row()
 
         self.render_gallery_content()
+
+    def show_import_set_dialog(self):
+        from src.services.yugipedia_service import yugipedia_service
+
+        with ui.dialog() as dialog, ui.card().classes('w-full max-w-4xl bg-gray-900 border border-gray-700'):
+            ui.label("Import Set from Yugipedia").classes('text-h6 text-white mb-4')
+
+            url_input = ui.input("Yugipedia URL", placeholder="https://yugipedia.com/wiki/Structure_Deck:_Fire_Kings") \
+                .classes('w-full mb-4').props('dark clearable')
+
+            preview_container = ui.column().classes('w-full gap-4')
+            preview_container.set_visibility(False)
+
+            # Using a list to hold data so it can be accessed in inner functions
+            preview_state = {"data": {}}
+
+            async def fetch_preview():
+                url = url_input.value
+                if not url: return
+
+                ui.notify("Fetching data...", type='info')
+                data = await yugipedia_service.get_set_details(url)
+
+                if not data:
+                    ui.notify("Failed to fetch set details. Check URL.", type='negative')
+                    return
+
+                preview_state["data"] = data
+                preview_container.clear()
+                preview_container.set_visibility(True)
+
+                with preview_container:
+                    with ui.row().classes('gap-4 items-start w-full'):
+                         if data.get('image_url'):
+                             ui.image(data['image_url']).classes('w-32 h-auto object-contain')
+
+                         with ui.column().classes('flex-grow'):
+                             ui.label(data['name']).classes('text-h5 font-bold text-white')
+                             if data.get('code'):
+                                 ui.label(data['code']).classes('text-yellow-500 font-mono')
+                             ui.label(f"{len(data['cards'])} Cards found").classes('text-gray-400')
+
+                    with ui.scroll_area().classes('h-64 w-full border border-gray-700 rounded p-2'):
+                         with ui.grid(columns='1fr 3fr 2fr').classes('w-full items-center gap-2'):
+                             ui.label("Code").classes('font-bold text-gray-400')
+                             ui.label("Name").classes('font-bold text-gray-400')
+                             ui.label("Rarity").classes('font-bold text-gray-400')
+
+                             for c in data['cards']:
+                                 ui.label(c['set_code']).classes('font-mono text-yellow-500 text-xs')
+                                 ui.label(c['name']).classes('truncate text-sm')
+                                 ui.label(c['set_rarity']).classes('text-gray-400 text-xs')
+
+            ui.button("Preview", on_click=fetch_preview).props('color=primary').classes('w-full')
+
+            # Placeholder to ensure container exists in layout
+            with preview_container: pass
+
+            with ui.row().classes('w-full justify-end gap-4 mt-4'):
+                ui.button("Cancel", on_click=dialog.close).props('flat')
+
+                async def confirm_import():
+                    data = preview_state["data"]
+                    if not data: return
+
+                    ui.notify("Importing...", type='info')
+
+                    success, msg = await ygo_service.import_set_from_yugipedia(data, language='en')
+
+                    if success:
+                        ui.notify(msg, type='positive')
+                        dialog.close()
+                        await self.load_data()
+                    else:
+                        ui.notify(f"Error: {msg}", type='negative')
+
+                ui.button("Import Set", on_click=confirm_import).props('color=green')
+
+        dialog.open()
 
     @ui.refreshable
     def render_filter_row(self):
