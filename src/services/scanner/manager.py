@@ -795,7 +795,7 @@ class ScannerManager:
              norm_ocr = normalize_set_code(ocr_code)
              norm_db = normalize_set_code(db_code)
              if norm_ocr == norm_db:
-                 return 75.0
+                 return 69.0
         except:
              pass
 
@@ -955,11 +955,11 @@ class ScannerManager:
                     # inject a virtual candidate with the OCR Set Code.
                     # This ensures "DPKB-DE007" appears in the list even if DB only has "DPKB-EN007".
                     # BUG FIX: Ensure we don't create a virtual variant if the card actually has this Set Code as a real variant.
-                    if 70.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code and not has_exact_match:
+                    if 65.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code and not has_exact_match:
                          virtual_entry = candidate_entry.copy()
                          virtual_entry["set_code"] = ocr_res.set_id
                          # Boost score slightly above the EN variant to prioritize the user's actual scan
-                         virtual_entry["score"] = score + 12.0 # Enough to beat the base match (EN)
+                         virtual_entry["score"] = score + 18.0 # Enough to beat the base match (EN)
                          # We set variant_id to None so confirmation triggers "Add Custom" logic (via "Other" flow logic or new flow)
                          virtual_entry["variant_id"] = None
                          scored_variants.append(virtual_entry)
