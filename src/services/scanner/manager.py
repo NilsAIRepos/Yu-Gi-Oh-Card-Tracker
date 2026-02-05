@@ -953,20 +953,31 @@ class ScannerManager:
                          virtual_entry = candidate_entry.copy()
                          virtual_entry["set_code"] = ocr_res.set_id
                          # Boost score slightly above the EN variant to prioritize the user's actual scan
-                         # BUT must be lower than an Exact Match (80.0 - 75.0 = 5.0 gap).
-                         # Boost should be < 5.0 to ensure Real Exact Match beats Virtual.
-                         virtual_entry["score"] = score + 4.0
+                         virtual_entry["score"] = score + 12.0 # Enough to beat the base match (EN)
                          # We set variant_id to None so confirmation triggers "Add Custom" logic (via "Other" flow logic or new flow)
                          virtual_entry["variant_id"] = None
                          scored_variants.append(virtual_entry)
 
         scored_variants.sort(key=lambda x: x['score'], reverse=True)
 
+        # 1. Identify Real Set Codes present in the results
+        real_set_codes = set()
+        for v in scored_variants:
+            if v.get('variant_id') is not None:
+                real_set_codes.add(v['set_code'])
+
         # Deduplicate variants by (set_code, rarity) to avoid showing same rarity twice
         # We keep the highest scoring one (first one since list is sorted)
+        # AND we suppress Virtual candidates if a Real candidate for that Set Code exists.
         unique_variants = {}
         deduped_list = []
+
         for v in scored_variants:
+            # Virtual Suppression Logic:
+            # If this is a Virtual Candidate (variant_id is None) and we have a Real Candidate for this Set Code, skip it.
+            if v.get('variant_id') is None and v['set_code'] in real_set_codes:
+                 continue
+
             # Use tuple of immutable properties for key
             key = (v['set_code'], v['rarity'])
             if key not in unique_variants:
