@@ -466,15 +466,11 @@ class SingleCardView:
 
                                 for key, count in owned_breakdown.items():
                                     flag_url = self._get_flag_url(key)
-                                    props = 'color=secondary text-color=white'
-
-                                    # If flag available, use img: syntax, otherwise fallback to layers
-                                    if flag_url:
-                                        props += f' icon=img:{flag_url}'
-                                    else:
-                                        props += ' icon=layers'
-
-                                    with ui.chip().props(props):
+                                    with ui.chip().props('color=secondary text-color=white'):
+                                        if flag_url:
+                                            ui.image(flag_url).classes('w-6 h-4 shadow-sm rounded-[2px] object-cover mr-1')
+                                        else:
+                                            ui.icon('layers', color='white').classes('text-lg mr-1')
                                         ui.label(f"{key}: {count}").classes('select-text')
                             elif total_owned == 0:
                                 ui.label('Not in collection').classes('text-gray-500 italic')
@@ -972,14 +968,11 @@ class SingleCardView:
 
                                  for key, count in owned_breakdown.items():
                                      flag_url = self._get_flag_url(key)
-                                     props = 'color=secondary text-color=white'
-
-                                     if flag_url:
-                                         props += f' icon=img:{flag_url}'
-                                     else:
-                                         props += ' icon=layers'
-
-                                     with ui.chip().props(props):
+                                     with ui.chip().props('color=secondary text-color=white'):
+                                         if flag_url:
+                                             ui.image(flag_url).classes('w-6 h-4 shadow-sm rounded-[2px] object-cover mr-1')
+                                         else:
+                                             ui.icon('layers', color='white').classes('text-lg mr-1')
                                          ui.label(f"{key}: {count}").classes('select-text')
                              elif owned_count == 0:
                                  ui.label('Not in collection').classes('text-gray-500 italic')
