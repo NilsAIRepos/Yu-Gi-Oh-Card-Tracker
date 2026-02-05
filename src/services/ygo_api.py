@@ -1021,6 +1021,95 @@ class YugiohService:
         logger.info(f"Bulk deleted set {target_prefix}. Removed {deleted_count} variants.")
         return deleted_count
 
+    async def import_set_from_yugipedia(self, set_data: Dict[str, Any], language: str = "en") -> Tuple[bool, str]:
+        """
+        Imports a set and its cards from Yugipedia data.
+        Returns (success, message).
+        """
+        try:
+            cards = await self.load_card_database(language)
+
+            set_name = set_data.get("name", "Unknown Set")
+            set_code_prefix = set_data.get("code")
+            cards_list = set_data.get("cards", [])
+
+            if not cards_list:
+                return False, "No cards found in set data."
+
+            # Attempt to derive prefix if missing
+            if not set_code_prefix and cards_list:
+                first_code = cards_list[0].get("set_code", "")
+                if '-' in first_code:
+                    set_code_prefix = first_code.split('-')[0]
+
+            updated_count = 0
+            skipped_count = 0
+
+            # Map cards by name for faster lookup
+            name_map = {c.name.lower(): c for c in cards}
+
+            for c_data in cards_list:
+                name = c_data.get("name")
+                code = c_data.get("set_code")
+                rarity = c_data.get("set_rarity", "Common")
+
+                if not name or not code:
+                    continue
+
+                target_card = name_map.get(name.lower())
+
+                if target_card:
+                    # Check if variant exists
+                    exists = False
+                    for s in target_card.card_sets:
+                        if s.set_code == code and s.set_rarity == rarity:
+                            exists = True
+                            break
+
+                    if not exists:
+                        # Add Variant
+                        new_var_id = str(uuid.uuid4())
+                        rarity_code = None
+                        abbr = RARITY_ABBREVIATIONS.get(rarity)
+                        if abbr: rarity_code = f"({abbr})"
+
+                        # Use default image id
+                        img_id = target_card.card_images[0].id if target_card.card_images else None
+
+                        new_set = ApiCardSet(
+                            variant_id=new_var_id,
+                            set_name=set_name,
+                            set_code=code,
+                            set_rarity=rarity,
+                            set_rarity_code=rarity_code,
+                            set_price="0.00",
+                            image_id=img_id
+                        )
+                        target_card.card_sets.append(new_set)
+                        updated_count += 1
+                else:
+                    skipped_count += 1
+
+            # Update Set Image if provided and we have a prefix
+            if set_data.get("image_url") and set_code_prefix:
+                await image_manager.ensure_set_image(set_code_prefix, set_data["image_url"])
+                # Also update cache entry if exists
+                if self._sets_cache and set_code_prefix in self._sets_cache:
+                    if isinstance(self._sets_cache[set_code_prefix], dict):
+                         self._sets_cache[set_code_prefix]['image'] = set_data["image_url"]
+
+            if updated_count > 0:
+                await self.save_card_database(cards, language)
+                return True, f"Imported {updated_count} variants. {skipped_count} cards not found in DB."
+            elif skipped_count > 0:
+                return False, f"No cards updated. {skipped_count} cards not found in DB."
+            else:
+                return True, "No changes needed (all variants exist)."
+
+        except Exception as e:
+            logger.error(f"Set import failed: {e}", exc_info=True)
+            return False, str(e)
+
     async def import_from_yugipedia(self, card_data: Dict[str, Any], selected_sets: List[Dict[str, str]], language: str = "en") -> Tuple[bool, str]:
         """
         Imports card data scraped from Yugipedia.

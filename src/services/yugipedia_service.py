@@ -389,6 +389,93 @@ class YugipediaService:
         # Fallback: Return as is, or try simple lookup
         return r
 
+    async def get_set_details(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        Parses a Yugipedia Set page URL.
+        Returns dictionary with:
+        - name: Set Name
+        - code: Set Prefix (if found)
+        - image_url: URL to set image
+        - cards: List of card dicts {set_code, name, set_rarity}
+        """
+        try:
+            # Extract title from URL
+            match = re.search(r'/wiki/([^/]+)$', url)
+            if not match:
+                logger.error(f"Invalid Yugipedia URL: {url}")
+                return None
+
+            title = match.group(1)
+            import urllib.parse
+            title = urllib.parse.unquote(title)
+
+            # Fetch Page
+            wikitext = await self._fetch_wikitext(title)
+            if not wikitext:
+                return None
+
+            # Parse Infobox for metadata
+            # {{Infobox set ...}}
+            # Use dotall to match across lines, but be careful with greedy matching
+            infobox_match = re.search(r'\{\{Infobox set(.*?)(\n\}\}|^\}\})', wikitext, re.DOTALL | re.MULTILINE)
+            if not infobox_match:
+                 # Try looser match
+                 infobox_match = re.search(r'\{\{Infobox set(.*)', wikitext, re.DOTALL)
+
+            data = {
+                "name": title.replace('_', ' '),
+                "code": None,
+                "image_url": None,
+                "cards": []
+            }
+
+            if infobox_match:
+                ib_content = infobox_match.group(1)
+
+                # Helper to extract param value (reused)
+                def get_param(key: str, content: str) -> Optional[str]:
+                    pattern = r'\|\s*' + re.escape(key) + r'\s*=\s*(.*?)(?=\n\s*\||\}\}|$)'
+                    m = re.search(pattern, content, re.DOTALL)
+                    if m: return m.group(1).strip()
+                    return None
+
+                data["name"] = get_param("en_name", ib_content) or data["name"]
+                data["code"] = get_param("en_prefix", ib_content) or get_param("prefix", ib_content)
+
+            # Fetch Image URL via API if possible
+            img_url = await self.get_set_image_url(title)
+            if img_url:
+                data["image_url"] = img_url
+
+            # Parse Cards
+            # 1. Check for {{Set list}} in current page
+            cards = self._extract_cards_from_block(wikitext)
+
+            # 2. If no cards, check for "Set Card Lists" link or logic
+            if not cards:
+                # Look for "Set Card Lists:..." link logic via get_deck_list
+                # get_deck_list handles searching for the list page
+                deck_list = await self.get_deck_list(title)
+                if deck_list and (deck_list['main'] or deck_list['bonus']):
+                     cards = deck_list['main'] + deck_list['bonus']
+
+            # Format cards
+            formatted_cards = []
+            for c in cards:
+                formatted_cards.append({
+                    "set_code": c.code,
+                    "name": c.name,
+                    "set_rarity": c.rarity
+                })
+
+            data["cards"] = formatted_cards
+
+            return data
+
+        except Exception as e:
+            logger.error(f"Error parsing set details from {url}: {e}")
+            return None
+
     async def get_card_details(self, url: str) -> Optional[Dict[str, Any]]:
         """
         Parses a Yugipedia card page URL and returns card details.
