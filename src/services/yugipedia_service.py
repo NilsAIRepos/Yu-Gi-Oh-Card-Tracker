@@ -488,7 +488,9 @@ class YugipediaService:
                 rarities = [r.strip() for r in rarity_str_val.split(',')]
 
                 for r in rarities:
-                    mapped_rarity = self._map_rarity(r)
+                    # Strip comments like " // description::(alternate artwork)"
+                    clean_r = re.split(r'\s*//', r)[0].strip()
+                    mapped_rarity = self._map_rarity(clean_r)
 
                     cards.append(DeckCard(
                         code=code,
