@@ -51,7 +51,7 @@ class TestImportSetFromYugipedia(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(success)
         self.assertIn("Imported 1 variants", msg)
-        self.assertIn("1 cards not found", msg)
+        self.assertIn("1 cards failed to resolve", msg)
 
         # Verify card updated
         self.assertEqual(len(existing_card.card_sets), 1)

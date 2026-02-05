@@ -1,7 +1,7 @@
 import requests
 import re
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 from nicegui import run
 import asyncio
@@ -307,46 +307,162 @@ class YugipediaService:
             'bonus': sorted(bonus_cards, key=lambda c: c.name) # Sort bonus for UI
         }
 
+    def _extract_set_list_blocks(self, text: str) -> List[str]:
+        """
+        Extracts content of {{Set list|...}} blocks using brace counting
+        to correctly handle nested templates like {{=}} or {{Link}}.
+        """
+        blocks = []
+        # Find all start indices
+        matches = list(re.finditer(r'\{\{Set list\|', text, re.IGNORECASE))
+
+        for match in matches:
+            start_idx = match.start()
+            # Find matching closing braces
+            open_braces = 0
+            curr = start_idx
+            content_start = match.end() # Start after {{Set list|
+            found_end = False
+
+            # Start counting from the beginning of the match
+            # But simpler: start loop at start_idx
+
+            i = start_idx
+            while i < len(text):
+                # Check for {{
+                if text[i:i+2] == '{{':
+                    open_braces += 2
+                    i += 2
+                # Check for }}
+                elif text[i:i+2] == '}}':
+                    open_braces -= 2
+                    i += 2
+                    if open_braces == 0:
+                        found_end = True
+                        # Current i is just after }}
+                        # Content is between content_start and i-2
+                        blocks.append(text[content_start : i - 2])
+                        break
+                else:
+                    i += 1
+
+            # Note: malformed blocks are ignored or handled by next iteration
+
+        return blocks
+
+    def _smart_split_params(self, text: str) -> List[str]:
+        """
+        Splits text by pipe '|', but respects nested braces {{ }} and brackets [[ ]].
+        """
+        parts = []
+        start = 0
+        curr = 0
+        braces = 0
+        brackets = 0
+
+        while curr < len(text):
+            char = text[curr]
+
+            if char == '{':
+                if curr + 1 < len(text) and text[curr+1] == '{':
+                    braces += 2
+                    curr += 1
+                else:
+                    braces += 1
+            elif char == '}':
+                if curr + 1 < len(text) and text[curr+1] == '}':
+                    braces -= 2
+                    curr += 1
+                else:
+                    braces -= 1
+            elif char == '[':
+                 if curr + 1 < len(text) and text[curr+1] == '[':
+                    brackets += 2
+                    curr += 1
+                 else:
+                    brackets += 1
+            elif char == ']':
+                 if curr + 1 < len(text) and text[curr+1] == ']':
+                    brackets -= 2
+                    curr += 1
+                 else:
+                    brackets -= 1
+            elif char == '|':
+                if braces == 0 and brackets == 0:
+                    parts.append(text[start:curr])
+                    start = curr + 1
+
+            curr += 1
+
+        parts.append(text[start:])
+        return parts
+
     def _extract_cards_from_block(self, text: str) -> List[DeckCard]:
-        pattern = r'\{\{Set list\|(.*?)\}\}'
-        matches = re.findall(pattern, text, re.DOTALL)
+        # Use brace counting instead of regex
+        matches = self._extract_set_list_blocks(text)
 
         cards = []
 
+        known_params = [
+            'region', 'rarities', 'qty', 'options', 'width',
+            'class', 'style', 'header', 'footer'
+        ]
+
         for block in matches:
-            parts = block.split('|')
+            # Smart split respecting nested templates
+            parts = self._smart_split_params(block)
+
             list_content = ""
             default_qty = 1
             default_rarity = "Common" # Fallback
 
+            # Heuristic: Find the part that is most likely the card list
+            # It usually contains many semicolons and is NOT a known param.
+
+            best_content_candidate = ""
+            max_semicolons = 0
+
             for part in parts:
                 part = part.strip()
+                is_param = False
+
+                # Check for key=value
                 if '=' in part:
-                    key, val = part.split('=', 1)
-                    key = key.strip().lower()
-                    val = val.strip()
-                    if key == 'qty':
-                        try: default_qty = int(val)
-                        except: pass
-                    elif key == 'rarities':
-                        # Example: rarities=Common
-                        # If comma separated, it might be list of rarities for the set, but here we want default?
-                        # Usually rarities param defines the columns or general rarity?
-                        # Actually in the example: "rarities=Common" -> cards are Common unless specified.
-                        # "rarities=Secret Rare, Quarter Century..." -> Just info?
-                        # If multiple rarities are listed (e.g. for promos), take the first one as default
-                        if ',' in val:
-                             val = val.split(',')[0].strip()
-                        default_rarity = self._map_rarity(val)
-                else:
-                    if ';' in part:
-                        list_content = part
+                    # Check if it looks like a known param
+                    # Split only on the first =
+                    key_cand, val_cand = part.split('=', 1)
+                    key_cand = key_cand.strip().lower()
+
+                    if key_cand in known_params:
+                        is_param = True
+                        if key_cand == 'qty':
+                            try: default_qty = int(val_cand)
+                            except: pass
+                        elif key_cand == 'rarities':
+                            if ',' in val_cand:
+                                 val_cand = val_cand.split(',')[0].strip()
+                            default_rarity = self._map_rarity(val_cand)
+
+                if not is_param:
+                    # Potential list content
+                    semicolon_count = part.count(';')
+                    if semicolon_count > 0:
+                        # If multiple candidates, pick the one with most semicolons
+                        if semicolon_count > max_semicolons:
+                            max_semicolons = semicolon_count
+                            best_content_candidate = part
+
+            list_content = best_content_candidate
 
             card_lines = list_content.split('\n')
 
             for line in card_lines:
                 line = line.strip()
                 if not line: continue
+
+                # Basic cleanup of line if it contains templates like {{=}}
+                # Replace {{=}} with = for display (though we split by ;)
+                line = line.replace('{{=}}', '=')
 
                 columns = [c.strip() for c in line.split(';')]
                 if len(columns) < 2: continue
@@ -366,15 +482,23 @@ class YugipediaService:
                 elif len(columns) > 3 and columns[3].isdigit():
                     qty = int(columns[3])
 
-                rarity = self._map_rarity(rarity_str) if rarity_str else default_rarity
+                rarity_str_val = rarity_str if rarity_str else default_rarity
 
-                cards.append(DeckCard(
-                    code=code,
-                    name=name,
-                    rarity=rarity,
-                    quantity=qty,
-                    is_bonus=False # Will be set by section logic
-                ))
+                # Split rarities if comma separated
+                rarities = [r.strip() for r in rarity_str_val.split(',')]
+
+                for r in rarities:
+                    # Strip comments like " // description::(alternate artwork)"
+                    clean_r = re.split(r'\s*//', r)[0].strip()
+                    mapped_rarity = self._map_rarity(clean_r)
+
+                    cards.append(DeckCard(
+                        code=code,
+                        name=name,
+                        rarity=mapped_rarity,
+                        quantity=qty,
+                        is_bonus=False # Will be set by section logic
+                    ))
 
         return cards
 
@@ -476,6 +600,58 @@ class YugipediaService:
             logger.error(f"Error parsing set details from {url}: {e}")
             return None
 
+    async def get_card_images(self, page_title: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Fetches the high and low resolution image URLs for a card page.
+        Returns (high_res_url, low_res_url).
+        """
+        params = {
+            "action": "query",
+            "titles": page_title,
+            "prop": "pageimages",
+            "format": "json",
+            "piprop": "original|thumbnail",
+            "pithumbsize": 300 # Matches typical Yugipedia thumb size
+        }
+
+        try:
+            if hasattr(run, 'io_bound'):
+                response = await run.io_bound(requests.get, self.API_URL, params=params, headers=self.HEADERS)
+            else:
+                response = await asyncio.to_thread(requests.get, self.API_URL, params=params, headers=self.HEADERS)
+
+            if response.status_code == 200:
+                data = response.json()
+                pages = data.get("query", {}).get("pages", {})
+
+                for pid, page in pages.items():
+                    if pid == "-1": continue
+
+                    high_res = None
+                    low_res = None
+
+                    # Original
+                    if "original" in page:
+                         high_res = page["original"].get("source")
+                    elif "thumbnail" in page:
+                         # Fallback if original property not directly present but nested?
+                         # Yugipedia API output showed original inside thumbnail sometimes or separate?
+                         # My test showed 'original' as separate property when piprop=original is set.
+                         # But let's check thumbnail['original'] too as backup
+                         if "original" in page["thumbnail"]:
+                              high_res = page["thumbnail"]["original"]
+
+                    # Thumbnail
+                    if "thumbnail" in page:
+                        low_res = page["thumbnail"].get("source")
+
+                    return high_res, low_res
+
+            return None, None
+        except Exception as e:
+            logger.error(f"Error fetching images for {page_title}: {e}")
+            return None, None
+
     async def get_card_details(self, url: str) -> Optional[Dict[str, Any]]:
         """
         Parses a Yugipedia card page URL and returns card details.
@@ -497,10 +673,40 @@ class YugipediaService:
             if not wikitext:
                 return None
 
-            return self._parse_card_table(wikitext, title)
+            data = self._parse_card_table(wikitext, title)
+
+            # Fetch Images
+            high, low = await self.get_card_images(title)
+            data["image_url"] = high
+            data["image_url_small"] = low
+
+            return data
 
         except Exception as e:
             logger.error(f"Error parsing card details from {url}: {e}")
+            return None
+
+    async def get_card_data_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches card details by name (page title) directly.
+        """
+        try:
+            # Assume name matches page title (Yugipedia handles redirects usually)
+            # Need to handle potential spaces vs underscores? Yugipedia API handles it.
+            wikitext = await self._fetch_wikitext(name)
+            if not wikitext:
+                return None
+
+            data = self._parse_card_table(wikitext, name)
+
+            # Fetch Images
+            high, low = await self.get_card_images(name)
+            data["image_url"] = high
+            data["image_url_small"] = low
+
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching card data for {name}: {e}")
             return None
 
     async def _fetch_wikitext(self, title: str) -> Optional[str]:

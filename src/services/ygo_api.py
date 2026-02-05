@@ -1021,6 +1021,57 @@ class YugiohService:
         logger.info(f"Bulk deleted set {target_prefix}. Removed {deleted_count} variants.")
         return deleted_count
 
+    def _create_card_from_yugipedia_data(self, card_data: Dict[str, Any], existing_cards: List[ApiCard]) -> ApiCard:
+        """Helper to create an ApiCard from Yugipedia data."""
+        new_id = card_data.get("database_id")
+        if not new_id:
+            # Generate random ID in 900xxxxxx range to avoid conflicts
+            import random
+            new_id = random.randint(900000000, 999999999)
+            while any(c.id == new_id for c in existing_cards):
+                 new_id = random.randint(900000000, 999999999)
+
+        new_card = ApiCard(
+            id=new_id,
+            name=card_data.get("name", "Unknown Card"),
+            type=card_data.get("type", "Normal Monster"),
+            frameType="normal", # Default, ideally mapped from type
+            desc=card_data.get("desc", ""),
+            race=card_data.get("race", ""),
+            atk=card_data.get("atk"),
+            def_=card_data.get("def"),
+            level=card_data.get("level"),
+            linkval=card_data.get("linkval"),
+            linkmarkers=card_data.get("linkmarkers"),
+            attribute=card_data.get("attribute"),
+            card_sets=[],
+            card_images=[]
+        )
+
+        # Attempt to set frameType based on type
+        t = new_card.type.lower()
+        if "synchro" in t: new_card.frameType = "synchro"
+        elif "fusion" in t: new_card.frameType = "fusion"
+        elif "xyz" in t: new_card.frameType = "xyz"
+        elif "link" in t: new_card.frameType = "link"
+        elif "ritual" in t: new_card.frameType = "ritual"
+        elif "token" in t: new_card.frameType = "token"
+        elif "spell" in t: new_card.frameType = "spell"
+        elif "trap" in t: new_card.frameType = "trap"
+        elif "effect" in t: new_card.frameType = "effect"
+
+        # Image Handling
+        if card_data.get("image_url") or card_data.get("image_url_small"):
+            from src.core.models import ApiCardImage
+            img = ApiCardImage(
+                id=new_card.id,
+                image_url=card_data.get("image_url") or "",
+                image_url_small=card_data.get("image_url_small") or ""
+            )
+            new_card.card_images.append(img)
+
+        return new_card
+
     async def import_set_from_yugipedia(self, set_data: Dict[str, Any], language: str = "en") -> Tuple[bool, str]:
         """
         Imports a set and its cards from Yugipedia data.
@@ -1043,11 +1094,69 @@ class YugiohService:
                     set_code_prefix = first_code.split('-')[0]
 
             updated_count = 0
+            created_count = 0
             skipped_count = 0
 
             # Map cards by name for faster lookup
             name_map = {c.name.lower(): c for c in cards}
 
+            # 1. Identify missing cards
+            missing_cards_names = set()
+            for c_data in cards_list:
+                name = c_data.get("name")
+                if name and name.lower() not in name_map:
+                    missing_cards_names.add(name)
+
+            # 2. Concurrently fetch missing cards
+            new_cards_with_images = [] # List of ApiCards that need image download
+
+            if missing_cards_names:
+                logger.info(f"Fetching details for {len(missing_cards_names)} missing cards...")
+
+                # Limit concurrency
+                semaphore = asyncio.Semaphore(5)
+
+                async def fetch_and_create(card_name):
+                    async with semaphore:
+                        data = await yugipedia_service.get_card_data_by_name(card_name)
+                        if data:
+                            return data
+                        return None
+
+                tasks = [fetch_and_create(name) for name in missing_cards_names]
+                results = await asyncio.gather(*tasks)
+
+                for card_data in results:
+                    if card_data:
+                        # Create card
+                        new_card = self._create_card_from_yugipedia_data(card_data, cards)
+                        cards.append(new_card)
+                        name_map[new_card.name.lower()] = new_card
+                        created_count += 1
+
+                        if new_card.card_images:
+                            new_cards_with_images.append(new_card)
+
+                logger.info(f"Created {created_count} new cards from Yugipedia.")
+
+            # Trigger downloads for new cards
+            if new_cards_with_images:
+                high_res_map = {}
+                low_res_map = {}
+                for c in new_cards_with_images:
+                    img = c.card_images[0]
+                    if img.image_url: high_res_map[c.id] = img.image_url
+                    if img.image_url_small: low_res_map[c.id] = img.image_url_small
+
+                # Fire and forget (or await if critical) - sticking to await to ensure completion before UI update if desired
+                # But to avoid holding up the UI too long, we can do it in background or sequentially
+                # download_batch handles existing checks
+                if low_res_map:
+                    asyncio.create_task(image_manager.download_batch(low_res_map, high_res=False))
+                if high_res_map:
+                    asyncio.create_task(image_manager.download_batch(high_res_map, high_res=True))
+
+            # 3. Add variants
             for c_data in cards_list:
                 name = c_data.get("name")
                 code = c_data.get("set_code")
@@ -1098,11 +1207,16 @@ class YugiohService:
                     if isinstance(self._sets_cache[set_code_prefix], dict):
                          self._sets_cache[set_code_prefix]['image'] = set_data["image_url"]
 
-            if updated_count > 0:
+            if updated_count > 0 or created_count > 0:
                 await self.save_card_database(cards, language)
-                return True, f"Imported {updated_count} variants. {skipped_count} cards not found in DB."
+                msg = f"Imported {updated_count} variants."
+                if created_count > 0:
+                    msg += f" Created {created_count} new cards."
+                if skipped_count > 0:
+                    msg += f" {skipped_count} cards failed to resolve."
+                return True, msg
             elif skipped_count > 0:
-                return False, f"No cards updated. {skipped_count} cards not found in DB."
+                return False, f"No cards updated. {skipped_count} cards failed to resolve (could not fetch data)."
             else:
                 return True, "No changes needed (all variants exist)."
 
@@ -1134,47 +1248,17 @@ class YugiohService:
             if not target_card:
                 # Create New Card
                 is_new = True
-
-                # ID Generation
-                new_id = card_data.get("database_id")
-                if not new_id:
-                    # Generate random ID in 900xxxxxx range to avoid conflicts
-                    import random
-                    new_id = random.randint(900000000, 999999999)
-                    while any(c.id == new_id for c in cards):
-                         new_id = random.randint(900000000, 999999999)
-
-                target_card = ApiCard(
-                    id=new_id,
-                    name=card_data.get("name", "Unknown Card"),
-                    type=card_data.get("type", "Normal Monster"),
-                    frameType="normal", # Default, ideally mapped from type
-                    desc=card_data.get("desc", ""),
-                    race=card_data.get("race", ""),
-                    atk=card_data.get("atk"),
-                    def_=card_data.get("def"), # Pydantic alias handling requires explicit field name often
-                    level=card_data.get("level"),
-                    linkval=card_data.get("linkval"),
-                    linkmarkers=card_data.get("linkmarkers"),
-                    attribute=card_data.get("attribute"),
-                    card_sets=[],
-                    card_images=[]
-                )
-
-                # Attempt to set frameType based on type
-                t = target_card.type.lower()
-                if "synchro" in t: target_card.frameType = "synchro"
-                elif "fusion" in t: target_card.frameType = "fusion"
-                elif "xyz" in t: target_card.frameType = "xyz"
-                elif "link" in t: target_card.frameType = "link"
-                elif "ritual" in t: target_card.frameType = "ritual"
-                elif "token" in t: target_card.frameType = "token"
-                elif "spell" in t: target_card.frameType = "spell"
-                elif "trap" in t: target_card.frameType = "trap"
-                elif "effect" in t: target_card.frameType = "effect"
-
+                target_card = self._create_card_from_yugipedia_data(card_data, cards)
                 cards.append(target_card)
                 logger.info(f"Created new card: {target_card.name} ({target_card.id})")
+
+                # Download Images for new card
+                if target_card.card_images:
+                    img = target_card.card_images[0]
+                    if img.image_url:
+                        asyncio.create_task(image_manager.ensure_image(target_card.id, img.image_url, high_res=True))
+                    if img.image_url_small:
+                        asyncio.create_task(image_manager.ensure_image(target_card.id, img.image_url_small, high_res=False))
 
             else:
                 # Update Existing Card
