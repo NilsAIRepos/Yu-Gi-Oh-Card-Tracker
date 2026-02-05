@@ -2,7 +2,7 @@ from nicegui import ui, run
 from src.core.models import ApiCardSet
 from src.services.ygo_api import ApiCard, ygo_service
 from src.services.image_manager import image_manager
-from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, extract_language_code
+from src.core.utils import transform_set_code, generate_variant_id, normalize_set_code, extract_language_code, LANGUAGE_COUNTRY_MAP
 from src.core.constants import CARD_CONDITIONS
 from typing import List, Optional, Dict, Set, Callable, Any
 import logging
@@ -58,6 +58,36 @@ class SingleCardView:
 
                 # Run in background
                 asyncio.create_task(download_task())
+
+    def _get_flag_url(self, set_code_key: str) -> Optional[str]:
+        """Helper to extract language from set code key and return flag URL."""
+        if '(' in set_code_key:
+            set_code = set_code_key.split(' (')[0].strip()
+        else:
+            set_code = set_code_key
+
+        lang = extract_language_code(set_code)
+        country = LANGUAGE_COUNTRY_MAP.get(lang)
+        if country:
+            return image_manager.get_flag_image_url(country)
+        return None
+
+    async def _ensure_breakdown_flags(self, breakdown_keys: List[str]):
+        """Ensures flag images exist for the languages in the breakdown."""
+        countries = set()
+        for key in breakdown_keys:
+            if '(' in key:
+                set_code = key.split(' (')[0].strip()
+            else:
+                set_code = key
+            lang = extract_language_code(set_code)
+            country = LANGUAGE_COUNTRY_MAP.get(lang)
+            if country:
+                countries.add(country)
+
+        if countries:
+            tasks = [image_manager.ensure_flag_image(c) for c in countries]
+            await asyncio.gather(*tasks)
 
     def _render_inventory_management(
         self,
@@ -431,9 +461,17 @@ class SingleCardView:
                                 ui.label(f"Total: {total_owned}").classes('select-text')
 
                             if owned_breakdown:
-                                for lang, count in owned_breakdown.items():
-                                    with ui.chip(icon='layers').props('color=secondary text-color=white'):
-                                        ui.label(f"{lang}: {count}").classes('select-text')
+                                # Start ensuring flags immediately
+                                await self._ensure_breakdown_flags(list(owned_breakdown.keys()))
+
+                                for key, count in owned_breakdown.items():
+                                    flag_url = self._get_flag_url(key)
+                                    with ui.chip().props('color=secondary text-color=white'):
+                                        if flag_url:
+                                            ui.image(flag_url).classes('w-6 h-4 shadow-sm rounded-[2px] object-cover mr-1')
+                                        else:
+                                            ui.icon('layers', color='white').classes('text-lg mr-1')
+                                        ui.label(f"{key}: {count}").classes('select-text')
                             elif total_owned == 0:
                                 ui.label('Not in collection').classes('text-gray-500 italic')
 
@@ -925,9 +963,17 @@ class SingleCardView:
                                  ui.label(f"Total: {owned_count}").classes('select-text')
 
                              if owned_breakdown:
-                                 for label, count in owned_breakdown.items():
-                                     with ui.chip(icon='layers').props('color=secondary text-color=white'):
-                                         ui.label(f"{label}: {count}").classes('select-text')
+                                 # Start ensuring flags immediately
+                                 await self._ensure_breakdown_flags(list(owned_breakdown.keys()))
+
+                                 for key, count in owned_breakdown.items():
+                                     flag_url = self._get_flag_url(key)
+                                     with ui.chip().props('color=secondary text-color=white'):
+                                         if flag_url:
+                                             ui.image(flag_url).classes('w-6 h-4 shadow-sm rounded-[2px] object-cover mr-1')
+                                         else:
+                                             ui.icon('layers', color='white').classes('text-lg mr-1')
+                                         ui.label(f"{key}: {count}").classes('select-text')
                              elif owned_count == 0:
                                  ui.label('Not in collection').classes('text-gray-500 italic')
 
