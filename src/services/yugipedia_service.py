@@ -1,7 +1,7 @@
 import requests
 import re
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 from nicegui import run
 import asyncio
@@ -600,6 +600,58 @@ class YugipediaService:
             logger.error(f"Error parsing set details from {url}: {e}")
             return None
 
+    async def get_card_images(self, page_title: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Fetches the high and low resolution image URLs for a card page.
+        Returns (high_res_url, low_res_url).
+        """
+        params = {
+            "action": "query",
+            "titles": page_title,
+            "prop": "pageimages",
+            "format": "json",
+            "piprop": "original|thumbnail",
+            "pithumbsize": 300 # Matches typical Yugipedia thumb size
+        }
+
+        try:
+            if hasattr(run, 'io_bound'):
+                response = await run.io_bound(requests.get, self.API_URL, params=params, headers=self.HEADERS)
+            else:
+                response = await asyncio.to_thread(requests.get, self.API_URL, params=params, headers=self.HEADERS)
+
+            if response.status_code == 200:
+                data = response.json()
+                pages = data.get("query", {}).get("pages", {})
+
+                for pid, page in pages.items():
+                    if pid == "-1": continue
+
+                    high_res = None
+                    low_res = None
+
+                    # Original
+                    if "original" in page:
+                         high_res = page["original"].get("source")
+                    elif "thumbnail" in page:
+                         # Fallback if original property not directly present but nested?
+                         # Yugipedia API output showed original inside thumbnail sometimes or separate?
+                         # My test showed 'original' as separate property when piprop=original is set.
+                         # But let's check thumbnail['original'] too as backup
+                         if "original" in page["thumbnail"]:
+                              high_res = page["thumbnail"]["original"]
+
+                    # Thumbnail
+                    if "thumbnail" in page:
+                        low_res = page["thumbnail"].get("source")
+
+                    return high_res, low_res
+
+            return None, None
+        except Exception as e:
+            logger.error(f"Error fetching images for {page_title}: {e}")
+            return None, None
+
     async def get_card_details(self, url: str) -> Optional[Dict[str, Any]]:
         """
         Parses a Yugipedia card page URL and returns card details.
@@ -621,7 +673,14 @@ class YugipediaService:
             if not wikitext:
                 return None
 
-            return self._parse_card_table(wikitext, title)
+            data = self._parse_card_table(wikitext, title)
+
+            # Fetch Images
+            high, low = await self.get_card_images(title)
+            data["image_url"] = high
+            data["image_url_small"] = low
+
+            return data
 
         except Exception as e:
             logger.error(f"Error parsing card details from {url}: {e}")
@@ -638,7 +697,14 @@ class YugipediaService:
             if not wikitext:
                 return None
 
-            return self._parse_card_table(wikitext, name)
+            data = self._parse_card_table(wikitext, name)
+
+            # Fetch Images
+            high, low = await self.get_card_images(name)
+            data["image_url"] = high
+            data["image_url_small"] = low
+
+            return data
         except Exception as e:
             logger.error(f"Error fetching card data for {name}: {e}")
             return None
