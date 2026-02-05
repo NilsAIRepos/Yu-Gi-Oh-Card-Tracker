@@ -482,15 +482,21 @@ class YugipediaService:
                 elif len(columns) > 3 and columns[3].isdigit():
                     qty = int(columns[3])
 
-                rarity = self._map_rarity(rarity_str) if rarity_str else default_rarity
+                rarity_str_val = rarity_str if rarity_str else default_rarity
 
-                cards.append(DeckCard(
-                    code=code,
-                    name=name,
-                    rarity=rarity,
-                    quantity=qty,
-                    is_bonus=False # Will be set by section logic
-                ))
+                # Split rarities if comma separated
+                rarities = [r.strip() for r in rarity_str_val.split(',')]
+
+                for r in rarities:
+                    mapped_rarity = self._map_rarity(r)
+
+                    cards.append(DeckCard(
+                        code=code,
+                        name=name,
+                        rarity=mapped_rarity,
+                        quantity=qty,
+                        is_bonus=False # Will be set by section logic
+                    ))
 
         return cards
 
@@ -617,6 +623,22 @@ class YugipediaService:
 
         except Exception as e:
             logger.error(f"Error parsing card details from {url}: {e}")
+            return None
+
+    async def get_card_data_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches card details by name (page title) directly.
+        """
+        try:
+            # Assume name matches page title (Yugipedia handles redirects usually)
+            # Need to handle potential spaces vs underscores? Yugipedia API handles it.
+            wikitext = await self._fetch_wikitext(name)
+            if not wikitext:
+                return None
+
+            return self._parse_card_table(wikitext, name)
+        except Exception as e:
+            logger.error(f"Error fetching card data for {name}: {e}")
             return None
 
     async def _fetch_wikitext(self, title: str) -> Optional[str]:
