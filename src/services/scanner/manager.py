@@ -960,32 +960,6 @@ class ScannerManager:
 
         scored_variants.sort(key=lambda x: x['score'], reverse=True)
 
-        # 1. Identify Real Set Codes present in the results
-        real_set_codes = set()
-        for v in scored_variants:
-            if v.get('variant_id') is not None:
-                real_set_codes.add(v['set_code'])
-
-        # Deduplicate variants by (set_code, rarity) to avoid showing same rarity twice
-        # We keep the highest scoring one (first one since list is sorted)
-        # AND we suppress Virtual candidates if a Real candidate for that Set Code exists.
-        unique_variants = {}
-        deduped_list = []
-
-        for v in scored_variants:
-            # Virtual Suppression Logic:
-            # If this is a Virtual Candidate (variant_id is None) and we have a Real Candidate for this Set Code, skip it.
-            if v.get('variant_id') is None and v['set_code'] in real_set_codes:
-                 continue
-
-            # Use tuple of immutable properties for key
-            key = (v['set_code'], v['rarity'])
-            if key not in unique_variants:
-                unique_variants[key] = v
-                deduped_list.append(v)
-
-        scored_variants = deduped_list
-
         if not scored_variants:
             return {"ambiguity": False, "candidates": []}
 
@@ -1012,7 +986,9 @@ class ScannerManager:
         if len(scored_variants) > 1:
             second = scored_variants[1]
             if top['score'] - second['score'] < threshold: # Use Configured Threshold
-                 ambiguous = True
+                 # Check if they are actually different cards/variants (not just same card diff rarity which is covered above)
+                 if top['set_code'] != second['set_code']:
+                     ambiguous = True
 
         return {
             "ambiguity": ambiguous,
