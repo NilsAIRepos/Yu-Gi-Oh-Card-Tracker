@@ -876,6 +876,11 @@ class ScannerManager:
         for card in potential_cards:
             if not card.card_sets: continue
 
+            # Check if this card has the exact set code we are looking for
+            has_exact_match = False
+            if ocr_res.set_id:
+                 has_exact_match = any(v.set_code == ocr_res.set_id for v in card.card_sets)
+
             for variant in card.card_sets:
                 score = 0.0
 
@@ -949,7 +954,8 @@ class ScannerManager:
                     # and the OCR code is DIFFERENT from the DB code,
                     # inject a virtual candidate with the OCR Set Code.
                     # This ensures "DPKB-DE007" appears in the list even if DB only has "DPKB-EN007".
-                    if 70.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code:
+                    # BUG FIX: Ensure we don't create a virtual variant if the card actually has this Set Code as a real variant.
+                    if 70.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code and not has_exact_match:
                          virtual_entry = candidate_entry.copy()
                          virtual_entry["set_code"] = ocr_res.set_id
                          # Boost score slightly above the EN variant to prioritize the user's actual scan
