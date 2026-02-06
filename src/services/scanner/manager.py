@@ -37,7 +37,7 @@ else:
 
 from src.services.ygo_api import ygo_service
 from src.services.image_manager import image_manager
-from src.core.utils import normalize_set_code
+from src.core.utils import normalize_set_code, extract_language_code
 from nicegui import run
 
 logger = logging.getLogger(__name__)
@@ -795,7 +795,7 @@ class ScannerManager:
              norm_ocr = normalize_set_code(ocr_code)
              norm_db = normalize_set_code(db_code)
              if norm_ocr == norm_db:
-                 return 75.0
+                 return 69.0
         except:
              pass
 
@@ -950,12 +950,24 @@ class ScannerManager:
                     scored_variants.append(candidate_entry)
 
                     # --- VIRTUAL CANDIDATE INJECTION ---
-                    # If we have a Cross-Region match (score ~75 but not 80 exact),
-                    # and the OCR code is DIFFERENT from the DB code,
-                    # inject a virtual candidate with the OCR Set Code.
-                    # This ensures "DPKB-DE007" appears in the list even if DB only has "DPKB-EN007".
-                    # BUG FIX: Ensure we don't create a virtual variant if the card actually has this Set Code as a real variant.
-                    if 70.0 <= set_score < 80.0 and ocr_res.set_id and ocr_res.set_id != variant.set_code and not has_exact_match:
+                    # If we scanned a Non-English card (e.g., LOB-G001) and matched it to an English variant (LOB-E001),
+                    # inject a virtual candidate for the scanned code.
+                    # This allows users to see/add the exact code they scanned, even if DB only has English.
+                    # Robust Logic: Check Region != EN AND Normalized Codes Match.
+                    should_inject_virtual = False
+                    if ocr_res.set_id and ocr_res.set_id != variant.set_code and not has_exact_match:
+                         # 1. Check if scanned code is Non-English
+                         scanned_lang = extract_language_code(ocr_res.set_id)
+                         if scanned_lang != 'EN':
+                             # 2. Check if normalized codes match (meaning it is the corresponding variant)
+                             # normalize_set_code("LOB-G001") -> "LOB-001"
+                             # normalize_set_code("LOB-E001") -> "LOB-001"
+                             if normalize_set_code(ocr_res.set_id) == normalize_set_code(variant.set_code):
+                                 # Ensure we are matching against an English variant
+                                 if extract_language_code(variant.set_code) == 'EN':
+                                     should_inject_virtual = True
+
+                    if should_inject_virtual:
                          virtual_entry = candidate_entry.copy()
                          virtual_entry["set_code"] = ocr_res.set_id
                          # Boost score slightly above the EN variant to prioritize the user's actual scan
