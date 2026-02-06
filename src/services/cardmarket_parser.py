@@ -19,10 +19,12 @@ class ParsedRow:
     rarity_abbr: str
     first_edition: bool
     original_line: str
+    comment: Optional[str] = None # New field for comments
 
     # Derived/Resolved fields
     set_rarity: str = "" # Full rarity name
     set_condition: str = "" # Full condition name
+    failure_reason: Optional[str] = None
 
 class CardmarketParser:
 
@@ -38,20 +40,14 @@ class CardmarketParser:
     }
 
     # Reverse mapping for rarities (Abbr -> Full Name)
-    # Note: Some abbreviations might be ambiguous or missing, we do our best.
     RARITY_MAP = {v: k for k, v in RARITY_ABBREVIATIONS.items()}
-    # Manual overrides for Cardmarket specific codes that differ from our internal standard
     RARITY_MAP['QSCR'] = 'Quarter Century Secret Rare'
 
-    # Regex to parse the line
-    # Format: Qty Name Number Lang Condition SetPrefix Rarity [First Edition] Price Currency
-    # Example: 1 Hinotama Soul (V.1 - Common) 020 DE NM LOB C 0,04 EUR
-    # Example: 1 Cure Mermaid (V.2 - Common) 041 EN NM LON C First Edition 0,02 EUR
-    # We use a non-greedy match for Name (.+?) and anchor the rest to the specific columns.
-    # Note: Rarity can be 1-4 chars (C, R, ScR, 10000ScR).
-    # Price is usually "0,04 EUR" or "1.234,00 EUR" (European format).
+    # Updated Regex:
+    # 1. Number: \d{3} -> [A-Za-z0-9]+
+    # 2. Added optional Comment Group: (?:\s+(.+?))? before price
     LINE_REGEX = re.compile(
-        r'^(\d+)\s+(.+?)\s+(\d{3})\s+([A-Z]{2})\s+([A-Z]{2})\s+([A-Z0-9]+)\s+([A-Za-z0-9]+)(?:\s+(First Edition))?\s+[\d,.]+\s+EUR$'
+        r'^(\d+)\s+(.+?)\s+([A-Za-z0-9]+)\s+([A-Z]{2})\s+([A-Z]{2})\s+([A-Z0-9]+)\s+([A-Za-z0-9]+)(?:\s+(First Edition))?(?:\s+(.+?))?\s+([\d,.]+\s+EUR)$'
     )
 
     @staticmethod
@@ -72,11 +68,10 @@ class CardmarketParser:
                 logger.error(f"Error parsing PDF: {e}")
                 raise ValueError(f"Failed to parse PDF: {e}")
         else:
-            # Assume text/json/csv - but here we only handle the text dump format provided
             try:
                 text = file_content.decode('utf-8')
             except UnicodeDecodeError:
-                text = file_content.decode('latin-1') # Fallback
+                text = file_content.decode('latin-1')
 
         return CardmarketParser.parse_text(text)
 
@@ -85,31 +80,42 @@ class CardmarketParser:
         rows = []
         lines = text.split('\n')
 
+        parsing_singles = False
+
         for line in lines:
             line = line.strip()
             if not line:
                 continue
 
-            # Skip header lines commonly found in Cardmarket PDFs
-            if any(x in line for x in ["Yugioh Singles:", "Contents", "Article Value", "Shipping", "Total", "Trustee Service"]):
+            # Section detection
+            if "Yugioh Singles:" in line:
+                parsing_singles = True
                 continue
 
-            # Skip date/time lines
-            if "Unpaid:" in line or "Paid:" in line:
+            # Stop parsing if we hit another header while parsing singles
+            # Heuristic: Line ends with ':' and is not the singles header
+            if parsing_singles and line.endswith(":") and not "Yugioh Singles:" in line:
+                parsing_singles = False
+                continue
+
+            # Only process lines if we are inside the singles section
+            if not parsing_singles:
+                continue
+
+            # Skip other known garbage lines inside section (if any)
+            if any(x in line for x in ["Contents", "Article Value", "Shipping", "Total", "Trustee Service", "Unpaid:", "Paid:"]):
                 continue
 
             match = CardmarketParser.LINE_REGEX.match(line)
             if match:
-                qty_str, name, number, lang, cond, prefix, rarity_abbr, first_ed_group = match.groups()
+                qty_str, name, number, lang, cond, prefix, rarity_abbr, first_ed_group, comment_group, price_group = match.groups()
 
-                # Normalize data
-                full_condition = CardmarketParser.CONDITION_MAP.get(cond, "Near Mint") # Default fallback?
-                full_rarity = CardmarketParser.RARITY_MAP.get(rarity_abbr, rarity_abbr) # Fallback to abbr if unknown
+                full_condition = CardmarketParser.CONDITION_MAP.get(cond, "Near Mint")
+                full_rarity = CardmarketParser.RARITY_MAP.get(rarity_abbr, rarity_abbr)
 
                 is_first_ed = bool(first_ed_group)
 
-                # Cleanup Name: remove "(V.X - Rarity)" if present, as it confuses fuzzy matching if needed
-                # Example: "Hinotama Soul (V.1 - Common)" -> "Hinotama Soul"
+                # Cleanup Name
                 clean_name = re.sub(r'\s*\(V\.\d+\s*-\s*[^\)]+\)', '', name).strip()
 
                 rows.append(ParsedRow(
@@ -117,30 +123,22 @@ class CardmarketParser:
                     name=clean_name,
                     number=number,
                     language=lang,
-                    condition=cond, # Store raw code
+                    condition=cond,
                     set_condition=full_condition,
                     set_prefix=prefix,
                     rarity_abbr=rarity_abbr,
                     set_rarity=full_rarity,
                     first_edition=is_first_ed,
-                    original_line=line
+                    original_line=line,
+                    comment=comment_group.strip() if comment_group else None
                 ))
             else:
-                # Log or track unparsed lines?
-                # For now we skip, but the controller might want to know about them.
-                # But since we are inside a static method returning a list, we might miss them.
-                # Let's return them as a special error row?
-                # Or just ignore assuming they are garbage/headers.
-                # Given strict requirements, maybe we should log invalid lines that LOOK like data.
-
-                # Check for potential card lines that failed regex
-                # Heuristic: Starts with a number, but ignore likely Zip Codes or large numbers (Header addresses)
-                # Max reasonable quantity for a single line is usually < 1000.
+                # Log potential failures
                 m_pot = re.match(r'^(\d+)\s', line)
                 if m_pot:
                     qty = int(m_pot.group(1))
                     if qty < 1000:
                         logger.warning(f"Failed to parse potential card line: {line}")
-                    # We could add a 'failed' row type if needed, but for now let's just log.
+                        # Optionally we could add a failed row here if we wanted strict reporting
 
         return rows
