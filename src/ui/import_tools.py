@@ -578,6 +578,7 @@ class UnifiedImportController:
             'target_codes': target_codes,
             'selected_set_code': default_set_code,
             'selected_rarity': default_rarity,
+            'selected_condition': row.set_condition,
             'selected_card': default_card,
             'include': True
         })
@@ -938,8 +939,8 @@ class UnifiedImportController:
                                         on_change=lambda e, it=item: it.update({'include': e.value})).classes('w-10 justify-center')
 
                             # 2. Card Info (Added Language)
-                            with ui.column().classes('w-1/4'):
-                                ui.label(f"{row.quantity}x {row.name}").classes('font-bold')
+                            with ui.column().classes('w-1/5'):
+                                ui.label(f"{row.quantity}x {row.name}").classes('font-bold text-white')
                                 edition_flag = "1st" if row.first_edition else "Unl"
                                 ui.label(f"Orig: {row.set_prefix} | {row.language} | {row.set_rarity} | {row.set_condition} | {edition_flag}").classes('text-xs text-grey-5')
 
@@ -950,7 +951,7 @@ class UnifiedImportController:
 
                             ui.select(options=code_opts, value=item['selected_set_code'],
                                       on_change=lambda e, i=item: update_code(e, i)) \
-                                      .classes('w-1/4').props('dark dense options-dense')
+                                      .classes('w-1/5').props('dark dense options-dense')
 
                             # 4. Rarity Control (Dropdown or Static)
                             def update_rarity(e, it):
@@ -958,14 +959,20 @@ class UnifiedImportController:
 
                             if len(valid_rarities) <= 1:
                                 # Static Text
-                                with ui.row().classes('w-1/4 items-center gap-2'):
+                                with ui.row().classes('w-1/5 items-center gap-2'):
                                     ui.label(item['selected_rarity']).classes('text-sm font-bold bg-gray-700 px-2 py-1 rounded text-gray-300')
                             else:
                                 ui.select(options=valid_rarities, value=item['selected_rarity'],
                                           on_change=lambda e, i=item: update_rarity(e, i)) \
-                                          .classes('w-1/4').props('dark dense options-dense')
+                                          .classes('w-1/5').props('dark dense options-dense')
 
-                            # 5. Info Icon (Expandable Overview)
+                            # 5. Condition Control
+                            ui.select(options=list(CardmarketParser.CONDITION_MAP.values()),
+                                      value=item['selected_condition'],
+                                      on_change=lambda e, i=item: i.update({'selected_condition': e.value})) \
+                                      .classes('w-1/5').props('dark dense options-dense')
+
+                            # 6. Info Icon (Expandable Overview)
                             with ui.button(icon='info').props('flat round dense size=sm color=info'):
                                 with ui.tooltip().classes('bg-gray-900 border border-gray-700'):
                                     render_printings_content(item['all_siblings'])
@@ -982,9 +989,10 @@ class UnifiedImportController:
                 # Header
                 with ui.row().classes('w-full items-center gap-2 font-bold text-grey-4 q-mb-sm border-b border-gray-600 pb-2'):
                     ui.checkbox(value=True, on_change=toggle_all).classes('w-10 justify-center').props('dense')
-                    ui.label("Card").classes('w-1/4')
-                    ui.label("Set Code").classes('w-1/4')
-                    ui.label("Rarity").classes('w-1/4')
+                    ui.label("Card").classes('w-1/5')
+                    ui.label("Set Code").classes('w-1/5')
+                    ui.label("Rarity").classes('w-1/5')
+                    ui.label("Condition").classes('w-1/5')
 
                 # Render initial rows
                 rows_container = ui.column().classes('w-full')
@@ -1040,7 +1048,7 @@ class UnifiedImportController:
                                 set_code=item['selected_set_code'],
                                 rarity=item['selected_rarity'],
                                 quantity=item['row'].quantity,
-                                condition=item['row'].set_condition,
+                                condition=item['selected_condition'],
                                 language=item['row'].language,
                                 first_edition=item['row'].first_edition,
                                 image_id=None, # Will resolve later or use default
@@ -1079,9 +1087,14 @@ class UnifiedImportController:
                                         on_change=lambda e, it=item: it.update({'include': e.value})).classes('w-10 justify-center')
 
                             ui.label(str(p.quantity)).classes('w-10 text-center')
-                            ui.label(p.api_card.name).classes('w-1/3 font-bold truncate')
-                            ui.label(p.set_code).classes('w-1/4 text-sm')
-                            ui.label(p.rarity).classes('w-1/4 text-sm')
+                            ui.label(p.api_card.name).classes('w-1/4 font-bold truncate text-white')
+                            ui.label(p.set_code).classes('w-1/5 text-sm')
+                            ui.label(p.rarity).classes('w-1/5 text-sm')
+
+                            ui.select(options=list(CardmarketParser.CONDITION_MAP.values()),
+                                      value=p.condition,
+                                      on_change=lambda e, obj=p: setattr(obj, 'condition', e.value)) \
+                                      .classes('w-1/5').props('dark dense options-dense')
 
             def toggle_all(e):
                 for item in preview_items:
@@ -1093,9 +1106,10 @@ class UnifiedImportController:
                 with ui.row().classes('w-full items-center gap-2 font-bold text-grey-4 q-mb-sm border-b border-gray-600 pb-2'):
                     ui.checkbox(value=True, on_change=toggle_all).classes('w-10 justify-center').props('dense')
                     ui.label("Qty").classes('w-10 text-center')
-                    ui.label("Card").classes('w-1/3')
-                    ui.label("Set Code").classes('w-1/4')
-                    ui.label("Rarity").classes('w-1/4')
+                    ui.label("Card").classes('w-1/4')
+                    ui.label("Set Code").classes('w-1/5')
+                    ui.label("Rarity").classes('w-1/5')
+                    ui.label("Condition").classes('w-1/5')
 
                 rows_container = ui.column().classes('w-full')
                 render_rows()
