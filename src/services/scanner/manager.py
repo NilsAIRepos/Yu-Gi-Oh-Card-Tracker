@@ -795,7 +795,7 @@ class ScannerManager:
              norm_ocr = normalize_set_code(ocr_code)
              norm_db = normalize_set_code(db_code)
              if norm_ocr == norm_db:
-                 return 75.0
+                 return 69.0
         except:
              pass
 
