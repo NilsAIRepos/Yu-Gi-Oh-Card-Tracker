@@ -16,6 +16,7 @@ from src.ui.deck_builder import deck_builder_page
 from src.ui.import_tools import import_tools_page
 from src.ui.browse_sets import browse_sets_page
 from src.ui.bulk_add import bulk_add_page
+from src.ui.bulk_edit import bulk_edit_page
 from src.ui.scan import scan_page
 from src.ui.db_editor import db_editor_page
 from src.ui.storage import storage_page
@@ -43,6 +44,10 @@ def decks():
 @ui.page('/bulk_add')
 def bulk_add():
     create_layout(bulk_add_page)
+
+@ui.page('/bulk_edit')
+def bulk_edit():
+    create_layout(bulk_edit_page)
 
 @ui.page('/import')
 def import_tools():

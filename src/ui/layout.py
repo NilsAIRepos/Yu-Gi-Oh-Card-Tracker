@@ -219,6 +219,7 @@ def create_layout(content_function):
             nav_button('Browse Sets', 'library_books', '/sets')
             nav_button('Deck Builder', 'construction', '/decks')
             nav_button('Bulk Add', 'playlist_add', '/bulk_add')
+            nav_button('Bulk Edit', 'edit_note', '/bulk_edit')
             nav_button('Scan Cards', 'camera', '/scan')
             nav_button('Import Tools', 'qr_code_scanner', '/import')
             nav_button('Edit Card DB', 'edit', '/db_editor')
