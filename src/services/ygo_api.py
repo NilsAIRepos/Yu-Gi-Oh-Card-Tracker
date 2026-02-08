@@ -675,6 +675,23 @@ class YugiohService:
                         if count > temp_cache[code]["count"]:
                             temp_cache[code] = entry
 
+            # Merge with existing local sets to preserve custom sets (e.g. from Yugipedia imports)
+            existing_sets = self._sets_cache.copy()
+            if not existing_sets and os.path.exists(SETS_FILE):
+                 try:
+                     if hasattr(run, 'io_bound'):
+                         existing_sets = await run.io_bound(self._read_json_file, SETS_FILE)
+                     else:
+                         existing_sets = await asyncio.to_thread(self._read_json_file, SETS_FILE)
+                 except Exception as e:
+                     logger.warning(f"Could not load existing sets for merging: {e}")
+
+            if existing_sets:
+                for set_code_key, info in existing_sets.items():
+                    if set_code_key not in temp_cache:
+                        temp_cache[set_code_key] = info
+                        # logger.info(f"Preserving local set: {set_code_key}")
+
             # Finalize cache
             self._sets_cache = temp_cache
 
@@ -1236,6 +1253,7 @@ class YugiohService:
 
                 if cache_updated:
                     try:
+                        if not os.path.exists(DB_DIR): os.makedirs(DB_DIR)
                         if hasattr(run, 'io_bound'):
                             await run.io_bound(self._save_json_file, SETS_FILE, self._sets_cache)
                         else:
