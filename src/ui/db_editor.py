@@ -324,6 +324,8 @@ class DbEditorPage:
             res.sort(key=lambda x: x.api_card.id, reverse=reverse)
         elif key == 'Price':
              res.sort(key=lambda x: x.set_price, reverse=reverse)
+        elif key == 'Set Code':
+             res.sort(key=lambda x: x.set_code, reverse=reverse)
 
         self.state['filtered_items'] = res
 
@@ -798,7 +800,7 @@ class DbEditorPage:
                     await self.apply_filters()
 
                 with ui.row().classes('items-center gap-1'):
-                    with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price'], value=self.state['sort_by'], label='Sort',
+                    with ui.select(['Name', 'ATK', 'DEF', 'Level', 'Newest', 'Price', 'Set Code'], value=self.state['sort_by'], label='Sort',
                             on_change=on_sort_change).classes('w-32'): pass
 
                     async def toggle_sort():
