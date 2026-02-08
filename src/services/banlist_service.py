@@ -70,7 +70,7 @@ class BanlistService:
                     # We don't have scraped effective date for TCG/OCG API yet, so we use fallback
                     # This prevents daily duplicates as requested.
 
-                    await self.save_banlist(name, ban_map, date=fallback_date)
+                    await self.save_banlist(name, ban_map, date=fallback_date, banlist_type="classical")
                     logger.info(f"Updated banlist: {name} ({len(ban_map)} cards)")
                 else:
                     logger.warning(f"No cards found for banlist {name}")
@@ -141,13 +141,13 @@ class BanlistService:
             if ban_map:
                 now = datetime.now()
                 fallback_date = now.strftime("%Y-%m-01")
-                await self.save_banlist("Genesys", ban_map, date=fallback_date)
+                await self.save_banlist("Genesys", ban_map, date=fallback_date, banlist_type="genesys", max_points=100)
                 logger.info(f"Updated banlist: Genesys ({len(ban_map)} cards)")
 
         except Exception as e:
             logger.error(f"Error fetching Genesys: {e}")
 
-    async def save_banlist(self, name: str, data: Dict[str, str], date: Optional[str] = None):
+    async def save_banlist(self, name: str, data: Dict[str, str], date: Optional[str] = None, banlist_type: str = "classical", max_points: int = 100):
         """
         Saves a banlist (id -> status map) to a JSON file.
         If date is provided, appends it to the filename and includes it in JSON.
@@ -162,8 +162,12 @@ class BanlistService:
 
         content = {
             "name": name,
+            "type": banlist_type,
             "cards": data
         }
+        if banlist_type == "genesys":
+            content["max_points"] = max_points
+
         if date:
             content["date"] = date
 
@@ -173,22 +177,24 @@ class BanlistService:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(content, f, indent=2)
 
-    async def load_banlist(self, name: str) -> Dict[str, str]:
+    async def load_banlist(self, name: str) -> Dict:
         """
-        Loads a banlist map (id -> status) from JSON.
-        'name' can be the full filename (minus extension) or just the prefix if unique?
-        Currently UI passes the full name from get_banlists.
+        Loads the full banlist content (including metadata) from JSON.
+        'name' can be the full filename (minus extension) or just the prefix.
+        Returns a Dict which always contains "cards".
         """
         filepath = os.path.join(BANLIST_DIR, f"{name}.json")
         if not os.path.exists(filepath):
-            return {}
+            return {"cards": {}}
 
         try:
             content = await run.io_bound(self._read_json, filepath)
-            return content.get("cards", {})
+            if "cards" not in content:
+                content["cards"] = {}
+            return content
         except Exception as e:
             logger.error(f"Error loading banlist {name}: {e}")
-            return {}
+            return {"cards": {}}
 
     def _read_json(self, filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
