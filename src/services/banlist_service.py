@@ -70,7 +70,7 @@ class BanlistService:
                     # We don't have scraped effective date for TCG/OCG API yet, so we use fallback
                     # This prevents daily duplicates as requested.
 
-                    await self.save_banlist(name, ban_map, date=fallback_date)
+                    await self.save_banlist(name, ban_map, date=fallback_date, banlist_type="classical")
                     logger.info(f"Updated banlist: {name} ({len(ban_map)} cards)")
                 else:
                     logger.warning(f"No cards found for banlist {name}")
@@ -141,25 +141,18 @@ class BanlistService:
             if ban_map:
                 now = datetime.now()
                 fallback_date = now.strftime("%Y-%m-01")
-                await self.save_banlist("Genesys", ban_map, date=fallback_date)
+                await self.save_banlist("Genesys", ban_map, date=fallback_date, banlist_type="genesys", max_points=100)
                 logger.info(f"Updated banlist: Genesys ({len(ban_map)} cards)")
 
         except Exception as e:
             logger.error(f"Error fetching Genesys: {e}")
 
-    async def save_banlist(self, name: str, data: Dict[str, str], date: Optional[str] = None, banlist_type: Optional[str] = None, max_points: int = 100):
+    async def save_banlist(self, name: str, data: Dict[str, str], date: Optional[str] = None, banlist_type: str = "classical", max_points: int = 100):
         """
         Saves a banlist (id -> status map) to a JSON file.
         If date is provided, appends it to the filename and includes it in JSON.
         """
         self._ensure_directory()
-
-        # Infer type if not provided
-        if banlist_type is None:
-            if "genesys" in name.lower():
-                banlist_type = "genesys"
-            else:
-                banlist_type = "classical"
 
         filename = name
         if date:
