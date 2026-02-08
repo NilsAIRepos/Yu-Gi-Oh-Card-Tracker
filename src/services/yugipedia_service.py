@@ -601,8 +601,12 @@ class YugipediaService:
                 data["code"] = get_param("en_prefix", ib_content) or get_param("prefix", ib_content)
 
                 # Date parsing
-                raw_date = get_param("en_date", ib_content) or \
+                raw_date = get_param("eu_release_date", ib_content) or \
+                           get_param("eu_date", ib_content) or \
+                           get_param("na_release_date", ib_content) or \
                            get_param("na_date", ib_content) or \
+                           get_param("en_release_date", ib_content) or \
+                           get_param("en_date", ib_content) or \
                            get_param("release_date", ib_content)
 
                 if raw_date:

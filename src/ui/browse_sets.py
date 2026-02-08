@@ -955,6 +955,8 @@ class BrowseSetsPage:
                              ui.label(data['name']).classes('text-h5 font-bold text-white')
                              if data.get('code'):
                                  ui.label(data['code']).classes('text-yellow-500 font-mono')
+                             if data.get('date'):
+                                 ui.label(f"Release Date: {data['date']}").classes('text-gray-400')
                              ui.label(f"{len(data['cards'])} Cards found").classes('text-gray-400')
 
                     with ui.scroll_area().classes('h-64 w-full border border-gray-700 rounded p-2'):
