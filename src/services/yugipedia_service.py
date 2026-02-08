@@ -527,14 +527,28 @@ class YugipediaService:
         # Remove refs <ref>...</ref> or <ref ... />
         date_str = re.sub(r'<ref.*?>.*?</ref>', '', date_str)
         date_str = re.sub(r'<ref.*?/>', '', date_str)
+
+        # Remove ordinals (e.g. 21st -> 21, 1st -> 1, 2nd -> 2, 3rd -> 3)
+        date_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', date_str, flags=re.IGNORECASE)
+
+        # Replace dots/slashes with dashes for ISO format attempts
+        # But be careful not to break "Oct. 21" logic if we parse strict strings
+        # Standardize "Month DD YYYY" (missing comma) to "Month DD, YYYY"
+        # Regex for "Alpha DD YYYY" -> "Alpha DD, YYYY"
+        # Matches "October 21 2023" -> "October 21, 2023"
+        date_str = re.sub(r'([A-Za-z]+)\s+(\d{1,2})\s+(\d{4})', r'\1 \2, \3', date_str)
+
         date_str = date_str.strip()
 
         formats = [
             "%B %d, %Y",       # October 21, 2023
             "%d %B %Y",        # 21 October 2023
             "%Y-%m-%d",        # 2023-10-21
+            "%Y.%m.%d",        # 2023.10.21
             "%B %Y",           # October 2023
             "%Y",              # 2023
+            "%b %d, %Y",       # Oct 21, 2023
+            "%d %b %Y",        # 21 Oct 2023
         ]
 
         for fmt in formats:
@@ -603,7 +617,9 @@ class YugipediaService:
                 # Date parsing
                 raw_date = get_param("en_date", ib_content) or \
                            get_param("na_date", ib_content) or \
-                           get_param("release_date", ib_content)
+                           get_param("release_date", ib_content) or \
+                           get_param("tcg_date", ib_content) or \
+                           get_param("date", ib_content)
 
                 if raw_date:
                     data["date"] = self._parse_date(raw_date)
