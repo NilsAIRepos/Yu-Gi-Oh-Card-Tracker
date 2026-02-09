@@ -3,6 +3,7 @@ from src.core.persistence import persistence
 from src.core.changelog_manager import changelog_manager, ChangelogManager
 from src.core.models import Deck, Collection
 from src.services.ygo_api import ygo_service, ApiCard
+from src.services.deck_import_service import fetch_ygoprodeck_deck
 from src.services.banlist_service import banlist_service
 from src.services.image_manager import image_manager
 from src.core.config import config_manager
@@ -817,11 +818,12 @@ class DeckBuilderPage:
         await self.apply_filters()
 
     def open_new_deck_dialog(self):
-        with ui.dialog() as d, ui.card().classes('w-96'):
+        with ui.dialog() as d, ui.card().classes('w-[600px] max-w-full'):
              ui.label('Create New Deck').classes('text-h6')
              with ui.tabs().classes('w-full') as tabs:
                  t_new = ui.tab('New Empty')
                  t_import = ui.tab('Import .ydk')
+                 t_url = ui.tab('Import from URL')
              with ui.tab_panels(tabs, value=t_new).classes('w-full'):
                  with ui.tab_panel(t_new):
                      name_input = ui.input('Deck Name').classes('w-full')
@@ -858,6 +860,46 @@ class DeckBuilderPage:
                              logger.error(f"Error importing deck: {ex}", exc_info=True)
                              ui.notify(f"Error importing: {ex}", type='negative')
                      ui.upload(on_upload=handle_upload, auto_upload=True).props('accept=.ydk').classes('w-full')
+                 with ui.tab_panel(t_url):
+                     ui.label('Enter YGOPRODeck URL').classes('text-sm text-grey')
+                     url_input = ui.input('URL').classes('w-full')
+
+                     async def import_url():
+                         url = url_input.value
+                         if not url: return
+
+                         n = ui.notification(f'Importing deck from {url}...', type='info', spinner=True, timeout=None)
+                         try:
+                             deck = await fetch_ygoprodeck_deck(url)
+                             if deck:
+                                 # Ensure unique name
+                                 base_name = deck.name
+                                 name = base_name
+                                 counter = 1
+                                 while self._is_duplicate_deck(name):
+                                     name = f"{base_name} ({counter})"
+                                     counter += 1
+
+                                 deck.name = name
+                                 filename = f"{name}.ydk"
+                                 await run.io_bound(persistence.save_deck, deck, filename)
+
+                                 # Refresh deck list and load
+                                 self.state['available_decks'] = persistence.list_decks()
+                                 await self.load_deck(filename)
+
+                                 n.dismiss()
+                                 d.close()
+                                 ui.notify(f"Imported deck: {name}", type='positive')
+                             else:
+                                 n.dismiss()
+                                 ui.notify("Failed to parse deck.", type='negative')
+                         except Exception as ex:
+                             n.dismiss()
+                             logger.error(f"Error importing deck from URL: {ex}", exc_info=True)
+                             ui.notify(f"Error importing: {ex}", type='negative')
+
+                     ui.button('Import', on_click=import_url).props('color=accent').classes('w-full q-mt-md')
         d.open()
 
     @ui.refreshable
