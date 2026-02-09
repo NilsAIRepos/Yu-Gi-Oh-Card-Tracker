@@ -57,7 +57,8 @@ async def load_dashboard_data(filename=None):
             'total_db_unique': total_db_unique,
             'total_db_variants': total_db_variants,
             'rarity_dist': {},
-            'condition_dist': {}
+            'condition_dist': {},
+            'language_dist': {}
         }
 
         if collection:
@@ -82,6 +83,7 @@ async def load_dashboard_data(filename=None):
             # Distributions
             r_dist = {}
             c_dist = {}
+            l_dist = {}
 
             for card in collection.cards:
                 for var in card.variants:
@@ -95,8 +97,12 @@ async def load_dashboard_data(filename=None):
                         c = entry.condition
                         c_dist[c] = c_dist.get(c, 0) + entry.quantity
 
+                        l = entry.language
+                        l_dist[l] = l_dist.get(l, 0) + entry.quantity
+
             stats['rarity_dist'] = r_dist
             stats['condition_dist'] = c_dist
+            stats['language_dist'] = l_dist
             stats['collection_name'] = collection.name
         else:
             stats['collection_name'] = "No Collection Selected"
@@ -168,6 +174,10 @@ def render_charts_area(stats):
     c_data = [{'value': v, 'name': k} for k, v in stats['condition_dist'].items()]
     c_data.sort(key=lambda x: x['value'], reverse=True)
 
+    # Language Pie Chart
+    l_data = [{'value': v, 'name': k} for k, v in stats['language_dist'].items()]
+    l_data.sort(key=lambda x: x['value'], reverse=True)
+
     def pie_option(title, data, color_palette=None):
         return {
             'backgroundColor': 'transparent',
@@ -237,6 +247,13 @@ def render_charts_area(stats):
                 ui.echart(pie_option('Condition Distribution', c_data)).classes('w-full h-full')
             else:
                  ui.label('No Condition Data').classes('w-full h-full flex items-center justify-center text-grey')
+
+        # Language
+        with ui.card().classes('flex-1 bg-dark border border-gray-700 h-80 p-4 min-w-0'):
+            if l_data:
+                ui.echart(pie_option('Language Distribution', l_data)).classes('w-full h-full')
+            else:
+                 ui.label('No Language Data').classes('w-full h-full flex items-center justify-center text-grey')
 
 
 def dashboard_page():
