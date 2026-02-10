@@ -132,7 +132,7 @@ async function startCamera(deviceId) {
     try {
         const constraints = {
             video: {
-                deviceId: (deviceId && deviceId !== "null") ? { exact: deviceId } : undefined,
+                deviceId: deviceId ? { exact: deviceId } : undefined,
                 width: { ideal: 1920 },
                 height: { ideal: 1080 }
             }
@@ -1516,23 +1516,14 @@ class ScanPage:
     async def start_camera(self):
         device_id = self.camera_select.value if self.camera_select else None
         try:
-            # Handle None or empty string for device_id
-            js_device_id = f'"{device_id}"' if device_id else 'null'
-
-            # Use respond=True to wait for result (boolean success)
-            success = await ui.run_javascript(f'startCamera({js_device_id})', timeout=10.0)
-
-            if success:
-                try:
-                    scanner_service.scanner_manager.start()
-                except Exception as mgr_err:
-                    logger.error(f"Scanner Manager start failed: {mgr_err}")
-                    ui.notify(f"Scanner Manager Error: {mgr_err}", type='negative')
-
+            if await ui.run_javascript(f'startCamera("{device_id}")', timeout=20.0):
+                # We don't need to start/stop the manager here anymore, it runs daemon
+                # Use dynamic import access
+                scanner_service.scanner_manager.start()
                 self.start_btn.visible = False
                 self.stop_btn.visible = True
             else:
-                 ui.notify("Failed to start camera (Permission denied or not found)", type='negative')
+                 ui.notify("Failed to start camera (JS returned false)", type='negative')
         except Exception as e:
             logger.error(f"Error starting camera: {e}")
             ui.notify(f"Error starting camera: {e}", type='negative')
