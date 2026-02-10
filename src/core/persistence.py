@@ -161,6 +161,19 @@ class PersistenceManager:
             logger.error(f"Error saving deck {filename}: {e}")
             raise
 
+    def delete_deck(self, filename: str):
+        """Deletes a deck file."""
+        logger.info(f"Deleting deck: {filename}")
+        filepath = os.path.join(self.decks_dir, filename)
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception as e:
+                logger.error(f"Error deleting deck {filename}: {e}")
+                raise
+        else:
+            logger.warning(f"Deck file {filename} not found for deletion.")
+
     # --- UI State Persistence ---
 
     def load_ui_state(self) -> dict:

@@ -960,6 +960,8 @@ class DeckBuilderPage:
 
             ui.button(icon='save_as', on_click=save_deck_as).props('flat round color=white').tooltip('Save Deck As')
 
+            ui.button(icon='delete', on_click=self.delete_current_deck).props('flat round color=red-400').tooltip('Delete Deck')
+
             ui.button(icon='download', on_click=self.open_export_dialog).props('flat round color=white').tooltip('Export Deck / Missing Cards')
 
             col_options = {None: 'None (All Owned)'}
@@ -1457,6 +1459,50 @@ class DeckBuilderPage:
         self.refresh_zone(zone)
         ui.notify(f"Sorted {zone} deck.", type='positive')
 
+    async def delete_current_deck(self):
+        if not self.state['current_deck']:
+            ui.notify("No deck selected.", type='warning')
+            return
+
+        with ui.dialog() as d, ui.card():
+            ui.label(f"Delete deck '{self.state['current_deck_name']}'?").classes('text-h6')
+            ui.label("This action cannot be undone.").classes('text-sm text-grey')
+
+            async def confirm():
+                try:
+                    filename = f"{self.state['current_deck_name']}.ydk"
+                    # Use run.io_bound to keep UI responsive
+                    await run.io_bound(persistence.delete_deck, filename)
+
+                    ui.notify(f"Deleted deck: {self.state['current_deck_name']}", type='positive')
+
+                    # Refresh list
+                    self.state['available_decks'] = persistence.list_decks()
+
+                    # Load next deck or reset
+                    if self.state['available_decks']:
+                        # Try to load the first one
+                        next_deck = self.state['available_decks'][0]
+                        await self.load_deck(next_deck)
+                    else:
+                        # Reset to empty state
+                        self.state['current_deck'] = None
+                        self.state['current_deck_name'] = None
+                        persistence.save_ui_state({'deck_builder_last_deck': None})
+                        self.refresh_deck_area()
+                        self.render_header.refresh()
+
+                    d.close()
+                except Exception as e:
+                    logger.error(f"Error deleting deck: {e}", exc_info=True)
+                    ui.notify(f"Error deleting deck: {e}", type='negative')
+
+            with ui.row().classes('w-full justify-end gap-2 q-mt-md'):
+                ui.button('Cancel', on_click=d.close).props('flat')
+                ui.button('Delete', on_click=confirm).props('color=negative')
+
+        d.open()
+
     async def handle_deck_change(self, e):
         args = e.args.get('detail', {})
         to_zone = args.get('to_zone')
@@ -1613,6 +1659,9 @@ class DeckBuilderPage:
 
             def render_initial_options():
                 content_area.clear()
+                # Restore container width
+                container.classes(remove='w-[800px]', add='w-[500px]')
+
                 with content_area:
                     ui.label('Export Deck / Missing Cards').classes('text-h6')
                     scope_radio = ui.radio(['Full Deck', 'Missing Cards'], value='Full Deck').props('inline')
@@ -1654,10 +1703,13 @@ class DeckBuilderPage:
 
             def render_cardmarket_view(content):
                 content_area.clear()
+                # Expand container
+                container.classes(remove='w-[500px]', add='w-[800px]')
+
                 with content_area:
                     ui.label('Cardmarket Wants List').classes('text-h6')
                     ui.label('Copy the text below and paste it into Cardmarket.').classes('text-sm text-grey')
-                    ui.textarea(value=content).props('readonly autogrow').classes('w-full h-[300px]')
+                    ui.textarea(value=content).props('readonly').classes('w-full h-[500px]')
 
                     with ui.row().classes('w-full gap-2 q-mt-md'):
                         ui.button('Back', on_click=render_initial_options).props('flat')
