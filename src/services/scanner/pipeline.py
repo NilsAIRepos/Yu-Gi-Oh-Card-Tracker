@@ -472,6 +472,15 @@ class CardScanner:
 
     def find_card_yolo(self, frame, model_name='yolov8l.pt') -> Optional[Any]:
         """Finds card using YOLO object detection (Supports AABB and OBB)."""
+
+        # Check for custom retrained model (e.g. YOLO 26 trained on cards)
+        custom_model_path = os.path.join(os.getcwd(), "data", "models", "custom_card_model.pt")
+        using_custom_model = False
+        if os.path.exists(custom_model_path):
+             model_name = custom_model_path
+             using_custom_model = True
+             logger.info(f"Using custom trained model: {model_name}")
+
         model = self.get_yolo(model_name)
         # Run inference
         results = model(frame, verbose=False)
@@ -484,6 +493,16 @@ class CardScanner:
             # Check for OBB results first
             if result.obb is not None:
                 for obb in result.obb:
+                    # Filter by class if using custom model (Card should be class 0)
+                    if using_custom_model:
+                        # Extract class ID safely
+                        try:
+                            cls_id = int(obb.cls.item())
+                            if cls_id != 0:
+                                continue
+                        except:
+                            pass
+
                     # OBB format: xyxyxyxy (4 points)
                     # shape: (1, 4, 2)
                     points = obb.xyxyxyxy.cpu().numpy().reshape(4, 2)
@@ -499,9 +518,21 @@ class CardScanner:
                              best_box = cnt_temp.reshape(4, 1, 2)
 
             # Fallback to Axis-Aligned Boxes if no OBB found (or mixed usage)
+            # Only use fallback if NOT using custom OBB model (unless custom model also outputs boxes?)
+            # Usually custom OBB model output matches result.obb.
+            # If using generic model, we rely on boxes often.
             elif result.boxes is not None:
                 boxes = result.boxes
                 for box in boxes:
+                    # If using custom model, also check class 0
+                    if using_custom_model:
+                        try:
+                            cls_id = int(box.cls.item())
+                            if cls_id != 0:
+                                continue
+                        except:
+                            pass
+
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     w = x2 - x1
                     h = y2 - y1
