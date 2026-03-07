@@ -1,6 +1,7 @@
 import re
 import hashlib
 from typing import Optional
+from functools import lru_cache
 
 # Region Code Mapping
 # Maps region codes (both legacy 1-letter and standard 2-letter) to standard Language Codes.
@@ -84,6 +85,7 @@ LANGUAGE_COUNTRY_MAP = {
 # Pre-calculate sorted region keys by length (descending) to match longest first
 _SORTED_REGION_KEYS = sorted(REGION_TO_LANGUAGE_MAP.keys(), key=len, reverse=True)
 
+@lru_cache(maxsize=1024)
 def _parse_set_code(set_code: str):
     """
     Parses a set code into (Prefix, Region, Suffix)
