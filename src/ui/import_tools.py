@@ -568,8 +568,26 @@ class UnifiedImportController:
         # Select default card if possible (take first sibling)
         default_card = all_siblings[0]['card'] if all_siblings else None
 
-        # Default Set Code: Prefer the standard target code if available
-        default_set_code = target_codes[0] if target_codes else (compatible_matches[0]['code'] if compatible_matches else "")
+        # Default Set Code: Prefer the standard 2-letter target code if available
+        default_set_code = ""
+        if target_codes:
+            # Try to find a 2-letter code in target codes
+            for code in target_codes:
+                if re.match(r'^([A-Za-z0-9]+)-([A-Za-z]{2})(\d+)$', code):
+                    default_set_code = code
+                    break
+            # If no 2-letter found, fallback to first target code
+            if not default_set_code:
+                default_set_code = target_codes[0]
+        elif compatible_matches:
+            # Try to find a 2-letter code in compatible matches
+            for match in compatible_matches:
+                if re.match(r'^([A-Za-z0-9]+)-([A-Za-z]{2})(\d+)$', match['code']):
+                    default_set_code = match['code']
+                    break
+            # If no 2-letter found, fallback to first compatible match
+            if not default_set_code:
+                default_set_code = compatible_matches[0]['code']
 
         self.ambiguous_rows.append({
             'row': row,
@@ -601,7 +619,7 @@ class UnifiedImportController:
         Deduces the best set code based on Number Pattern Analysis.
         Checks if the input number matches known patterns for 2-Letter or 1-Letter regions.
         """
-        formats = {} # '2-Letter', '1-Letter', '0-Letter' -> Number
+        formats = {'2-Letter': set(), '1-Letter': set(), '0-Letter': set()}
 
         for s in siblings:
             code = s['code']
@@ -611,19 +629,19 @@ class UnifiedImportController:
                 region = m.group(2)
                 number = m.group(3)
                 fmt = '1-Letter' if len(region) == 1 else '2-Letter'
-                formats[fmt] = number
+                formats[fmt].add(number)
             else:
                 m = re.match(r'^([A-Za-z0-9]+)-(\d+)$', code)
                 if m:
                     number = m.group(2)
-                    formats['0-Letter'] = number
+                    formats['0-Letter'].add(number)
 
         # Compare Input Number
         input_num = row.number
 
         # 1. Check 2-Letter Match (Standard)
-        if '2-Letter' in formats:
-            if formats['2-Letter'] == input_num:
+        if formats['2-Letter']:
+            if input_num in formats['2-Letter']:
                 return std_target # Matches Standard Pattern
             else:
                 # Mismatch! Standard target is invalid.
@@ -631,13 +649,13 @@ class UnifiedImportController:
                 if legacy_candidate: return legacy_candidate
 
         # 2. Check 1-Letter Match (Legacy)
-        if '1-Letter' in formats:
-            if formats['1-Letter'] == input_num:
+        if formats['1-Letter']:
+            if input_num in formats['1-Letter']:
                 return legacy_candidate # Matches Legacy Pattern
 
         # 3. Check 0-Letter Match (Base/Neutral)
-        if '0-Letter' in formats:
-            if formats['0-Letter'] == input_num:
+        if formats['0-Letter']:
+            if input_num in formats['0-Letter']:
                 # Ambiguous if Standard also exists? But we handled that above.
                 # If only 0-Letter exists and matches, Standard is usually safe fallback.
                 return std_target

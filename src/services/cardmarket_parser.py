@@ -47,6 +47,8 @@ class CardmarketParser:
     RARITY_MAP['SUR'] = 'Super Rare'
     RARITY_MAP['SCR'] = 'Secret Rare'
     RARITY_MAP['UTR'] = 'Ultimate Rare'
+    RARITY_MAP['PSCR'] = 'Prismatic Secret Rare'
+    RARITY_MAP['SER'] = 'Secret Rare'
 
     # Updated Regex:
     # 1. Number: \d{3} -> [A-Za-z0-9]+
